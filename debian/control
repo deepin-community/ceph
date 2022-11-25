@@ -69,7 +69,7 @@ Build-Depends:
  python3-sphinx,
  tox,
  uuid-runtime,
- valgrind [amd64 armhf i386 powerpc],
+ valgrind [amd64],
  virtualenv,
  xfslibs-dev,
  yasm [amd64],
