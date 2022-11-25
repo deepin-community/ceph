@@ -21,3 +21,4 @@ another-cmakelists-fix.patch
 fix-ceph-osd-systemd-target.patch
 allow-bgp-to-host.patch
 compile-ppc.c-on-all-powerpc-machines.patch
+fix-build-failure-on-deepin-riscv64.patch

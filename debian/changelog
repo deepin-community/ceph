@@ -1,3 +1,9 @@
+ceph (14.2.21.1-deepin1) unstable; urgency=medium
+
+  * Fix build failure  on deepin RISC-V
+
+ -- Gui-Yue <yuemeng.gui@gmail.com>  Fri, 25 Nov 2022 09:15:26 +0000
+
 ceph (14.2.21-1.1) unstable; urgency=medium
 
   * Non-maintainer upload.

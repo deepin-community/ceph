@@ -1,0 +1,30 @@
+Description: Fix build failure on deepin RISC-V.This patch 
+fix build failure caused by missing <memory> lib and non constexpr
+function.
+Author: Gui-Yue <yuemeng.gui@gmail.com>
+--- a/src/common/dout.h
++++ b/src/common/dout.h
+@@ -98,11 +98,11 @@
+ template<typename T>
+ struct dynamic_marker_t {
+   T value;
+-  operator T() const { return value; }
++  constexpr operator T() const { return value; }
+ };
+ 
+ template<typename T>
+-dynamic_marker_t<T> need_dynamic(T&& t) {
++constexpr dynamic_marker_t<T> need_dynamic(T&& t) {
+   return dynamic_marker_t<T>{ std::forward<T>(t) };
+ }
+ 
+--- a/src/include/buffer.h
++++ b/src/include/buffer.h
+@@ -61,6 +61,7 @@
+ #endif
+ 
+ #include "inline_memory.h"
++#include <memory>
+ 
+ #define CEPH_BUFFER_API
+ 
