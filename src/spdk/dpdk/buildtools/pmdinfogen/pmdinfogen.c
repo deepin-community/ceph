@@ -1,14 +1,10 @@
-/* Postprocess pmd object files to export hw support
+/* SPDX-License-Identifier: GPL-2.0
+ * Postprocess pmd object files to export hw support
  *
  * Copyright 2016 Neil Horman <nhorman@tuxdriver.com>
  * Based in part on modpost.c from the linux kernel
- *
- * This software may be used and distributed according to the terms
- * of the GNU General Public License V2, incorporated herein by reference.
- *
  */
 
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <ctype.h>
 #include <string.h>

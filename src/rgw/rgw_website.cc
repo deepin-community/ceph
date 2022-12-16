@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 /*
  * Ceph - scalable distributed file system
@@ -45,7 +45,9 @@ void RGWBWRoutingRule::apply_rule(const string& default_protocol, const string& 
 
   if (!redirect_info.replace_key_prefix_with.empty()) {
     *new_url += redirect_info.replace_key_prefix_with;
-    *new_url += key.substr(condition.key_prefix_equals.size());
+    if (key.size() > condition.key_prefix_equals.size()) {
+      *new_url += key.substr(condition.key_prefix_equals.size());
+    }
   } else if (!redirect_info.replace_key_with.empty()) {
     *new_url += redirect_info.replace_key_with;
   } else {

@@ -1,9 +1,12 @@
+from typing import Optional, TYPE_CHECKING
 import unittest
-from unittest import case
 import time
 import logging
 
 from teuthology.orchestra.run import CommandFailedError
+
+if TYPE_CHECKING:
+    from tasks.mgr.mgr_test_case import MgrCluster
 
 log = logging.getLogger(__name__)
 
@@ -21,9 +24,10 @@ class CephTestCase(unittest.TestCase):
     mounts = None
     fs = None
     recovery_fs = None
+    backup_fs = None
     ceph_cluster = None
     mds_cluster = None
-    mgr_cluster = None
+    mgr_cluster: Optional['MgrCluster'] = None
     ctx = None
 
     mon_manager = None
@@ -43,7 +47,7 @@ class CephTestCase(unittest.TestCase):
             if objectstore != "memstore":
                 # You certainly *could* run this on a real OSD, but you don't want to sit
                 # here for hours waiting for the test to fill up a 1TB drive!
-                raise case.SkipTest("Require `memstore` OSD backend (test " \
+                raise self.skipTest("Require `memstore` OSD backend (test " \
                         "would take too long on full sized OSDs")
 
     def tearDown(self):
@@ -81,6 +85,11 @@ class CephTestCase(unittest.TestCase):
        key = self._fix_key(key)
        self._mon_configs_set.add((section, key))
        self.ceph_cluster.mon_manager.raw_cluster_cmd("config", "set", section, key, str(value))
+
+    def cluster_cmd(self, command: str):
+        assert self.ceph_cluster is not None
+        return self.ceph_cluster.mon_manager.raw_cluster_cmd(*(command.split(" ")))
+
 
     def assert_cluster_log(self, expected_pattern, invert_match=False,
                            timeout=10, watch_channel=None):
@@ -164,8 +173,7 @@ class CephTestCase(unittest.TestCase):
 
         self.wait_until_true(is_clear, timeout)
 
-    def wait_until_equal(self, get_fn, expect_val, timeout, reject_fn=None):
-        period = 5
+    def wait_until_equal(self, get_fn, expect_val, timeout, reject_fn=None, period=5):
         elapsed = 0
         while True:
             val = get_fn()
@@ -179,25 +187,29 @@ class CephTestCase(unittest.TestCase):
                         elapsed, expect_val, val
                     ))
                 else:
-                    log.debug("wait_until_equal: {0} != {1}, waiting...".format(val, expect_val))
+                    log.debug("wait_until_equal: {0} != {1}, waiting (timeout={2})...".format(val, expect_val, timeout))
                 time.sleep(period)
                 elapsed += period
 
         log.debug("wait_until_equal: success")
 
     @classmethod
-    def wait_until_true(cls, condition, timeout, period=5):
+    def wait_until_true(cls, condition, timeout, check_fn=None, period=5):
         elapsed = 0
+        retry_count = 0
         while True:
             if condition():
-                log.debug("wait_until_true: success in {0}s".format(elapsed))
+                log.debug("wait_until_true: success in {0}s and {1} retries".format(elapsed, retry_count))
                 return
             else:
                 if elapsed >= timeout:
-                    raise TestTimeoutError("Timed out after {0}s".format(elapsed))
+                    if check_fn and check_fn() and retry_count < 5:
+                        elapsed = 0
+                        retry_count += 1
+                        log.debug("wait_until_true: making progress, waiting (timeout={0} retry_count={1})...".format(timeout, retry_count))
+                    else:
+                        raise TestTimeoutError("Timed out after {0}s and {1} retries".format(elapsed, retry_count))
                 else:
-                    log.debug("wait_until_true: waiting...")
+                    log.debug("wait_until_true: waiting (timeout={0} retry_count={1})...".format(timeout, retry_count))
                 time.sleep(period)
                 elapsed += period
-
-

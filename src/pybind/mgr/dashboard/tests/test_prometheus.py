@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
 # pylint: disable=protected-access
-from mock import patch
+try:
+    from mock import patch
+except ImportError:
+    from unittest.mock import patch
 
-from . import ControllerTestCase
 from .. import mgr
-from ..controllers.prometheus import Prometheus, PrometheusReceiver, PrometheusNotifications
+from ..controllers.prometheus import Prometheus, PrometheusNotifications, PrometheusReceiver
+from ..tests import ControllerTestCase
 
 
 class PrometheusControllerTest(ControllerTestCase):
@@ -21,45 +24,45 @@ class PrometheusControllerTest(ControllerTestCase):
             'PROMETHEUS_API_HOST': cls.prometheus_host
         }
         mgr.get_module_option.side_effect = settings.get
-        Prometheus._cp_config['tools.authenticate.on'] = False
-        PrometheusNotifications._cp_config['tools.authenticate.on'] = False
         cls.setup_controllers([Prometheus, PrometheusNotifications, PrometheusReceiver])
 
     def test_rules(self):
         with patch('requests.request') as mock_request:
             self._get('/api/prometheus/rules')
             mock_request.assert_called_with('GET', self.prometheus_host_api + '/rules',
-                                            json=None, params={})
+                                            json=None, params={}, verify=True)
 
     def test_list(self):
         with patch('requests.request') as mock_request:
             self._get('/api/prometheus')
             mock_request.assert_called_with('GET', self.alert_host_api + '/alerts',
-                                            json=None, params={})
+                                            json=None, params={}, verify=True)
 
     def test_get_silences(self):
         with patch('requests.request') as mock_request:
             self._get('/api/prometheus/silences')
             mock_request.assert_called_with('GET', self.alert_host_api + '/silences',
-                                            json=None, params={})
+                                            json=None, params={}, verify=True)
 
     def test_add_silence(self):
         with patch('requests.request') as mock_request:
             self._post('/api/prometheus/silence', {'id': 'new-silence'})
             mock_request.assert_called_with('POST', self.alert_host_api + '/silences',
-                                            params=None, json={'id': 'new-silence'})
+                                            params=None, json={'id': 'new-silence'},
+                                            verify=True)
 
     def test_update_silence(self):
         with patch('requests.request') as mock_request:
             self._post('/api/prometheus/silence', {'id': 'update-silence'})
             mock_request.assert_called_with('POST', self.alert_host_api + '/silences',
-                                            params=None, json={'id': 'update-silence'})
+                                            params=None, json={'id': 'update-silence'},
+                                            verify=True)
 
     def test_expire_silence(self):
         with patch('requests.request') as mock_request:
             self._delete('/api/prometheus/silence/0')
             mock_request.assert_called_with('DELETE', self.alert_host_api + '/silence/0',
-                                            json=None, params=None)
+                                            json=None, params=None, verify=True)
 
     def test_silences_empty_delete(self):
         with patch('requests.request') as mock_request:
@@ -125,4 +128,4 @@ class PrometheusControllerTest(ControllerTestCase):
         self._get('/api/prometheus/notifications?from=' + next_to_last['id'])
         forelast = PrometheusReceiver.notifications[1]
         last = PrometheusReceiver.notifications[2]
-        self.assertEqual(self.jsonBody(), [forelast, last])
+        self.assertEqual(self.json_body(), [forelast, last])

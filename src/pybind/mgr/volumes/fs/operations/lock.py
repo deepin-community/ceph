@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 import logging
 from threading import Lock
+from typing import Dict
 
 log = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ class GlobalLock(object):
     _shared_state = {
         'lock' : Lock(),
         'init' : False
-    }
+    } # type: Dict
 
     def __init__(self):
         with self._shared_state['lock']:

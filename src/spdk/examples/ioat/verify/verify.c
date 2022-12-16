@@ -256,13 +256,13 @@ parse_args(int argc, char **argv)
 	while ((op = getopt(argc, argv, "c:ht:q:")) != -1) {
 		switch (op) {
 		case 't':
-			g_user_config.time_in_sec = atoi(optarg);
+			g_user_config.time_in_sec = spdk_strtol(optarg, 10);
 			break;
 		case 'c':
 			g_user_config.core_mask = optarg;
 			break;
 		case 'q':
-			g_user_config.queue_depth = atoi(optarg);
+			g_user_config.queue_depth = spdk_strtol(optarg, 10);
 			break;
 		case 'h':
 			usage(argv[0]);
@@ -272,7 +272,8 @@ parse_args(int argc, char **argv)
 			return 1;
 		}
 	}
-	if (!g_user_config.time_in_sec || !g_user_config.core_mask || !g_user_config.queue_depth) {
+	if (g_user_config.time_in_sec <= 0 || !g_user_config.core_mask ||
+	    g_user_config.queue_depth <= 0) {
 		usage(argv[0]);
 		return 1;
 	}
@@ -327,7 +328,7 @@ work_fn(void *arg)
 	struct thread_entry *t = (struct thread_entry *)arg;
 
 	if (!t->chan) {
-		return 0;
+		return 1;
 	}
 
 	t->lcore_id = spdk_env_get_current_core();
@@ -368,7 +369,7 @@ init_src_buffer(void)
 	g_src = spdk_dma_zmalloc(SRC_BUFFER_SIZE, 512, NULL);
 	if (g_src == NULL) {
 		fprintf(stderr, "Allocate src buffer failed\n");
-		return -1;
+		return 1;
 	}
 
 	for (i = 0; i < SRC_BUFFER_SIZE / 4; i++) {
@@ -503,7 +504,10 @@ main(int argc, char **argv)
 	}
 
 	threads[current_core].chan = get_next_chan();
-	work_fn(&threads[current_core]);
+	if (work_fn(&threads[current_core]) != 0) {
+		rc = 1;
+		goto cleanup;
+	}
 
 	spdk_env_thread_wait_all();
 	rc = dump_result(threads, num_threads);

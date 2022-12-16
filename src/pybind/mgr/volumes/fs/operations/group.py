@@ -6,8 +6,9 @@ from contextlib import contextmanager
 import cephfs
 
 from .snapshot_util import mksnap, rmsnap
+from .pin_util import pin
 from .template import GroupTemplate
-from ..fs_util import listdir, listsnaps, get_ancestor_xattr
+from ..fs_util import listdir, listsnaps, get_ancestor_xattr, create_base_dir
 from ..exception import VolumeException
 
 log = logging.getLogger(__name__)
@@ -61,6 +62,9 @@ class Group(GroupTemplate):
                 return []
             raise
 
+    def pin(self, pin_type, pin_setting):
+        return pin(self.fs, self.path, pin_type, pin_setting)
+
     def create_snapshot(self, snapname):
         snappath = os.path.join(self.path,
                                 self.vol_spec.snapshot_dir_prefix.encode('utf-8'),
@@ -98,7 +102,11 @@ def create_group(fs, vol_spec, groupname, pool, mode, uid, gid):
     """
     group = Group(fs, vol_spec, groupname)
     path = group.path
-    fs.mkdirs(path, mode)
+    vol_spec_base_dir = group.vol_spec.base_dir.encode('utf-8')
+
+    # create vol_spec base directory with default mode(0o755) if it doesn't exist
+    create_base_dir(fs, vol_spec_base_dir, vol_spec.DEFAULT_MODE)
+    fs.mkdir(path, mode)
     try:
         if not pool:
             pool = get_ancestor_xattr(fs, path, "ceph.dir.layout.pool")

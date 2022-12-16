@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2009-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2009-2019 Solarflare Communications Inc.
  */
 
 #ifndef _SYS_SIENA_IMPL_H
@@ -9,7 +9,6 @@
 
 #include "efx.h"
 #include "efx_regs.h"
-#include "efx_mcdi.h"
 #include "siena_flash.h"
 
 #ifdef	__cplusplus
@@ -23,6 +22,20 @@ extern "C" {
 #define	EFX_RXQ_DC_SIZE 3 /* 64 descriptors */
 #endif
 #define	EFX_TXQ_DC_NDESCS(_dcsize)	(8 << (_dcsize))
+#define	EFX_RXQ_DC_NDESCS(_dcsize)	(8 << (_dcsize))
+
+#define	SIENA_EVQ_MAXNEVS	32768
+#define	SIENA_EVQ_MINNEVS	512
+
+#define	SIENA_TXQ_MAXNDESCS	4096
+#define	SIENA_TXQ_MINNDESCS	512
+
+#define	SIENA_RXQ_MAXNDESCS	4096
+#define	SIENA_RXQ_MINNDESCS	512
+
+#define	SIENA_EVQ_DESC_SIZE	(sizeof (efx_qword_t))
+#define	SIENA_RXQ_DESC_SIZE	(sizeof (efx_qword_t))
+#define	SIENA_TXQ_DESC_SIZE	(sizeof (efx_qword_t))
 
 #define	SIENA_NVRAM_CHUNK 0x80
 
@@ -177,6 +190,12 @@ siena_nvram_partn_size(
 	__in			efx_nic_t *enp,
 	__in			uint32_t partn,
 	__out			size_t *sizep);
+
+extern	__checkReturn		efx_rc_t
+siena_nvram_partn_info(
+	__in			efx_nic_t *enp,
+	__in			uint32_t partn,
+	__out			efx_nvram_info_t * enip);
 
 extern	__checkReturn		efx_rc_t
 siena_nvram_partn_rw_start(

@@ -31,6 +31,20 @@ applied to any pools that are created in the future with::
 
   ceph config set global osd_pool_default_pg_autoscale_mode <mode>
 
+You can disable or enable the autoscaler for all pools with
+the ``noautoscale`` flag. By default this flag is set to  be ``off``,
+but you can turn it ``on`` by using the command::
+
+  ceph osd pool set noautoscale
+
+You can turn it ``off`` using the command::
+
+  ceph osd pool unset noautoscale
+
+To ``get`` the value of the flag use the command::
+
+  ceph osd pool get noautoscale
+
 Viewing PG scaling recommendations
 ----------------------------------
 
@@ -41,10 +55,10 @@ the PG count with this command::
 
 Output will be something like::
 
-   POOL    SIZE  TARGET SIZE  RATE  RAW CAPACITY   RATIO  TARGET RATIO  EFFECTIVE RATIO PG_NUM  NEW PG_NUM  AUTOSCALE
-   a     12900M                3.0        82431M  0.4695                                     8         128  warn
-   c         0                 3.0        82431M  0.0000        0.2000           0.9884      1          64  warn
-   b         0        953.6M   3.0        82431M  0.0347                                     8              warn
+   POOL    SIZE  TARGET SIZE  RATE  RAW CAPACITY   RATIO  TARGET RATIO  EFFECTIVE RATIO BIAS PG_NUM  NEW PG_NUM  AUTOSCALE BULK
+   a     12900M                3.0        82431M  0.4695                                          8         128  warn      True
+   c         0                 3.0        82431M  0.0000        0.2000           0.9884  1.0      1          64  warn      True
+   b         0        953.6M   3.0        82431M  0.0347                                          8              warn      False
 
 **SIZE** is the amount of data stored in the pool. **TARGET SIZE**, if
 present, is the amount of data the administrator has specified that
@@ -77,6 +91,10 @@ ratio takes precedence.
 The system uses the larger of the actual ratio and the effective ratio
 for its calculation.
 
+**BIAS** is used as a multiplier to manually adjust a pool's PG based
+on prior information about how much PGs a specific pool is expected
+to have.
+
 **PG_NUM** is the current number of PGs for the pool (or the current
 number of PGs that the pool is working towards, if a ``pg_num``
 change is in progress).  **NEW PG_NUM**, if present, is what the
@@ -84,8 +102,15 @@ system believes the pool's ``pg_num`` should be changed to.  It is
 always a power of 2, and will only be present if the "ideal" value
 varies from the current value by more than a factor of 3.
 
-The final column, **AUTOSCALE**, is the pool ``pg_autoscale_mode``,
+**AUTOSCALE**, is the pool ``pg_autoscale_mode``
 and will be either ``on``, ``off``, or ``warn``.
+
+The final column, **BULK** determines if the pool is ``bulk``
+and will be either ``True`` or ``False``. A ``bulk`` pool
+means that the pool is expected to be large and should start out
+with large amount of PGs for performance purposes. On the other hand,
+pools without the ``bulk`` flag are expected to be smaller e.g.,
+.mgr or meta pools.
 
 
 Automated scaling
@@ -113,6 +138,27 @@ example, a pool that maps to OSDs of class `ssd` and a pool that maps
 to OSDs of class `hdd` will each have optimal PG counts that depend on
 the number of those respective device types.
 
+The autoscaler uses the `bulk` flag to determine which pool
+should start out with a full complement of PGs and only
+scales down when the usage ratio across the pool is not even.
+However, if the pool doesn't have the `bulk` flag, the pool will
+start out with minimal PGs and only when there is more usage in the pool.
+
+The autoscaler identifies any overlapping roots and prevents the pools
+with such roots from scaling because overlapping roots can cause problems
+with the scaling process.
+
+To create pool with `bulk` flag::
+
+  ceph osd pool create <pool-name> --bulk
+
+To set/unset `bulk` flag of existing pool::
+
+  ceph osd pool set <pool-name> bulk <true/false/1/0>
+
+To get `bulk` flag of existing pool::
+
+  ceph osd pool get <pool-name> bulk
 
 .. _specifying_pool_target_size:
 
@@ -167,13 +213,14 @@ parallelism client will see when doing IO, even when a pool is mostly
 empty.  Setting the lower bound prevents Ceph from reducing (or
 recommending you reduce) the PG number below the configured number.
 
-You can set the minimum number of PGs for a pool with::
+You can set the minimum or maximum number of PGs for a pool with::
 
   ceph osd pool set <pool-name> pg_num_min <num>
+  ceph osd pool set <pool-name> pg_num_max <num>
 
-You can also specify the minimum PG count at pool creation time with
-the optional ``--pg-num-min <num>`` argument to the ``ceph osd pool
-create`` command.
+You can also specify the minimum or maximum PG count at pool creation
+time with the optional ``--pg-num-min <num>`` or ``--pg-num-max
+<num>`` arguments to the ``ceph osd pool create`` command.
 
 .. _preselection:
 
@@ -182,27 +229,28 @@ A preselection of pg_num
 
 When creating a new pool with::
 
-        ceph osd pool create {pool-name} pg_num
+        ceph osd pool create {pool-name} [pg_num]
 
-it is mandatory to choose the value of ``pg_num`` because it cannot (currently) be
-calculated automatically. Here are a few values commonly used:
+it is optional to choose the value of ``pg_num``.  If you do not
+specify ``pg_num``, the cluster can (by default) automatically tune it
+for you based on how much data is stored in the pool (see above, :ref:`pg-autoscaler`).
 
-- Less than 5 OSDs set ``pg_num`` to 128
+Alternatively, ``pg_num`` can be explicitly provided.  However,
+whether you specify a ``pg_num`` value or not does not affect whether
+the value is automatically tuned by the cluster after the fact.  To
+enable or disable auto-tuning,::
 
-- Between 5 and 10 OSDs set ``pg_num`` to 512
+  ceph osd pool set {pool-name} pg_autoscale_mode (on|off|warn)
 
-- Between 10 and 50 OSDs set ``pg_num`` to 1024
+The "rule of thumb" for PGs per OSD has traditionally be 100.  With
+the additional of the balancer (which is also enabled by default), a
+value of more like 50 PGs per OSD is probably reasonable.  The
+challenge (which the autoscaler normally does for you), is to:
 
-- If you have more than 50 OSDs, you need to understand the tradeoffs
-  and how to calculate the ``pg_num`` value by yourself
-
-- For calculating ``pg_num`` value by yourself please take help of `pgcalc`_ tool
-
-As the number of OSDs increases, choosing the right value for pg_num
-becomes more important because it has a significant influence on the
-behavior of the cluster as well as the durability of the data when
-something goes wrong (i.e. the probability that a catastrophic event
-leads to data loss).
+- have the PGs per pool proportional to the data in the pool, and
+- end up with 50-100 PGs per OSDs, after the replication or
+  erasuring-coding fan-out of each PG across OSDs is taken into
+  consideration
 
 How are Placement Groups used ?
 ===============================
@@ -434,11 +482,9 @@ If you have more than 50 OSDs, we recommend approximately 50-100
 placement groups per OSD to balance out resource usage, data
 durability and distribution. If you have less than 50 OSDs, choosing
 among the `preselection`_ above is best. For a single pool of objects,
-you can use the following formula to get a baseline::
+you can use the following formula to get a baseline
 
-                (OSDs * 100)
-   Total PGs =  ------------
-                 pool size
+  Total PGs = :math:`\frac{OSDs \times 100}{pool \: size}`
 
 Where **pool size** is either the number of replicas for replicated
 pools or the K+M sum for erasure coded pools (as returned by **ceph
@@ -456,11 +502,9 @@ data across your OSDs. Their use should be limited to incrementally
 stepping from one power of two to another.
 
 As an example, for a cluster with 200 OSDs and a pool size of 3
-replicas, you would estimate your number of PGs as follows::
+replicas, you would estimate your number of PGs as follows
 
-   (200 * 100)
-   ----------- = 6667. Nearest power of 2: 8192
-        3
+  :math:`\frac{200 \times 100}{3} = 6667`. Nearest power of 2: 8192
 
 When using multiple data pools for storing objects, you need to ensure
 that you balance the number of placement groups per pool with the

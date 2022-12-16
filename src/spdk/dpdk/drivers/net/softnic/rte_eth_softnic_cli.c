@@ -9,6 +9,8 @@
 
 #include <rte_common.h>
 #include <rte_cycles.h>
+#include <rte_string_fns.h>
+#include <rte_cryptodev.h>
 
 #include "rte_eth_softnic_internals.h"
 #include "parser.h"
@@ -564,8 +566,7 @@ queue_node_id(uint32_t n_spp __rte_unused,
 	uint32_t tc_id,
 	uint32_t queue_id)
 {
-	return queue_id +
-		tc_id * RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE +
+	return queue_id + tc_id +
 		(pipe_id + subport_id * n_pps) * RTE_SCHED_QUEUES_PER_PIPE;
 }
 
@@ -615,10 +616,20 @@ tmgr_hierarchy_default(struct pmd_internals *softnic,
 		},
 	};
 
+	uint32_t *shared_shaper_id =
+		(uint32_t *)calloc(RTE_SCHED_TRAFFIC_CLASSES_PER_PIPE,
+			sizeof(uint32_t));
+
+	if (shared_shaper_id == NULL)
+		return -1;
+
+	memcpy(shared_shaper_id, params->shared_shaper_id.tc,
+		sizeof(params->shared_shaper_id.tc));
+
 	struct rte_tm_node_params tc_node_params[] = {
 		[0] = {
 			.shaper_profile_id = params->shaper_profile_id.tc[0],
-			.shared_shaper_id = &params->shared_shaper_id.tc[0],
+			.shared_shaper_id = &shared_shaper_id[0],
 			.n_shared_shapers =
 				(&params->shared_shaper_id.tc_valid[0]) ? 1 : 0,
 			.nonleaf = {
@@ -628,7 +639,7 @@ tmgr_hierarchy_default(struct pmd_internals *softnic,
 
 		[1] = {
 			.shaper_profile_id = params->shaper_profile_id.tc[1],
-			.shared_shaper_id = &params->shared_shaper_id.tc[1],
+			.shared_shaper_id = &shared_shaper_id[1],
 			.n_shared_shapers =
 				(&params->shared_shaper_id.tc_valid[1]) ? 1 : 0,
 			.nonleaf = {
@@ -638,7 +649,7 @@ tmgr_hierarchy_default(struct pmd_internals *softnic,
 
 		[2] = {
 			.shaper_profile_id = params->shaper_profile_id.tc[2],
-			.shared_shaper_id = &params->shared_shaper_id.tc[2],
+			.shared_shaper_id = &shared_shaper_id[2],
 			.n_shared_shapers =
 				(&params->shared_shaper_id.tc_valid[2]) ? 1 : 0,
 			.nonleaf = {
@@ -648,9 +659,99 @@ tmgr_hierarchy_default(struct pmd_internals *softnic,
 
 		[3] = {
 			.shaper_profile_id = params->shaper_profile_id.tc[3],
-			.shared_shaper_id = &params->shared_shaper_id.tc[3],
+			.shared_shaper_id = &shared_shaper_id[3],
 			.n_shared_shapers =
 				(&params->shared_shaper_id.tc_valid[3]) ? 1 : 0,
+			.nonleaf = {
+				.n_sp_priorities = 1,
+			},
+		},
+
+		[4] = {
+			.shaper_profile_id = params->shaper_profile_id.tc[4],
+			.shared_shaper_id = &shared_shaper_id[4],
+			.n_shared_shapers =
+				(&params->shared_shaper_id.tc_valid[4]) ? 1 : 0,
+			.nonleaf = {
+				.n_sp_priorities = 1,
+			},
+		},
+
+		[5] = {
+			.shaper_profile_id = params->shaper_profile_id.tc[5],
+			.shared_shaper_id = &shared_shaper_id[5],
+			.n_shared_shapers =
+				(&params->shared_shaper_id.tc_valid[5]) ? 1 : 0,
+			.nonleaf = {
+				.n_sp_priorities = 1,
+			},
+		},
+
+		[6] = {
+			.shaper_profile_id = params->shaper_profile_id.tc[6],
+			.shared_shaper_id = &shared_shaper_id[6],
+			.n_shared_shapers =
+				(&params->shared_shaper_id.tc_valid[6]) ? 1 : 0,
+			.nonleaf = {
+				.n_sp_priorities = 1,
+			},
+		},
+
+		[7] = {
+			.shaper_profile_id = params->shaper_profile_id.tc[7],
+			.shared_shaper_id = &shared_shaper_id[7],
+			.n_shared_shapers =
+				(&params->shared_shaper_id.tc_valid[7]) ? 1 : 0,
+			.nonleaf = {
+				.n_sp_priorities = 1,
+			},
+		},
+
+		[8] = {
+			.shaper_profile_id = params->shaper_profile_id.tc[8],
+			.shared_shaper_id = &shared_shaper_id[8],
+			.n_shared_shapers =
+				(&params->shared_shaper_id.tc_valid[8]) ? 1 : 0,
+			.nonleaf = {
+				.n_sp_priorities = 1,
+			},
+		},
+
+		[9] = {
+			.shaper_profile_id = params->shaper_profile_id.tc[9],
+			.shared_shaper_id = &shared_shaper_id[9],
+			.n_shared_shapers =
+				(&params->shared_shaper_id.tc_valid[9]) ? 1 : 0,
+			.nonleaf = {
+				.n_sp_priorities = 1,
+			},
+		},
+
+		[10] = {
+			.shaper_profile_id = params->shaper_profile_id.tc[10],
+			.shared_shaper_id = &shared_shaper_id[10],
+			.n_shared_shapers =
+				(&params->shared_shaper_id.tc_valid[10]) ? 1 : 0,
+			.nonleaf = {
+				.n_sp_priorities = 1,
+			},
+		},
+
+		[11] = {
+			.shaper_profile_id = params->shaper_profile_id.tc[11],
+			.shared_shaper_id = &shared_shaper_id[11],
+			.n_shared_shapers =
+				(&params->shared_shaper_id.tc_valid[11]) ? 1 : 0,
+			.nonleaf = {
+				.n_sp_priorities = 1,
+			},
+		},
+
+		[12] = {
+			.shaper_profile_id = params->shaper_profile_id.tc[12],
+			.shared_shaper_id = &shared_shaper_id[12],
+			.n_shared_shapers =
+				(&params->shared_shaper_id.tc_valid[12]) ? 1 : 0,
 			.nonleaf = {
 				.n_sp_priorities = 1,
 			},
@@ -728,7 +829,9 @@ tmgr_hierarchy_default(struct pmd_internals *softnic,
 					return -1;
 
 				/* Hierarchy level 4: Queue nodes */
-				for (q = 0; q < RTE_SCHED_QUEUES_PER_TRAFFIC_CLASS; q++) {
+				if (t < RTE_SCHED_TRAFFIC_CLASS_BE) {
+					/* Strict-priority traffic class queues */
+					q = 0;
 					status = rte_tm_node_add(port_id,
 						queue_node_id(n_spp, n_pps, s, p, t, q),
 						tc_node_id(n_spp, n_pps, s, p, t),
@@ -739,7 +842,22 @@ tmgr_hierarchy_default(struct pmd_internals *softnic,
 						&error);
 					if (status)
 						return -1;
-				} /* Queue */
+
+					continue;
+				}
+				/* Best-effort traffic class queues */
+				for (q = 0; q < RTE_SCHED_BE_QUEUES_PER_PIPE; q++) {
+					status = rte_tm_node_add(port_id,
+						queue_node_id(n_spp, n_pps, s, p, t, q),
+						tc_node_id(n_spp, n_pps, s, p, t),
+						0,
+						params->weight.queue[q],
+						RTE_TM_NODE_LEVEL_ID_ANY,
+						&queue_node_params,
+						&error);
+					if (status)
+						return -1;
+				}
 			} /* TC */
 		} /* Pipe */
 	} /* Subport */
@@ -760,13 +878,31 @@ tmgr_hierarchy_default(struct pmd_internals *softnic,
  *   tc1 <profile_id>
  *   tc2 <profile_id>
  *   tc3 <profile_id>
+ *   tc4 <profile_id>
+ *   tc5 <profile_id>
+ *   tc6 <profile_id>
+ *   tc7 <profile_id>
+ *   tc8 <profile_id>
+ *   tc9 <profile_id>
+ *   tc10 <profile_id>
+ *   tc11 <profile_id>
+ *   tc12 <profile_id>
  *  shared shaper
  *   tc0 <id | none>
  *   tc1 <id | none>
  *   tc2 <id | none>
  *   tc3 <id | none>
+ *   tc4 <id | none>
+ *   tc5 <id | none>
+ *   tc6 <id | none>
+ *   tc7 <id | none>
+ *   tc8 <id | none>
+ *   tc9 <id | none>
+ *   tc10 <id | none>
+ *   tc11 <id | none>
+ *   tc12 <id | none>
  *  weight
- *   queue  <q0> ... <q15>
+ *   queue  <q12> ... <q15>
  */
 static void
 cmd_tmgr_hierarchy_default(struct pmd_internals *softnic,
@@ -776,11 +912,11 @@ cmd_tmgr_hierarchy_default(struct pmd_internals *softnic,
 	size_t out_size)
 {
 	struct tmgr_hierarchy_default_params p;
-	int i, status;
+	int i, j, status;
 
 	memset(&p, 0, sizeof(p));
 
-	if (n_tokens != 50) {
+	if (n_tokens != 74) {
 		snprintf(out, out_size, MSG_ARG_MISMATCH, tokens[0]);
 		return;
 	}
@@ -892,27 +1028,118 @@ cmd_tmgr_hierarchy_default(struct pmd_internals *softnic,
 		return;
 	}
 
+	if (strcmp(tokens[22], "tc4") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "tc4");
+		return;
+	}
+
+	if (softnic_parser_read_uint32(&p.shaper_profile_id.tc[4], tokens[23]) != 0) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "tc4 profile id");
+		return;
+	}
+
+	if (strcmp(tokens[24], "tc5") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "tc5");
+		return;
+	}
+
+	if (softnic_parser_read_uint32(&p.shaper_profile_id.tc[5], tokens[25]) != 0) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "tc5 profile id");
+		return;
+	}
+
+	if (strcmp(tokens[26], "tc6") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "tc6");
+		return;
+	}
+
+	if (softnic_parser_read_uint32(&p.shaper_profile_id.tc[6], tokens[27]) != 0) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "tc6 profile id");
+		return;
+	}
+
+	if (strcmp(tokens[28], "tc7") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "tc7");
+		return;
+	}
+
+	if (softnic_parser_read_uint32(&p.shaper_profile_id.tc[7], tokens[29]) != 0) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "tc7 profile id");
+		return;
+	}
+
+	if (strcmp(tokens[30], "tc8") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "tc8");
+		return;
+	}
+
+	if (softnic_parser_read_uint32(&p.shaper_profile_id.tc[8], tokens[31]) != 0) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "tc8 profile id");
+		return;
+	}
+
+	if (strcmp(tokens[32], "tc9") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "tc9");
+		return;
+	}
+
+	if (softnic_parser_read_uint32(&p.shaper_profile_id.tc[9], tokens[33]) != 0) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "tc9 profile id");
+		return;
+	}
+
+	if (strcmp(tokens[34], "tc10") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "tc10");
+		return;
+	}
+
+	if (softnic_parser_read_uint32(&p.shaper_profile_id.tc[10], tokens[35]) != 0) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "tc10 profile id");
+		return;
+	}
+
+	if (strcmp(tokens[36], "tc11") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "tc11");
+		return;
+	}
+
+	if (softnic_parser_read_uint32(&p.shaper_profile_id.tc[11], tokens[37]) != 0) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "tc11 profile id");
+		return;
+	}
+
+	if (strcmp(tokens[38], "tc12") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "tc12");
+		return;
+	}
+
+	if (softnic_parser_read_uint32(&p.shaper_profile_id.tc[12], tokens[39]) != 0) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "tc12 profile id");
+		return;
+	}
+
 	/* Shared shaper */
 
-	if (strcmp(tokens[22], "shared") != 0) {
+	if (strcmp(tokens[40], "shared") != 0) {
 		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "shared");
 		return;
 	}
 
-	if (strcmp(tokens[23], "shaper") != 0) {
+	if (strcmp(tokens[41], "shaper") != 0) {
 		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "shaper");
 		return;
 	}
 
-	if (strcmp(tokens[24], "tc0") != 0) {
+	if (strcmp(tokens[42], "tc0") != 0) {
 		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "tc0");
 		return;
 	}
 
-	if (strcmp(tokens[25], "none") == 0)
+	if (strcmp(tokens[43], "none") == 0)
 		p.shared_shaper_id.tc_valid[0] = 0;
 	else {
-		if (softnic_parser_read_uint32(&p.shared_shaper_id.tc[0], tokens[25]) != 0) {
+		if (softnic_parser_read_uint32(&p.shared_shaper_id.tc[0],
+			tokens[43]) != 0) {
 			snprintf(out, out_size, MSG_ARG_INVALID, "shared shaper tc0");
 			return;
 		}
@@ -920,15 +1147,16 @@ cmd_tmgr_hierarchy_default(struct pmd_internals *softnic,
 		p.shared_shaper_id.tc_valid[0] = 1;
 	}
 
-	if (strcmp(tokens[26], "tc1") != 0) {
+	if (strcmp(tokens[44], "tc1") != 0) {
 		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "tc1");
 		return;
 	}
 
-	if (strcmp(tokens[27], "none") == 0)
+	if (strcmp(tokens[45], "none") == 0)
 		p.shared_shaper_id.tc_valid[1] = 0;
 	else {
-		if (softnic_parser_read_uint32(&p.shared_shaper_id.tc[1], tokens[27]) != 0) {
+		if (softnic_parser_read_uint32(&p.shared_shaper_id.tc[1],
+			tokens[45]) != 0) {
 			snprintf(out, out_size, MSG_ARG_INVALID, "shared shaper tc1");
 			return;
 		}
@@ -936,15 +1164,16 @@ cmd_tmgr_hierarchy_default(struct pmd_internals *softnic,
 		p.shared_shaper_id.tc_valid[1] = 1;
 	}
 
-	if (strcmp(tokens[28], "tc2") != 0) {
+	if (strcmp(tokens[46], "tc2") != 0) {
 		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "tc2");
 		return;
 	}
 
-	if (strcmp(tokens[29], "none") == 0)
+	if (strcmp(tokens[47], "none") == 0)
 		p.shared_shaper_id.tc_valid[2] = 0;
 	else {
-		if (softnic_parser_read_uint32(&p.shared_shaper_id.tc[2], tokens[29]) != 0) {
+		if (softnic_parser_read_uint32(&p.shared_shaper_id.tc[2],
+			tokens[47]) != 0) {
 			snprintf(out, out_size, MSG_ARG_INVALID, "shared shaper tc2");
 			return;
 		}
@@ -952,15 +1181,16 @@ cmd_tmgr_hierarchy_default(struct pmd_internals *softnic,
 		p.shared_shaper_id.tc_valid[2] = 1;
 	}
 
-	if (strcmp(tokens[30], "tc3") != 0) {
+	if (strcmp(tokens[48], "tc3") != 0) {
 		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "tc3");
 		return;
 	}
 
-	if (strcmp(tokens[31], "none") == 0)
+	if (strcmp(tokens[49], "none") == 0)
 		p.shared_shaper_id.tc_valid[3] = 0;
 	else {
-		if (softnic_parser_read_uint32(&p.shared_shaper_id.tc[3], tokens[31]) != 0) {
+		if (softnic_parser_read_uint32(&p.shared_shaper_id.tc[3],
+			tokens[49]) != 0) {
 			snprintf(out, out_size, MSG_ARG_INVALID, "shared shaper tc3");
 			return;
 		}
@@ -968,22 +1198,181 @@ cmd_tmgr_hierarchy_default(struct pmd_internals *softnic,
 		p.shared_shaper_id.tc_valid[3] = 1;
 	}
 
+	if (strcmp(tokens[50], "tc4") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "tc4");
+		return;
+	}
+
+	if (strcmp(tokens[51], "none") == 0) {
+		p.shared_shaper_id.tc_valid[4] = 0;
+	} else {
+		if (softnic_parser_read_uint32(&p.shared_shaper_id.tc[4],
+			tokens[51]) != 0) {
+			snprintf(out, out_size, MSG_ARG_INVALID, "shared shaper tc4");
+			return;
+		}
+
+		p.shared_shaper_id.tc_valid[4] = 1;
+	}
+
+	if (strcmp(tokens[52], "tc5") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "tc5");
+		return;
+	}
+
+	if (strcmp(tokens[53], "none") == 0) {
+		p.shared_shaper_id.tc_valid[5] = 0;
+	} else {
+		if (softnic_parser_read_uint32(&p.shared_shaper_id.tc[5],
+			tokens[53]) != 0) {
+			snprintf(out, out_size, MSG_ARG_INVALID, "shared shaper tc5");
+			return;
+		}
+
+		p.shared_shaper_id.tc_valid[5] = 1;
+	}
+
+	if (strcmp(tokens[54], "tc6") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "tc6");
+		return;
+	}
+
+	if (strcmp(tokens[55], "none") == 0) {
+		p.shared_shaper_id.tc_valid[6] = 0;
+	} else {
+		if (softnic_parser_read_uint32(&p.shared_shaper_id.tc[6],
+			tokens[55]) != 0) {
+			snprintf(out, out_size, MSG_ARG_INVALID, "shared shaper tc6");
+			return;
+		}
+
+		p.shared_shaper_id.tc_valid[6] = 1;
+	}
+
+	if (strcmp(tokens[56], "tc7") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "tc7");
+		return;
+	}
+
+	if (strcmp(tokens[57], "none") == 0) {
+		p.shared_shaper_id.tc_valid[7] = 0;
+	} else {
+		if (softnic_parser_read_uint32(&p.shared_shaper_id.tc[7],
+			tokens[57]) != 0) {
+			snprintf(out, out_size, MSG_ARG_INVALID, "shared shaper tc7");
+			return;
+		}
+
+		p.shared_shaper_id.tc_valid[7] = 1;
+	}
+
+	if (strcmp(tokens[58], "tc8") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "tc8");
+		return;
+	}
+
+	if (strcmp(tokens[59], "none") == 0) {
+		p.shared_shaper_id.tc_valid[8] = 0;
+	} else {
+		if (softnic_parser_read_uint32(&p.shared_shaper_id.tc[8],
+			tokens[59]) != 0) {
+			snprintf(out, out_size, MSG_ARG_INVALID, "shared shaper tc8");
+			return;
+		}
+
+		p.shared_shaper_id.tc_valid[8] = 1;
+	}
+
+	if (strcmp(tokens[60], "tc9") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "tc9");
+		return;
+	}
+
+	if (strcmp(tokens[61], "none") == 0) {
+		p.shared_shaper_id.tc_valid[9] = 0;
+	} else {
+		if (softnic_parser_read_uint32(&p.shared_shaper_id.tc[9],
+			tokens[61]) != 0) {
+			snprintf(out, out_size, MSG_ARG_INVALID, "shared shaper tc9");
+			return;
+		}
+
+		p.shared_shaper_id.tc_valid[9] = 1;
+	}
+
+	if (strcmp(tokens[62], "tc10") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "tc10");
+		return;
+	}
+
+	if (strcmp(tokens[63], "none") == 0) {
+		p.shared_shaper_id.tc_valid[10] = 0;
+	} else {
+		if (softnic_parser_read_uint32(&p.shared_shaper_id.tc[10],
+			tokens[63]) != 0) {
+			snprintf(out, out_size, MSG_ARG_INVALID, "shared shaper tc10");
+			return;
+		}
+
+		p.shared_shaper_id.tc_valid[10] = 1;
+	}
+
+	if (strcmp(tokens[64], "tc11") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "tc11");
+		return;
+	}
+
+	if (strcmp(tokens[65], "none") == 0) {
+		p.shared_shaper_id.tc_valid[11] = 0;
+	} else {
+		if (softnic_parser_read_uint32(&p.shared_shaper_id.tc[11],
+			tokens[65]) != 0) {
+			snprintf(out, out_size, MSG_ARG_INVALID, "shared shaper tc11");
+			return;
+		}
+
+		p.shared_shaper_id.tc_valid[11] = 1;
+	}
+
+	if (strcmp(tokens[66], "tc12") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "tc12");
+		return;
+	}
+
+	if (strcmp(tokens[67], "none") == 0) {
+		p.shared_shaper_id.tc_valid[12] = 0;
+	} else {
+		if (softnic_parser_read_uint32(&p.shared_shaper_id.tc[12],
+			tokens[67]) != 0) {
+			snprintf(out, out_size, MSG_ARG_INVALID, "shared shaper tc12");
+			return;
+		}
+
+		p.shared_shaper_id.tc_valid[12] = 1;
+	}
+
 	/* Weight */
 
-	if (strcmp(tokens[32], "weight") != 0) {
+	if (strcmp(tokens[68], "weight") != 0) {
 		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "weight");
 		return;
 	}
 
-	if (strcmp(tokens[33], "queue") != 0) {
+	if (strcmp(tokens[69], "queue") != 0) {
 		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "queue");
 		return;
 	}
 
-	for (i = 0; i < 16; i++) {
-		if (softnic_parser_read_uint32(&p.weight.queue[i], tokens[34 + i]) != 0) {
-			snprintf(out, out_size, MSG_ARG_INVALID, "weight queue");
-			return;
+	for (i = 0, j = 0; i < 16; i++) {
+		if (i < RTE_SCHED_TRAFFIC_CLASS_BE) {
+			p.weight.queue[i] = 1;
+		} else {
+			if (softnic_parser_read_uint32(&p.weight.queue[i],
+				tokens[70 + j]) != 0) {
+				snprintf(out, out_size, MSG_ARG_INVALID, "weight queue");
+				return;
+			}
+			j++;
 		}
 	}
 
@@ -1083,6 +1472,80 @@ cmd_tap(struct pmd_internals *softnic,
 
 	tap = softnic_tap_create(softnic, name);
 	if (tap == NULL) {
+		snprintf(out, out_size, MSG_CMD_FAIL, tokens[0]);
+		return;
+	}
+}
+
+/**
+ * cryptodev <tap_name> dev <device_name> | dev_id <device_id>
+ * queue <n_queues> <queue_size> max_sessions <n_sessions>
+ **/
+
+static void
+cmd_cryptodev(struct pmd_internals *softnic,
+		char **tokens,
+		uint32_t n_tokens,
+		char *out,
+		size_t out_size)
+{
+	struct softnic_cryptodev_params params;
+	char *name;
+
+	memset(&params, 0, sizeof(params));
+	if (n_tokens != 9) {
+		snprintf(out, out_size, MSG_ARG_MISMATCH, tokens[0]);
+		return;
+	}
+
+	name = tokens[1];
+
+	if (strcmp(tokens[2], "dev") == 0)
+		params.dev_name = tokens[3];
+	else if (strcmp(tokens[2], "dev_id") == 0) {
+		if (softnic_parser_read_uint32(&params.dev_id, tokens[3]) < 0) {
+			snprintf(out, out_size,	MSG_ARG_INVALID,
+				"dev_id");
+			return;
+		}
+	} else {
+		snprintf(out, out_size,	MSG_ARG_INVALID,
+			"cryptodev");
+		return;
+	}
+
+	if (strcmp(tokens[4], "queue")) {
+		snprintf(out, out_size,	MSG_ARG_NOT_FOUND,
+			"4");
+		return;
+	}
+
+	if (softnic_parser_read_uint32(&params.n_queues, tokens[5]) < 0) {
+		snprintf(out, out_size,	MSG_ARG_INVALID,
+			"q");
+		return;
+	}
+
+	if (softnic_parser_read_uint32(&params.queue_size, tokens[6]) < 0) {
+		snprintf(out, out_size,	MSG_ARG_INVALID,
+			"queue_size");
+		return;
+	}
+
+	if (strcmp(tokens[7], "max_sessions")) {
+		snprintf(out, out_size,	MSG_ARG_NOT_FOUND,
+			"4");
+		return;
+	}
+
+	if (softnic_parser_read_uint32(&params.session_pool_size, tokens[8])
+			< 0) {
+		snprintf(out, out_size,	MSG_ARG_INVALID,
+			"q");
+		return;
+	}
+
+	if (softnic_cryptodev_create(softnic, name, &params) == NULL) {
 		snprintf(out, out_size, MSG_CMD_FAIL, tokens[0]);
 		return;
 	}
@@ -1272,13 +1735,17 @@ cmd_port_in_action_profile(struct pmd_internals *softnic,
  *      tc <n_tc>
  *      stats none | pkts | bytes | both]
  *  [tm spp <n_subports_per_port> pps <n_pipes_per_subport>]
- *  [encap ether | vlan | qinq | mpls | pppoe]
+ *  [encap ether | vlan | qinq | mpls | pppoe | qinq_pppoe |
+ *      vxlan offset <ether_offset> ipv4 | ipv6 vlan on | off]
  *  [nat src | dst
  *      proto udp | tcp]
  *  [ttl drop | fwd
  *      stats none | pkts]
  *  [stats pkts | bytes | both]
  *  [time]
+ *  [tag]
+ *  [decap]
+ *
  */
 static void
 cmd_table_action_profile(struct pmd_internals *softnic,
@@ -1478,6 +1945,8 @@ cmd_table_action_profile(struct pmd_internals *softnic,
 
 	if (t0 < n_tokens &&
 		(strcmp(tokens[t0], "encap") == 0)) {
+		uint32_t n_extra_tokens = 0;
+
 		if (n_tokens < t0 + 2) {
 			snprintf(out, out_size, MSG_ARG_MISMATCH,
 				"action profile encap");
@@ -1494,13 +1963,65 @@ cmd_table_action_profile(struct pmd_internals *softnic,
 			p.encap.encap_mask = 1LLU << RTE_TABLE_ACTION_ENCAP_MPLS;
 		} else if (strcmp(tokens[t0 + 1], "pppoe") == 0) {
 			p.encap.encap_mask = 1LLU << RTE_TABLE_ACTION_ENCAP_PPPOE;
+		} else if (strcmp(tokens[t0 + 1], "vxlan") == 0) {
+			if (n_tokens < t0 + 2 + 5) {
+				snprintf(out, out_size, MSG_ARG_MISMATCH,
+					"action profile encap vxlan");
+				return;
+			}
+
+			if (strcmp(tokens[t0 + 2], "offset") != 0) {
+				snprintf(out, out_size, MSG_ARG_NOT_FOUND,
+					"vxlan: offset");
+				return;
+			}
+
+			if (softnic_parser_read_uint32(&p.encap.vxlan.data_offset,
+				tokens[t0 + 2 + 1]) != 0) {
+				snprintf(out, out_size, MSG_ARG_INVALID,
+					"vxlan: ether_offset");
+				return;
+			}
+
+			if (strcmp(tokens[t0 + 2 + 2], "ipv4") == 0)
+				p.encap.vxlan.ip_version = 1;
+			else if (strcmp(tokens[t0 + 2 + 2], "ipv6") == 0)
+				p.encap.vxlan.ip_version = 0;
+			else {
+				snprintf(out, out_size, MSG_ARG_INVALID,
+					"vxlan: ipv4 or ipv6");
+				return;
+			}
+
+			if (strcmp(tokens[t0 + 2 + 3], "vlan") != 0) {
+				snprintf(out, out_size, MSG_ARG_NOT_FOUND,
+					"vxlan: vlan");
+				return;
+			}
+
+			if (strcmp(tokens[t0 + 2 + 4], "on") == 0)
+				p.encap.vxlan.vlan = 1;
+			else if (strcmp(tokens[t0 + 2 + 4], "off") == 0)
+				p.encap.vxlan.vlan = 0;
+			else {
+				snprintf(out, out_size, MSG_ARG_INVALID,
+					"vxlan: on or off");
+				return;
+			}
+
+			p.encap.encap_mask = 1LLU << RTE_TABLE_ACTION_ENCAP_VXLAN;
+			n_extra_tokens = 5;
+
+		} else if (strcmp(tokens[t0 + 1], "qinq_pppoe") == 0) {
+			p.encap.encap_mask =
+				1LLU << RTE_TABLE_ACTION_ENCAP_QINQ_PPPOE;
 		} else {
 			snprintf(out, out_size, MSG_ARG_MISMATCH, "encap");
 			return;
 		}
 
 		p.action_mask |= 1LLU << RTE_TABLE_ACTION_ENCAP;
-		t0 += 2;
+		t0 += 2 + n_extra_tokens;
 	} /* encap */
 
 	if (t0 < n_tokens &&
@@ -1610,6 +2131,53 @@ cmd_table_action_profile(struct pmd_internals *softnic,
 		t0 += 1;
 	} /* time */
 
+	if (t0 < n_tokens &&
+		(strcmp(tokens[t0], "tag") == 0)) {
+		p.action_mask |= 1LLU << RTE_TABLE_ACTION_TAG;
+		t0 += 1;
+	} /* tag */
+
+	if (t0 < n_tokens &&
+		(strcmp(tokens[t0], "decap") == 0)) {
+		p.action_mask |= 1LLU << RTE_TABLE_ACTION_DECAP;
+		t0 += 1;
+	} /* decap */
+
+	if (t0 < n_tokens && (strcmp(tokens[t0], "sym_crypto") == 0)) {
+		struct softnic_cryptodev *cryptodev;
+
+		if (n_tokens < t0 + 5 ||
+				strcmp(tokens[t0 + 1], "dev") ||
+				strcmp(tokens[t0 + 3], "offset")) {
+			snprintf(out, out_size, MSG_ARG_MISMATCH,
+				"table action profile sym_crypto");
+			return;
+		}
+
+		cryptodev = softnic_cryptodev_find(softnic, tokens[t0 + 2]);
+		if (cryptodev == NULL) {
+			snprintf(out, out_size, MSG_ARG_INVALID,
+				"table action profile sym_crypto");
+			return;
+		}
+
+		p.sym_crypto.cryptodev_id = cryptodev->dev_id;
+
+		if (softnic_parser_read_uint32(&p.sym_crypto.op_offset,
+				tokens[t0 + 4]) != 0) {
+			snprintf(out, out_size, MSG_ARG_INVALID,
+					"table action profile sym_crypto");
+			return;
+		}
+
+		p.sym_crypto.mp_create = cryptodev->mp_create;
+		p.sym_crypto.mp_init = cryptodev->mp_init;
+
+		p.action_mask |= 1LLU << RTE_TABLE_ACTION_SYM_CRYPTO;
+
+		t0 += 5;
+	} /* sym_crypto */
+
 	if (t0 < n_tokens) {
 		snprintf(out, out_size, MSG_ARG_MISMATCH, tokens[0]);
 		return;
@@ -1682,6 +2250,7 @@ cmd_pipeline(struct pmd_internals *softnic,
  *  | tmgr <tmgr_name>
  *  | tap <tap_name> mempool <mempool_name> mtu <mtu>
  *  | source mempool <mempool_name> file <file_name> bpp <n_bytes_per_pkt>
+ *  | cryptodev <cryptodev_name> rxq <queue_id>
  *  [action <port_in_action_profile_name>]
  *  [disabled]
  */
@@ -1696,6 +2265,8 @@ cmd_pipeline_port_in(struct pmd_internals *softnic,
 	char *pipeline_name;
 	uint32_t t0;
 	int enabled, status;
+
+	memset(&p, 0, sizeof(p));
 
 	if (n_tokens < 7) {
 		snprintf(out, out_size, MSG_ARG_MISMATCH, tokens[0]);
@@ -1735,7 +2306,7 @@ cmd_pipeline_port_in(struct pmd_internals *softnic,
 
 		p.type = PORT_IN_RXQ;
 
-		p.dev_name = tokens[t0 + 1];
+		strlcpy(p.dev_name, tokens[t0 + 1], sizeof(p.dev_name));
 
 		if (strcmp(tokens[t0 + 2], "rxq") != 0) {
 			snprintf(out, out_size, MSG_ARG_NOT_FOUND, "rxq");
@@ -1758,7 +2329,7 @@ cmd_pipeline_port_in(struct pmd_internals *softnic,
 
 		p.type = PORT_IN_SWQ;
 
-		p.dev_name = tokens[t0 + 1];
+		strlcpy(p.dev_name, tokens[t0 + 1], sizeof(p.dev_name));
 
 		t0 += 2;
 	} else if (strcmp(tokens[t0], "tmgr") == 0) {
@@ -1770,7 +2341,7 @@ cmd_pipeline_port_in(struct pmd_internals *softnic,
 
 		p.type = PORT_IN_TMGR;
 
-		p.dev_name = tokens[t0 + 1];
+		strlcpy(p.dev_name, tokens[t0 + 1], sizeof(p.dev_name));
 
 		t0 += 2;
 	} else if (strcmp(tokens[t0], "tap") == 0) {
@@ -1782,7 +2353,7 @@ cmd_pipeline_port_in(struct pmd_internals *softnic,
 
 		p.type = PORT_IN_TAP;
 
-		p.dev_name = tokens[t0 + 1];
+		strlcpy(p.dev_name, tokens[t0 + 1], sizeof(p.dev_name));
 
 		if (strcmp(tokens[t0 + 2], "mempool") != 0) {
 			snprintf(out, out_size, MSG_ARG_NOT_FOUND,
@@ -1814,8 +2385,6 @@ cmd_pipeline_port_in(struct pmd_internals *softnic,
 
 		p.type = PORT_IN_SOURCE;
 
-		p.dev_name = NULL;
-
 		if (strcmp(tokens[t0 + 1], "mempool") != 0) {
 			snprintf(out, out_size, MSG_ARG_NOT_FOUND,
 				"mempool");
@@ -1846,12 +2415,32 @@ cmd_pipeline_port_in(struct pmd_internals *softnic,
 		}
 
 		t0 += 7;
+	} else if (strcmp(tokens[t0], "cryptodev") == 0) {
+		if (n_tokens < t0 + 3) {
+			snprintf(out, out_size, MSG_ARG_MISMATCH,
+				"pipeline port in cryptodev");
+			return;
+		}
+
+		p.type = PORT_IN_CRYPTODEV;
+
+		strlcpy(p.dev_name, tokens[t0 + 1], sizeof(p.dev_name));
+		if (softnic_parser_read_uint16(&p.rxq.queue_id,
+				tokens[t0 + 3]) != 0) {
+			snprintf(out, out_size, MSG_ARG_INVALID,
+				"rxq");
+			return;
+		}
+
+		p.cryptodev.arg_callback = NULL;
+		p.cryptodev.f_callback = NULL;
+
+		t0 += 4;
 	} else {
 		snprintf(out, out_size, MSG_ARG_INVALID, tokens[0]);
 		return;
 	}
 
-	p.action_profile_name = NULL;
 	if (n_tokens > t0 &&
 		(strcmp(tokens[t0], "action") == 0)) {
 		if (n_tokens < t0 + 2) {
@@ -1859,7 +2448,8 @@ cmd_pipeline_port_in(struct pmd_internals *softnic,
 			return;
 		}
 
-		p.action_profile_name = tokens[t0 + 1];
+		strlcpy(p.action_profile_name, tokens[t0 + 1],
+			sizeof(p.action_profile_name));
 
 		t0 += 2;
 	}
@@ -1895,6 +2485,7 @@ cmd_pipeline_port_in(struct pmd_internals *softnic,
  *  | tmgr <tmgr_name>
  *  | tap <tap_name>
  *  | sink [file <file_name> pkts <max_n_pkts>]
+ *  | cryptodev <cryptodev_name> txq <txq_id> offset <crypto_op_offset>
  */
 static void
 cmd_pipeline_port_out(struct pmd_internals *softnic,
@@ -1945,7 +2536,7 @@ cmd_pipeline_port_out(struct pmd_internals *softnic,
 
 		p.type = PORT_OUT_TXQ;
 
-		p.dev_name = tokens[7];
+		strlcpy(p.dev_name, tokens[7], sizeof(p.dev_name));
 
 		if (strcmp(tokens[8], "txq") != 0) {
 			snprintf(out, out_size, MSG_ARG_NOT_FOUND, "txq");
@@ -1966,7 +2557,7 @@ cmd_pipeline_port_out(struct pmd_internals *softnic,
 
 		p.type = PORT_OUT_SWQ;
 
-		p.dev_name = tokens[7];
+		strlcpy(p.dev_name, tokens[7], sizeof(p.dev_name));
 	} else if (strcmp(tokens[6], "tmgr") == 0) {
 		if (n_tokens != 8) {
 			snprintf(out, out_size, MSG_ARG_MISMATCH,
@@ -1976,7 +2567,7 @@ cmd_pipeline_port_out(struct pmd_internals *softnic,
 
 		p.type = PORT_OUT_TMGR;
 
-		p.dev_name = tokens[7];
+		strlcpy(p.dev_name, tokens[7], sizeof(p.dev_name));
 	} else if (strcmp(tokens[6], "tap") == 0) {
 		if (n_tokens != 8) {
 			snprintf(out, out_size, MSG_ARG_MISMATCH,
@@ -1986,7 +2577,7 @@ cmd_pipeline_port_out(struct pmd_internals *softnic,
 
 		p.type = PORT_OUT_TAP;
 
-		p.dev_name = tokens[7];
+		strlcpy(p.dev_name, tokens[7], sizeof(p.dev_name));
 	} else if (strcmp(tokens[6], "sink") == 0) {
 		if ((n_tokens != 7) && (n_tokens != 11)) {
 			snprintf(out, out_size, MSG_ARG_MISMATCH,
@@ -1995,8 +2586,6 @@ cmd_pipeline_port_out(struct pmd_internals *softnic,
 		}
 
 		p.type = PORT_OUT_SINK;
-
-		p.dev_name = NULL;
 
 		if (n_tokens == 7) {
 			p.sink.file_name = NULL;
@@ -2020,6 +2609,40 @@ cmd_pipeline_port_out(struct pmd_internals *softnic,
 				snprintf(out, out_size, MSG_ARG_INVALID, "max_n_pkts");
 				return;
 			}
+		}
+	} else if (strcmp(tokens[6], "cryptodev") == 0) {
+		if (n_tokens != 12) {
+			snprintf(out, out_size, MSG_ARG_MISMATCH,
+				"pipeline port out cryptodev");
+			return;
+		}
+
+		p.type = PORT_OUT_CRYPTODEV;
+
+		strlcpy(p.dev_name, tokens[7], sizeof(p.dev_name));
+
+		if (strcmp(tokens[8], "txq")) {
+			snprintf(out, out_size, MSG_ARG_MISMATCH,
+				"pipeline port out cryptodev");
+			return;
+		}
+
+		if (softnic_parser_read_uint16(&p.cryptodev.queue_id, tokens[9])
+				!= 0) {
+			snprintf(out, out_size, MSG_ARG_INVALID, "queue_id");
+			return;
+		}
+
+		if (strcmp(tokens[10], "offset")) {
+			snprintf(out, out_size, MSG_ARG_MISMATCH,
+				"pipeline port out cryptodev");
+			return;
+		}
+
+		if (softnic_parser_read_uint32(&p.cryptodev.op_offset,
+				tokens[11]) != 0) {
+			snprintf(out, out_size, MSG_ARG_INVALID, "queue_id");
+			return;
 		}
 	} else {
 		snprintf(out, out_size, MSG_ARG_INVALID, tokens[0]);
@@ -2064,11 +2687,12 @@ cmd_pipeline_table(struct pmd_internals *softnic,
 	char *out,
 	size_t out_size)
 {
-	uint8_t key_mask[TABLE_RULE_MATCH_SIZE_MAX];
 	struct softnic_table_params p;
 	char *pipeline_name;
 	uint32_t t0;
 	int status;
+
+	memset(&p, 0, sizeof(p));
 
 	if (n_tokens < 5) {
 		snprintf(out, out_size, MSG_ARG_MISMATCH, tokens[0]);
@@ -2203,12 +2827,11 @@ cmd_pipeline_table(struct pmd_internals *softnic,
 		}
 
 		if ((softnic_parse_hex_string(tokens[t0 + 5],
-			key_mask, &key_mask_size) != 0) ||
+			p.match.hash.key_mask, &key_mask_size) != 0) ||
 			key_mask_size != p.match.hash.key_size) {
 			snprintf(out, out_size, MSG_ARG_INVALID, "key_mask");
 			return;
 		}
-		p.match.hash.key_mask = key_mask;
 
 		if (strcmp(tokens[t0 + 6], "offset") != 0) {
 			snprintf(out, out_size, MSG_ARG_NOT_FOUND, "offset");
@@ -2295,7 +2918,6 @@ cmd_pipeline_table(struct pmd_internals *softnic,
 		return;
 	}
 
-	p.action_profile_name = NULL;
 	if (n_tokens > t0 &&
 		(strcmp(tokens[t0], "action") == 0)) {
 		if (n_tokens < t0 + 2) {
@@ -2303,7 +2925,8 @@ cmd_pipeline_table(struct pmd_internals *softnic,
 			return;
 		}
 
-		p.action_profile_name = tokens[t0 + 1];
+		strlcpy(p.action_profile_name, tokens[t0 + 1],
+			sizeof(p.action_profile_name));
 
 		t0 += 2;
 	}
@@ -2735,7 +3358,7 @@ struct pkt_key_qinq {
 	uint16_t svlan;
 	uint16_t ethertype_cvlan;
 	uint16_t cvlan;
-} __attribute__((__packed__));
+} __rte_packed;
 
 struct pkt_key_ipv4_5tuple {
 	uint8_t time_to_live;
@@ -2745,7 +3368,7 @@ struct pkt_key_ipv4_5tuple {
 	uint32_t da;
 	uint16_t sp;
 	uint16_t dp;
-} __attribute__((__packed__));
+} __rte_packed;
 
 struct pkt_key_ipv6_5tuple {
 	uint16_t payload_length;
@@ -2755,15 +3378,15 @@ struct pkt_key_ipv6_5tuple {
 	uint8_t da[16];
 	uint16_t sp;
 	uint16_t dp;
-} __attribute__((__packed__));
+} __rte_packed;
 
 struct pkt_key_ipv4_addr {
 	uint32_t addr;
-} __attribute__((__packed__));
+} __rte_packed;
 
 struct pkt_key_ipv6_addr {
 	uint8_t addr[16];
-} __attribute__((__packed__));
+} __rte_packed;
 
 static uint32_t
 parse_match(char **tokens,
@@ -3169,6 +3792,7 @@ parse_match(char **tokens,
  *       ether <da> <sa>
  *       | vlan <da> <sa> <pcp> <dei> <vid>
  *       | qinq <da> <sa> <pcp> <dei> <vid> <pcp> <dei> <vid>
+ *       | qinq_pppoe <da> <sa> <pcp> <dei> <vid> <pcp> <dei> <vid> <session_id>
  *       | mpls unicast | multicast
  *          <da> <sa>
  *          label0 <label> <tc> <ttl>
@@ -3176,10 +3800,30 @@ parse_match(char **tokens,
  *          [label2 <label> <tc> <ttl>
  *          [label3 <label> <tc> <ttl>]]]
  *       | pppoe <da> <sa> <session_id>]
+ *       | vxlan ether <da> <sa>
+ *          [vlan <pcp> <dei> <vid>]
+ *          ipv4 <sa> <da> <dscp> <ttl>
+ *          | ipv6 <sa> <da> <flow_label> <dscp> <hop_limit>
+ *          udp <sp> <dp>
+ *          vxlan <vni>]
  *    [nat ipv4 | ipv6 <addr> <port>]
  *    [ttl dec | keep]
  *    [stats]
  *    [time]
+ *    [tag <tag>]
+ *    [decap <n>]
+ *    [sym_crypto
+ *       encrypt | decrypt
+ *       type
+ *       | cipher
+ *          cipher_algo <algo> cipher_key <key> cipher_iv <iv>
+ *       | cipher_auth
+ *          cipher_algo <algo> cipher_key <key> cipher_iv <iv>
+ *          auth_algo <algo> auth_key <key> digest_size <size>
+ *       | aead
+ *          aead_algo <algo> aead_key <key> aead_iv <iv> aead_aad <aad>
+ *          digest_size <size>
+ *       data_offset <data_offset>]
  *
  * where:
  *    <pa> ::= g | y | r | drop
@@ -3298,11 +3942,11 @@ parse_table_action_meter_tc(char **tokens,
 		softnic_parser_read_uint32(&mtr->meter_profile_id, tokens[1]) ||
 		strcmp(tokens[2], "policer") ||
 		strcmp(tokens[3], "g") ||
-		parse_policer_action(tokens[4], &mtr->policer[e_RTE_METER_GREEN]) ||
+		parse_policer_action(tokens[4], &mtr->policer[RTE_COLOR_GREEN]) ||
 		strcmp(tokens[5], "y") ||
-		parse_policer_action(tokens[6], &mtr->policer[e_RTE_METER_YELLOW]) ||
+		parse_policer_action(tokens[6], &mtr->policer[RTE_COLOR_YELLOW]) ||
 		strcmp(tokens[7], "r") ||
-		parse_policer_action(tokens[8], &mtr->policer[e_RTE_METER_RED]))
+		parse_policer_action(tokens[8], &mtr->policer[RTE_COLOR_RED]))
 		return 0;
 
 	return 9;
@@ -3454,6 +4098,43 @@ parse_table_action_encap(char **tokens,
 		return 1 + 9;
 	}
 
+	/* qinq_pppoe */
+	if (n_tokens && (strcmp(tokens[0], "qinq_pppoe") == 0)) {
+		uint32_t svlan_pcp, svlan_dei, svlan_vid;
+		uint32_t cvlan_pcp, cvlan_dei, cvlan_vid;
+
+		if (n_tokens < 10 ||
+			softnic_parse_mac_addr(tokens[1],
+				&a->encap.qinq_pppoe.ether.da) ||
+			softnic_parse_mac_addr(tokens[2],
+				&a->encap.qinq_pppoe.ether.sa) ||
+			softnic_parser_read_uint32(&svlan_pcp, tokens[3]) ||
+			svlan_pcp > 0x7 ||
+			softnic_parser_read_uint32(&svlan_dei, tokens[4]) ||
+			svlan_dei > 0x1 ||
+			softnic_parser_read_uint32(&svlan_vid, tokens[5]) ||
+			svlan_vid > 0xFFF ||
+			softnic_parser_read_uint32(&cvlan_pcp, tokens[6]) ||
+			cvlan_pcp > 0x7 ||
+			softnic_parser_read_uint32(&cvlan_dei, tokens[7]) ||
+			cvlan_dei > 0x1 ||
+			softnic_parser_read_uint32(&cvlan_vid, tokens[8]) ||
+			cvlan_vid > 0xFFF ||
+			softnic_parser_read_uint16(&a->encap.qinq_pppoe.pppoe.session_id,
+				tokens[9]))
+			return 0;
+
+		a->encap.qinq_pppoe.svlan.pcp = svlan_pcp & 0x7;
+		a->encap.qinq_pppoe.svlan.dei = svlan_dei & 0x1;
+		a->encap.qinq_pppoe.svlan.vid = svlan_vid & 0xFFF;
+		a->encap.qinq_pppoe.cvlan.pcp = cvlan_pcp & 0x7;
+		a->encap.qinq_pppoe.cvlan.dei = cvlan_dei & 0x1;
+		a->encap.qinq_pppoe.cvlan.vid = cvlan_vid & 0xFFF;
+		a->encap.type = RTE_TABLE_ACTION_ENCAP_QINQ_PPPOE;
+		a->action_mask |= 1 << RTE_TABLE_ACTION_ENCAP;
+		return 1 + 10;
+	}
+
 	/* mpls */
 	if (n_tokens && (strcmp(tokens[0], "mpls") == 0)) {
 		uint32_t label, tc, ttl;
@@ -3575,6 +4256,122 @@ parse_table_action_encap(char **tokens,
 		return 1 + 4;
 	}
 
+	/* vxlan */
+	if (n_tokens && (strcmp(tokens[0], "vxlan") == 0)) {
+		uint32_t n = 0;
+
+		n_tokens--;
+		tokens++;
+		n++;
+
+		/* ether <da> <sa> */
+		if ((n_tokens < 3) ||
+			strcmp(tokens[0], "ether") ||
+			softnic_parse_mac_addr(tokens[1], &a->encap.vxlan.ether.da) ||
+			softnic_parse_mac_addr(tokens[2], &a->encap.vxlan.ether.sa))
+			return 0;
+
+		n_tokens -= 3;
+		tokens += 3;
+		n += 3;
+
+		/* [vlan <pcp> <dei> <vid>] */
+		if (strcmp(tokens[0], "vlan") == 0) {
+			uint32_t pcp, dei, vid;
+
+			if ((n_tokens < 4) ||
+				softnic_parser_read_uint32(&pcp, tokens[1]) ||
+				(pcp > 7) ||
+				softnic_parser_read_uint32(&dei, tokens[2]) ||
+				(dei > 1) ||
+				softnic_parser_read_uint32(&vid, tokens[3]) ||
+				(vid > 0xFFF))
+				return 0;
+
+			a->encap.vxlan.vlan.pcp = pcp;
+			a->encap.vxlan.vlan.dei = dei;
+			a->encap.vxlan.vlan.vid = vid;
+
+			n_tokens -= 4;
+			tokens += 4;
+			n += 4;
+		}
+
+		/* ipv4 <sa> <da> <dscp> <ttl>
+		   | ipv6 <sa> <da> <flow_label> <dscp> <hop_limit> */
+		if (strcmp(tokens[0], "ipv4") == 0) {
+			struct in_addr sa, da;
+			uint8_t dscp, ttl;
+
+			if ((n_tokens < 5) ||
+				softnic_parse_ipv4_addr(tokens[1], &sa) ||
+				softnic_parse_ipv4_addr(tokens[2], &da) ||
+				softnic_parser_read_uint8(&dscp, tokens[3]) ||
+				(dscp > 64) ||
+				softnic_parser_read_uint8(&ttl, tokens[4]))
+				return 0;
+
+			a->encap.vxlan.ipv4.sa = rte_be_to_cpu_32(sa.s_addr);
+			a->encap.vxlan.ipv4.da = rte_be_to_cpu_32(da.s_addr);
+			a->encap.vxlan.ipv4.dscp = dscp;
+			a->encap.vxlan.ipv4.ttl = ttl;
+
+			n_tokens -= 5;
+			tokens += 5;
+			n += 5;
+		} else if (strcmp(tokens[0], "ipv6") == 0) {
+			struct in6_addr sa, da;
+			uint32_t flow_label;
+			uint8_t dscp, hop_limit;
+
+			if ((n_tokens < 6) ||
+				softnic_parse_ipv6_addr(tokens[1], &sa) ||
+				softnic_parse_ipv6_addr(tokens[2], &da) ||
+				softnic_parser_read_uint32(&flow_label, tokens[3]) ||
+				softnic_parser_read_uint8(&dscp, tokens[4]) ||
+				(dscp > 64) ||
+				softnic_parser_read_uint8(&hop_limit, tokens[5]))
+				return 0;
+
+			memcpy(a->encap.vxlan.ipv6.sa, sa.s6_addr, 16);
+			memcpy(a->encap.vxlan.ipv6.da, da.s6_addr, 16);
+			a->encap.vxlan.ipv6.flow_label = flow_label;
+			a->encap.vxlan.ipv6.dscp = dscp;
+			a->encap.vxlan.ipv6.hop_limit = hop_limit;
+
+			n_tokens -= 6;
+			tokens += 6;
+			n += 6;
+		} else
+			return 0;
+
+		/* udp <sp> <dp> */
+		if ((n_tokens < 3) ||
+			strcmp(tokens[0], "udp") ||
+			softnic_parser_read_uint16(&a->encap.vxlan.udp.sp, tokens[1]) ||
+			softnic_parser_read_uint16(&a->encap.vxlan.udp.dp, tokens[2]))
+			return 0;
+
+		n_tokens -= 3;
+		tokens += 3;
+		n += 3;
+
+		/* vxlan <vni> */
+		if ((n_tokens < 2) ||
+			strcmp(tokens[0], "vxlan") ||
+			softnic_parser_read_uint32(&a->encap.vxlan.vxlan.vni, tokens[1]) ||
+			(a->encap.vxlan.vxlan.vni > 0xFFFFFF))
+			return 0;
+
+		n_tokens -= 2;
+		tokens += 2;
+		n += 2;
+
+		a->encap.type = RTE_TABLE_ACTION_ENCAP_VXLAN;
+		a->action_mask |= 1 << RTE_TABLE_ACTION_ENCAP;
+		return 1 + n;
+	}
+
 	return 0;
 }
 
@@ -3667,6 +4464,394 @@ parse_table_action_time(char **tokens,
 	a->time.time = rte_rdtsc();
 	a->action_mask |= 1 << RTE_TABLE_ACTION_TIME;
 	return 1;
+}
+
+static void
+parse_free_sym_crypto_param_data(struct rte_table_action_sym_crypto_params *p)
+{
+	struct rte_crypto_sym_xform *xform[2] = {NULL};
+	uint32_t i;
+
+	xform[0] = p->xform;
+	if (xform[0])
+		xform[1] = xform[0]->next;
+
+	for (i = 0; i < 2; i++) {
+		if (xform[i] == NULL)
+			continue;
+
+		switch (xform[i]->type) {
+		case RTE_CRYPTO_SYM_XFORM_CIPHER:
+			if (p->cipher_auth.cipher_iv.val)
+				free(p->cipher_auth.cipher_iv.val);
+			if (p->cipher_auth.cipher_iv_update.val)
+				free(p->cipher_auth.cipher_iv_update.val);
+			break;
+		case RTE_CRYPTO_SYM_XFORM_AUTH:
+			if (p->cipher_auth.auth_iv.val)
+				free(p->cipher_auth.cipher_iv.val);
+			if (p->cipher_auth.auth_iv_update.val)
+				free(p->cipher_auth.cipher_iv_update.val);
+			break;
+		case RTE_CRYPTO_SYM_XFORM_AEAD:
+			if (p->aead.iv.val)
+				free(p->aead.iv.val);
+			if (p->aead.aad.val)
+				free(p->aead.aad.val);
+			break;
+		default:
+			continue;
+		}
+	}
+
+}
+
+static struct rte_crypto_sym_xform *
+parse_table_action_cipher(struct rte_table_action_sym_crypto_params *p,
+		uint8_t *key, uint32_t max_key_len, char **tokens,
+		uint32_t n_tokens, uint32_t encrypt, uint32_t *used_n_tokens)
+{
+	struct rte_crypto_sym_xform *xform_cipher;
+	int status;
+	size_t len;
+
+	if (n_tokens < 7 || strcmp(tokens[1], "cipher_algo") ||
+			strcmp(tokens[3], "cipher_key") ||
+			strcmp(tokens[5], "cipher_iv"))
+		return NULL;
+
+	xform_cipher = calloc(1, sizeof(*xform_cipher));
+	if (xform_cipher == NULL)
+		return NULL;
+
+	xform_cipher->type = RTE_CRYPTO_SYM_XFORM_CIPHER;
+	xform_cipher->cipher.op = encrypt ? RTE_CRYPTO_CIPHER_OP_ENCRYPT :
+			RTE_CRYPTO_CIPHER_OP_DECRYPT;
+
+	/* cipher_algo */
+	status = rte_cryptodev_get_cipher_algo_enum(
+			&xform_cipher->cipher.algo, tokens[2]);
+	if (status < 0)
+		goto error_exit;
+
+	/* cipher_key */
+	len = strlen(tokens[4]);
+	if (len / 2 > max_key_len) {
+		status = -ENOMEM;
+		goto error_exit;
+	}
+
+	status = softnic_parse_hex_string(tokens[4], key, (uint32_t *)&len);
+	if (status < 0)
+		goto error_exit;
+
+	xform_cipher->cipher.key.data = key;
+	xform_cipher->cipher.key.length = (uint16_t)len;
+
+	/* cipher_iv */
+	len = strlen(tokens[6]);
+
+	p->cipher_auth.cipher_iv.val = calloc(1, len / 2 + 1);
+	if (p->cipher_auth.cipher_iv.val == NULL)
+		goto error_exit;
+
+	status = softnic_parse_hex_string(tokens[6],
+			p->cipher_auth.cipher_iv.val,
+			(uint32_t *)&len);
+	if (status < 0)
+		goto error_exit;
+
+	xform_cipher->cipher.iv.length = (uint16_t)len;
+	xform_cipher->cipher.iv.offset = RTE_TABLE_ACTION_SYM_CRYPTO_IV_OFFSET;
+	p->cipher_auth.cipher_iv.length = (uint32_t)len;
+	*used_n_tokens = 7;
+
+	return xform_cipher;
+
+error_exit:
+	if (p->cipher_auth.cipher_iv.val) {
+		free(p->cipher_auth.cipher_iv.val);
+		p->cipher_auth.cipher_iv.val = NULL;
+	}
+
+	free(xform_cipher);
+
+	return NULL;
+}
+
+static struct rte_crypto_sym_xform *
+parse_table_action_cipher_auth(struct rte_table_action_sym_crypto_params *p,
+		uint8_t *key, uint32_t max_key_len, char **tokens,
+		uint32_t n_tokens, uint32_t encrypt, uint32_t *used_n_tokens)
+{
+	struct rte_crypto_sym_xform *xform_cipher;
+	struct rte_crypto_sym_xform *xform_auth;
+	int status;
+	size_t len;
+
+	if (n_tokens < 13 ||
+			strcmp(tokens[7], "auth_algo") ||
+			strcmp(tokens[9], "auth_key") ||
+			strcmp(tokens[11], "digest_size"))
+		return NULL;
+
+	xform_auth = calloc(1, sizeof(*xform_auth));
+	if (xform_auth == NULL)
+		return NULL;
+
+	xform_auth->type = RTE_CRYPTO_SYM_XFORM_AUTH;
+	xform_auth->auth.op = encrypt ? RTE_CRYPTO_AUTH_OP_GENERATE :
+			RTE_CRYPTO_AUTH_OP_VERIFY;
+
+	/* auth_algo */
+	status = rte_cryptodev_get_auth_algo_enum(&xform_auth->auth.algo,
+			tokens[8]);
+	if (status < 0)
+		goto error_exit;
+
+	/* auth_key */
+	len = strlen(tokens[10]);
+	if (len / 2 > max_key_len) {
+		status = -ENOMEM;
+		goto error_exit;
+	}
+
+	status = softnic_parse_hex_string(tokens[10], key, (uint32_t *)&len);
+	if (status < 0)
+		goto error_exit;
+
+	xform_auth->auth.key.data = key;
+	xform_auth->auth.key.length = (uint16_t)len;
+
+	key += xform_auth->auth.key.length;
+	max_key_len -= xform_auth->auth.key.length;
+
+	if (strcmp(tokens[11], "digest_size"))
+		goto error_exit;
+
+	status = softnic_parser_read_uint16(&xform_auth->auth.digest_length,
+			tokens[12]);
+	if (status < 0)
+		goto error_exit;
+
+	xform_cipher = parse_table_action_cipher(p, key, max_key_len, tokens, 7,
+			encrypt, used_n_tokens);
+	if (xform_cipher == NULL)
+		goto error_exit;
+
+	*used_n_tokens += 6;
+
+	if (encrypt) {
+		xform_cipher->next = xform_auth;
+		return xform_cipher;
+	} else {
+		xform_auth->next = xform_cipher;
+		return xform_auth;
+	}
+
+error_exit:
+	if (p->cipher_auth.auth_iv.val) {
+		free(p->cipher_auth.auth_iv.val);
+		p->cipher_auth.auth_iv.val = 0;
+	}
+
+	free(xform_auth);
+
+	return NULL;
+}
+
+static struct rte_crypto_sym_xform *
+parse_table_action_aead(struct rte_table_action_sym_crypto_params *p,
+		uint8_t *key, uint32_t max_key_len, char **tokens,
+		uint32_t n_tokens, uint32_t encrypt, uint32_t *used_n_tokens)
+{
+	struct rte_crypto_sym_xform *xform_aead;
+	int status;
+	size_t len;
+
+	if (n_tokens < 11 || strcmp(tokens[1], "aead_algo") ||
+			strcmp(tokens[3], "aead_key") ||
+			strcmp(tokens[5], "aead_iv") ||
+			strcmp(tokens[7], "aead_aad") ||
+			strcmp(tokens[9], "digest_size"))
+		return NULL;
+
+	xform_aead = calloc(1, sizeof(*xform_aead));
+	if (xform_aead == NULL)
+		return NULL;
+
+	xform_aead->type = RTE_CRYPTO_SYM_XFORM_AEAD;
+	xform_aead->aead.op = encrypt ? RTE_CRYPTO_AEAD_OP_ENCRYPT :
+			RTE_CRYPTO_AEAD_OP_DECRYPT;
+
+	/* aead_algo */
+	status = rte_cryptodev_get_aead_algo_enum(&xform_aead->aead.algo,
+			tokens[2]);
+	if (status < 0)
+		goto error_exit;
+
+	/* aead_key */
+	len = strlen(tokens[4]);
+	if (len / 2 > max_key_len) {
+		status = -ENOMEM;
+		goto error_exit;
+	}
+
+	status = softnic_parse_hex_string(tokens[4], key, (uint32_t *)&len);
+	if (status < 0)
+		goto error_exit;
+
+	xform_aead->aead.key.data = key;
+	xform_aead->aead.key.length = (uint16_t)len;
+
+	/* aead_iv */
+	len = strlen(tokens[6]);
+	p->aead.iv.val = calloc(1, len / 2 + 1);
+	if (p->aead.iv.val == NULL)
+		goto error_exit;
+
+	status = softnic_parse_hex_string(tokens[6], p->aead.iv.val,
+			(uint32_t *)&len);
+	if (status < 0)
+		goto error_exit;
+
+	xform_aead->aead.iv.length = (uint16_t)len;
+	xform_aead->aead.iv.offset = RTE_TABLE_ACTION_SYM_CRYPTO_IV_OFFSET;
+	p->aead.iv.length = (uint32_t)len;
+
+	/* aead_aad */
+	len = strlen(tokens[8]);
+	p->aead.aad.val = calloc(1, len / 2 + 1);
+	if (p->aead.aad.val == NULL)
+		goto error_exit;
+
+	status = softnic_parse_hex_string(tokens[8], p->aead.aad.val, (uint32_t *)&len);
+	if (status < 0)
+		goto error_exit;
+
+	xform_aead->aead.aad_length = (uint16_t)len;
+	p->aead.aad.length = (uint32_t)len;
+
+	/* digest_size */
+	status = softnic_parser_read_uint16(&xform_aead->aead.digest_length,
+			tokens[10]);
+	if (status < 0)
+		goto error_exit;
+
+	*used_n_tokens = 11;
+
+	return xform_aead;
+
+error_exit:
+	if (p->aead.iv.val) {
+		free(p->aead.iv.val);
+		p->aead.iv.val = NULL;
+	}
+	if (p->aead.aad.val) {
+		free(p->aead.aad.val);
+		p->aead.aad.val = NULL;
+	}
+
+	free(xform_aead);
+
+	return NULL;
+}
+
+
+static uint32_t
+parse_table_action_sym_crypto(char **tokens,
+	uint32_t n_tokens,
+	struct softnic_table_rule_action *a)
+{
+	struct rte_table_action_sym_crypto_params *p = &a->sym_crypto;
+	struct rte_crypto_sym_xform *xform = NULL;
+	uint8_t *key = a->sym_crypto_key;
+	uint32_t max_key_len = SYM_CRYPTO_MAX_KEY_SIZE;
+	uint32_t used_n_tokens;
+	uint32_t encrypt;
+	int status;
+
+	if ((n_tokens < 12) ||
+		strcmp(tokens[0], "sym_crypto") ||
+		strcmp(tokens[2], "type"))
+		return 0;
+
+	memset(p, 0, sizeof(*p));
+
+	if (strcmp(tokens[1], "encrypt") == 0)
+		encrypt = 1;
+	else
+		encrypt = 0;
+
+	status = softnic_parser_read_uint32(&p->data_offset, tokens[n_tokens - 1]);
+	if (status < 0)
+		return 0;
+
+	if (strcmp(tokens[3], "cipher") == 0) {
+		tokens += 3;
+		n_tokens -= 3;
+
+		xform = parse_table_action_cipher(p, key, max_key_len, tokens,
+				n_tokens, encrypt, &used_n_tokens);
+	} else if (strcmp(tokens[3], "cipher_auth") == 0) {
+		tokens += 3;
+		n_tokens -= 3;
+
+		xform = parse_table_action_cipher_auth(p, key, max_key_len,
+				tokens, n_tokens, encrypt, &used_n_tokens);
+	} else if (strcmp(tokens[3], "aead") == 0) {
+		tokens += 3;
+		n_tokens -= 3;
+
+		xform = parse_table_action_aead(p, key, max_key_len, tokens,
+				n_tokens, encrypt, &used_n_tokens);
+	}
+
+	if (xform == NULL)
+		return 0;
+
+	p->xform = xform;
+
+	if (strcmp(tokens[used_n_tokens], "data_offset")) {
+		parse_free_sym_crypto_param_data(p);
+		return 0;
+	}
+
+	a->action_mask |= 1 << RTE_TABLE_ACTION_SYM_CRYPTO;
+
+	return used_n_tokens + 5;
+}
+
+static uint32_t
+parse_table_action_tag(char **tokens,
+	uint32_t n_tokens,
+	struct softnic_table_rule_action *a)
+{
+	if (n_tokens < 2 ||
+		strcmp(tokens[0], "tag"))
+		return 0;
+
+	if (softnic_parser_read_uint32(&a->tag.tag, tokens[1]))
+		return 0;
+
+	a->action_mask |= 1 << RTE_TABLE_ACTION_TAG;
+	return 2;
+}
+
+static uint32_t
+parse_table_action_decap(char **tokens,
+	uint32_t n_tokens,
+	struct softnic_table_rule_action *a)
+{
+	if (n_tokens < 2 ||
+		strcmp(tokens[0], "decap"))
+		return 0;
+
+	if (softnic_parser_read_uint16(&a->decap.n, tokens[1]))
+		return 0;
+
+	a->action_mask |= 1 << RTE_TABLE_ACTION_DECAP;
+	return 2;
 }
 
 static uint32_t
@@ -3807,6 +4992,47 @@ parse_table_action(char **tokens,
 			snprintf(out, out_size, MSG_ARG_INVALID,
 				"action time");
 			return 0;
+		}
+
+		tokens += n;
+		n_tokens -= n;
+	}
+
+	if (n_tokens && (strcmp(tokens[0], "tag") == 0)) {
+		uint32_t n;
+
+		n = parse_table_action_tag(tokens, n_tokens, a);
+		if (n == 0) {
+			snprintf(out, out_size, MSG_ARG_INVALID,
+				"action tag");
+			return 0;
+		}
+
+		tokens += n;
+		n_tokens -= n;
+	}
+
+	if (n_tokens && (strcmp(tokens[0], "decap") == 0)) {
+		uint32_t n;
+
+		n = parse_table_action_decap(tokens, n_tokens, a);
+		if (n == 0) {
+			snprintf(out, out_size, MSG_ARG_INVALID,
+				"action decap");
+			return 0;
+		}
+
+		tokens += n;
+		n_tokens -= n;
+	}
+
+	if (n_tokens && (strcmp(tokens[0], "sym_crypto") == 0)) {
+		uint32_t n;
+
+		n = parse_table_action_sym_crypto(tokens, n_tokens, a);
+		if (n == 0) {
+			snprintf(out, out_size, MSG_ARG_INVALID,
+				"action sym_crypto");
 		}
 
 		tokens += n;
@@ -4581,7 +5807,7 @@ load_dscp_table(struct rte_table_action_dscp_table *dscp_table,
 	for (dscp = 0, l = 1; ; l++) {
 		char line[64];
 		char *tokens[3];
-		enum rte_meter_color color;
+		enum rte_color color;
 		uint32_t tc_id, tc_queue_id, n_tokens = RTE_DIM(tokens);
 
 		if (fgets(line, sizeof(line), f) == NULL)
@@ -4614,17 +5840,17 @@ load_dscp_table(struct rte_table_action_dscp_table *dscp_table,
 		switch (tokens[2][0]) {
 		case 'g':
 		case 'G':
-			color = e_RTE_METER_GREEN;
+			color = RTE_COLOR_GREEN;
 			break;
 
 		case 'y':
 		case 'Y':
-			color = e_RTE_METER_YELLOW;
+			color = RTE_COLOR_YELLOW;
 			break;
 
 		case 'r':
 		case 'R':
-			color = e_RTE_METER_RED;
+			color = RTE_COLOR_RED;
 			break;
 
 		default:
@@ -4797,6 +6023,81 @@ cmd_softnic_thread_pipeline_disable(struct pmd_internals *softnic,
 	}
 }
 
+/**
+ * flowapi map
+ *  group <group_id>
+ *  ingress | egress
+ *  pipeline <pipeline_name>
+ *  table <table_id>
+ */
+static void
+cmd_softnic_flowapi_map(struct pmd_internals *softnic,
+		char **tokens,
+		uint32_t n_tokens,
+		char *out,
+		size_t out_size)
+{
+	char *pipeline_name;
+	uint32_t group_id, table_id;
+	int ingress, status;
+
+	if (n_tokens != 9) {
+		snprintf(out, out_size, MSG_ARG_MISMATCH, tokens[0]);
+		return;
+	}
+
+	if (strcmp(tokens[1], "map") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "map");
+		return;
+	}
+
+	if (strcmp(tokens[2], "group") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "group");
+		return;
+	}
+
+	if (softnic_parser_read_uint32(&group_id, tokens[3]) != 0) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "group_id");
+		return;
+	}
+
+	if (strcmp(tokens[4], "ingress") == 0) {
+		ingress = 1;
+	} else if (strcmp(tokens[4], "egress") == 0) {
+		ingress = 0;
+	} else {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "ingress | egress");
+		return;
+	}
+
+	if (strcmp(tokens[5], "pipeline") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "pipeline");
+		return;
+	}
+
+	pipeline_name = tokens[6];
+
+	if (strcmp(tokens[7], "table") != 0) {
+		snprintf(out, out_size, MSG_ARG_NOT_FOUND, "table");
+		return;
+	}
+
+	if (softnic_parser_read_uint32(&table_id, tokens[8]) != 0) {
+		snprintf(out, out_size, MSG_ARG_INVALID, "table_id");
+		return;
+	}
+
+	status = flow_attr_map_set(softnic,
+			group_id,
+			ingress,
+			pipeline_name,
+			table_id);
+	if (status) {
+		snprintf(out, out_size, MSG_CMD_FAIL, tokens[0]);
+		return;
+	}
+}
+
 void
 softnic_cli_process(char *in, char *out, size_t out_size, void *arg)
 {
@@ -4874,6 +6175,11 @@ softnic_cli_process(char *in, char *out, size_t out_size, void *arg)
 
 	if (strcmp(tokens[0], "tap") == 0) {
 		cmd_tap(softnic, tokens, n_tokens, out, out_size);
+		return;
+	}
+
+	if (strcmp(tokens[0], "cryptodev") == 0) {
+		cmd_cryptodev(softnic, tokens, n_tokens, out, out_size);
 		return;
 	}
 
@@ -5087,6 +6393,12 @@ softnic_cli_process(char *in, char *out, size_t out_size, void *arg)
 				out, out_size);
 			return;
 		}
+	}
+
+	if (strcmp(tokens[0], "flowapi") == 0) {
+		cmd_softnic_flowapi_map(softnic, tokens, n_tokens, out,
+					out_size);
+		return;
 	}
 
 	snprintf(out, out_size, MSG_CMD_UNKNOWN, tokens[0]);

@@ -1,35 +1,6 @@
-/*******************************************************************************
-
-Copyright (c) 2013 - 2015, Intel Corporation
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
- 1. Redistributions of source code must retain the above copyright notice,
-    this list of conditions and the following disclaimer.
-
- 2. Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in the
-    documentation and/or other materials provided with the distribution.
-
- 3. Neither the name of the Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived from
-    this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
-LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-POSSIBILITY OF SUCH DAMAGE.
-
-***************************************************************************/
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2001-2020 Intel Corporation
+ */
 
 #ifndef _I40E_DCB_H_
 #define _I40E_DCB_H_
@@ -67,6 +38,11 @@ POSSIBILITY OF SUCH DAMAGE.
 #define I40E_LLDP_ADMINSTATUS_ENABLED_RX	1
 #define I40E_LLDP_ADMINSTATUS_ENABLED_TX	2
 #define I40E_LLDP_ADMINSTATUS_ENABLED_RXTX	3
+
+#define I40E_LLDP_CURRENT_STATUS_XL710_OFFSET	0x2B
+#define I40E_LLDP_CURRENT_STATUS_X722_OFFSET	0x31
+#define I40E_LLDP_CURRENT_STATUS_OFFSET		1
+#define I40E_LLDP_CURRENT_STATUS_SIZE		1
 
 /* Defines for LLDP TLV header */
 #define I40E_LLDP_MIB_HLEN		14
@@ -207,6 +183,12 @@ struct i40e_dcbx_variables {
 	u32 deftsaassignment;
 };
 
+
+enum i40e_get_fw_lldp_status_resp {
+	I40E_GET_FW_LLDP_STATUS_DISABLED = 0,
+	I40E_GET_FW_LLDP_STATUS_ENABLED = 1
+};
+
 enum i40e_status_code i40e_get_dcbx_status(struct i40e_hw *hw,
 					   u16 *status);
 enum i40e_status_code i40e_lldp_to_dcb_config(u8 *lldpmib,
@@ -215,9 +197,12 @@ enum i40e_status_code i40e_aq_get_dcb_config(struct i40e_hw *hw, u8 mib_type,
 					     u8 bridgetype,
 					     struct i40e_dcbx_config *dcbcfg);
 enum i40e_status_code i40e_get_dcb_config(struct i40e_hw *hw);
-enum i40e_status_code i40e_init_dcb(struct i40e_hw *hw);
+enum i40e_status_code i40e_init_dcb(struct i40e_hw *hw,
+				    bool enable_mib_change);
+enum i40e_status_code
+i40e_get_fw_lldp_status(struct i40e_hw *hw,
+			enum i40e_get_fw_lldp_status_resp *lldp_status);
 enum i40e_status_code i40e_set_dcb_config(struct i40e_hw *hw);
 enum i40e_status_code i40e_dcb_config_to_lldp(u8 *lldpmib, u16 *miblen,
 					      struct i40e_dcbx_config *dcbcfg);
-
 #endif /* _I40E_DCB_H_ */

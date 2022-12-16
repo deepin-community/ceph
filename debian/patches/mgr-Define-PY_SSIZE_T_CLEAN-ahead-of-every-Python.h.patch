@@ -1,0 +1,16 @@
+Description: mgr: Define PY_SSIZE_T_CLEAN ahead of every Python.h
+Author: Pete Zaitcev <zaitcev@redhat.com>
+Date: Tue, 14 Dec 2021 23:04:34 -0600
+Origin: upstream, https://github.com/ceph/ceph/commit/389054888f2aa782f73564125ec7a1ef0212d536.patch
+Last-Update: 2022-09-22
+
+--- ceph-16.2.10+ds.orig/src/mgr/CMakeLists.txt
++++ ceph-16.2.10+ds/src/mgr/CMakeLists.txt
+@@ -34,6 +34,7 @@ if(WITH_MGR)
+     mgr_commands.cc
+     $<TARGET_OBJECTS:mgr_cap_obj>)
+   add_executable(ceph-mgr ${mgr_srcs})
++  target_compile_definitions(ceph-mgr PRIVATE PY_SSIZE_T_CLEAN)
+   target_link_libraries(ceph-mgr
+     osdc client heap_profiler
+     global-static ceph-common

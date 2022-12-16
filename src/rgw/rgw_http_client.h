@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 #ifndef CEPH_RGW_HTTP_CLIENT_H
 #define CEPH_RGW_HTTP_CLIENT_H
@@ -9,6 +9,7 @@
 #include "common/Cond.h"
 #include "rgw_common.h"
 #include "rgw_string.h"
+#include "rgw_http_client_types.h"
 
 #include <atomic>
 
@@ -20,54 +21,6 @@ void rgw_http_client_cleanup();
 
 struct rgw_http_req_data;
 class RGWHTTPManager;
-
-class RGWIOIDProvider
-{
-  std::atomic<int64_t> max = {0};
-
-public:
-  RGWIOIDProvider() {}
-  int64_t get_next() {
-    return ++max;
-  }
-};
-
-struct rgw_io_id {
-  int64_t id{0};
-  int channels{0};
-
-  rgw_io_id() {}
-  rgw_io_id(int64_t _id, int _channels) : id(_id), channels(_channels) {}
-
-  bool intersects(const rgw_io_id& rhs) {
-    return (id == rhs.id && ((channels | rhs.channels) != 0));
-  }
-
-  bool operator<(const rgw_io_id& rhs) const {
-    if (id < rhs.id) {
-      return true;
-    }
-    return (id == rhs.id &&
-            channels < rhs.channels);
-  }
-};
-
-class RGWIOProvider
-{
-  int64_t id{-1};
-
-public:
-  RGWIOProvider() {}
-  virtual ~RGWIOProvider() = default; 
-
-  void assign_io(RGWIOIDProvider& io_id_provider, int io_type = -1);
-  rgw_io_id get_io_id(int io_type) {
-    return rgw_io_id{id, io_type};
-  }
-
-  virtual void set_io_user_info(void *_user_info) = 0;
-  virtual void *get_io_user_info() = 0;
-};
 
 class RGWHTTPClient : public RGWIOProvider
 {
@@ -87,6 +40,12 @@ class RGWHTTPClient : public RGWIOProvider
 
   bool verify_ssl; // Do not validate self signed certificates, default to false
 
+  string ca_path;
+
+  string client_cert;
+
+  string client_key;
+
   std::atomic<unsigned> stopped { 0 };
 
 
@@ -99,6 +58,8 @@ protected:
   size_t send_len{0};
 
   param_vec_t headers;
+
+  long  req_timeout{0L};
 
   RGWHTTPManager *get_manager();
 
@@ -131,7 +92,7 @@ protected:
                                size_t nmemb,
                                void *_info);
 
-  Mutex& get_req_lock();
+  ceph::mutex& get_req_lock();
 
   /* needs to be called under req_lock() */
   void _set_write_paused(bool pause);
@@ -183,9 +144,15 @@ public:
     verify_ssl = flag;
   }
 
-  int process(optional_yield y=null_yield);
+  // set request timeout in seconds
+  // zero (default) mean that request will never timeout
+  void set_req_timeout(long timeout) {
+    req_timeout = timeout;
+  }
 
-  int wait(optional_yield y=null_yield);
+  int process(optional_yield y);
+
+  int wait(optional_yield y);
   void cancel();
   bool is_done();
 
@@ -209,6 +176,18 @@ public:
 
   void *get_io_user_info() override {
     return user_info;
+  }
+
+  void set_ca_path(const string& _ca_path) {
+    ca_path = _ca_path;
+  }
+
+  void set_client_cert(const string& _client_cert) {
+    client_cert = _client_cert;
+  }
+
+  void set_client_key(const string& _client_key) {
+    client_key = _client_key;
   }
 };
 
@@ -309,17 +288,17 @@ class RGWHTTPManager {
   CephContext *cct;
   RGWCompletionManager *completion_mgr;
   void *multi_handle;
-  bool is_started;
+  bool is_started = false;
   std::atomic<unsigned> going_down { 0 };
   std::atomic<unsigned> is_stopped { 0 };
 
-  RWLock reqs_lock;
+  ceph::shared_mutex reqs_lock = ceph::make_shared_mutex("RGWHTTPManager::reqs_lock");
   map<uint64_t, rgw_http_req_data *> reqs;
   list<rgw_http_req_data *> unregistered_reqs;
   list<set_state> reqs_change_state;
   map<uint64_t, rgw_http_req_data *> complete_reqs;
-  int64_t num_reqs;
-  int64_t max_threaded_req;
+  int64_t num_reqs = 0;
+  int64_t max_threaded_req = 0;
   int thread_pipe[2];
 
   void register_request(rgw_http_req_data *req_data);
@@ -343,7 +322,7 @@ class RGWHTTPManager {
     void *entry() override;
   };
 
-  ReqsThread *reqs_thread;
+  ReqsThread *reqs_thread = nullptr;
 
   void *reqs_thread_entry();
 
@@ -365,6 +344,6 @@ class RGWHTTP
 {
 public:
   static int send(RGWHTTPClient *req);
-  static int process(RGWHTTPClient *req, optional_yield y=null_yield);
+  static int process(RGWHTTPClient *req, optional_yield y);
 };
 #endif

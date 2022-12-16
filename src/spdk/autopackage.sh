@@ -2,6 +2,14 @@
 
 set -xe
 
+# If the configuration of tests is not provided, no tests will be carried out.
+if [[ ! -f $1 ]]; then
+	echo "ERROR: SPDK test configuration not specified"
+	exit 1
+fi
+
+source "$1"
+
 rootdir=$(readlink -f $(dirname $0))
 source "$rootdir/test/common/autotest_common.sh"
 
@@ -10,54 +18,32 @@ out=$PWD
 MAKEFLAGS=${MAKEFLAGS:--j16}
 cd $rootdir
 
-timing_enter autopackage
-
+timing_enter porcelain_check
 $MAKE clean
 
-if [ `git status --porcelain --ignore-submodules | wc -l` -ne 0 ]; then
+if [ $(git status --porcelain --ignore-submodules | wc -l) -ne 0 ]; then
 	echo make clean left the following files:
-	git status --porcelain
+	git status --porcelain --ignore-submodules
 	exit 1
 fi
+timing_exit porcelain_check
 
-spdk_pv=spdk-$(date +%Y_%m_%d)
-spdk_tarball=${spdk_pv}.tar
-dpdk_pv=dpdk-$(date +%Y_%m_%d)
-dpdk_tarball=${dpdk_pv}.tar
-ipsec_pv=ipsec-$(date +%Y_%m_%d)
-ipsec_tarball=${ipsec_pv}.tar
-
-find . -iname "spdk-*.tar* dpdk-*.tar* ipsec-*.tar*" -delete
-git archive HEAD^{tree} --prefix=${spdk_pv}/ -o ${spdk_tarball}
-
-# Build from packaged source
-tmpdir=$(mktemp -d)
-echo "tmpdir=$tmpdir"
-tar -C "$tmpdir" -xf $spdk_tarball
-
-if [ -z "$WITH_DPDK_DIR" ]; then
-	cd dpdk
-	git archive HEAD^{tree} --prefix=dpdk/ -o ../${dpdk_tarball}
-	cd ..
-	tar -C "$tmpdir/${spdk_pv}" -xf $dpdk_tarball
+if [[ $RUN_NIGHTLY -eq 0 ]]; then
+	timing_finish
+	exit 0
 fi
 
-if [ -d "intel-ipsec-mb" ]; then
-	cd intel-ipsec-mb
-	git archive HEAD^{tree} --prefix=intel-ipsec-mb/ -o ../${ipsec_tarball}
-	cd ..
-	tar -C "$tmpdir/${spdk_pv}" -xf $ipsec_tarball
+timing_enter build_release
+
+if [ $(uname -s) = Linux ]; then
+	./configure $(get_config_params) --disable-debug --enable-lto
+else
+	# LTO needs a special compiler to work on BSD.
+	./configure $(get_config_params) --disable-debug
 fi
+$MAKE ${MAKEFLAGS}
+$MAKE ${MAKEFLAGS} clean
 
-(
-	cd "$tmpdir"/spdk-*
-	# use $config_params to get the right dependency options, but disable coverage and ubsan
-	#  explicitly since they are not needed for this build
-	./configure $config_params --disable-debug --enable-werror --disable-coverage --disable-ubsan
-	time $MAKE ${MAKEFLAGS}
-)
-rm -rf "$tmpdir"
-
-timing_exit autopackage
+timing_exit build_release
 
 timing_finish

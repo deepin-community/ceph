@@ -1,33 +1,5 @@
-/*-
- *   BSD LICENSE
- *
- *   Copyright 2016 NXP.
- *
- *   Redistribution and use in source and binary forms, with or without
- *   modification, are permitted provided that the following conditions
- *   are met:
- *
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in
- *       the documentation and/or other materials provided with the
- *       distribution.
- *     * Neither the name of NXP nor the names of its
- *       contributors may be used to endorse or promote products derived
- *       from this software without specific prior written permission.
- *
- *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright 2016 NXP
  */
 
 #include <stdio.h>
@@ -37,10 +9,11 @@
 #include <rte_bus.h>
 #include <rte_debug.h>
 #include <rte_string_fns.h>
+#include <rte_errno.h>
 
 #include "eal_private.h"
 
-struct rte_bus_list rte_bus_list =
+static struct rte_bus_list rte_bus_list =
 	TAILQ_HEAD_INITIALIZER(rte_bus_list);
 
 void
@@ -227,18 +200,80 @@ rte_bus_find_by_device_name(const char *str)
 enum rte_iova_mode
 rte_bus_get_iommu_class(void)
 {
-	int mode = RTE_IOVA_DC;
+	enum rte_iova_mode mode = RTE_IOVA_DC;
+	bool buses_want_va = false;
+	bool buses_want_pa = false;
 	struct rte_bus *bus;
 
 	TAILQ_FOREACH(bus, &rte_bus_list, next) {
+		enum rte_iova_mode bus_iova_mode;
 
-		if (bus->get_iommu_class)
-			mode |= bus->get_iommu_class();
+		if (bus->get_iommu_class == NULL)
+			continue;
+
+		bus_iova_mode = bus->get_iommu_class();
+		RTE_LOG(DEBUG, EAL, "Bus %s wants IOVA as '%s'\n",
+			bus->name,
+			bus_iova_mode == RTE_IOVA_DC ? "DC" :
+			(bus_iova_mode == RTE_IOVA_PA ? "PA" : "VA"));
+		if (bus_iova_mode == RTE_IOVA_PA)
+			buses_want_pa = true;
+		else if (bus_iova_mode == RTE_IOVA_VA)
+			buses_want_va = true;
 	}
-
-	if (mode != RTE_IOVA_VA) {
-		/* Use default IOVA mode */
+	if (buses_want_va && !buses_want_pa) {
+		mode = RTE_IOVA_VA;
+	} else if (buses_want_pa && !buses_want_va) {
 		mode = RTE_IOVA_PA;
+	} else {
+		mode = RTE_IOVA_DC;
+		if (buses_want_va) {
+			RTE_LOG(WARNING, EAL, "Some buses want 'VA' but forcing 'DC' because other buses want 'PA'.\n");
+			RTE_LOG(WARNING, EAL, "Depending on the final decision by the EAL, not all buses may be able to initialize.\n");
+		}
 	}
+
 	return mode;
+}
+
+static int
+bus_handle_sigbus(const struct rte_bus *bus,
+			const void *failure_addr)
+{
+	int ret;
+
+	if (!bus->sigbus_handler)
+		return -1;
+
+	ret = bus->sigbus_handler(failure_addr);
+
+	/* find bus but handle failed, keep the errno be set. */
+	if (ret < 0 && rte_errno == 0)
+		rte_errno = ENOTSUP;
+
+	return ret > 0;
+}
+
+int
+rte_bus_sigbus_handler(const void *failure_addr)
+{
+	struct rte_bus *bus;
+
+	int ret = 0;
+	int old_errno = rte_errno;
+
+	rte_errno = 0;
+
+	bus = rte_bus_find(NULL, bus_handle_sigbus, failure_addr);
+	/* can not find bus. */
+	if (!bus)
+		return 1;
+	/* find bus but handle failed, pass on the new errno. */
+	else if (rte_errno != 0)
+		return -1;
+
+	/* restore the old errno. */
+	rte_errno = old_errno;
+
+	return ret;
 }

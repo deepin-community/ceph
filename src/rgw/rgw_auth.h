@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 
 #ifndef CEPH_RGW_AUTH_H
@@ -12,10 +12,11 @@
 #include <utility>
 
 #include "rgw_common.h"
-#include "rgw_keystone.h"
 #include "rgw_web_idp.h"
 
 #define RGW_USER_ANON_ID "anonymous"
+
+class RGWCtl;
 
 namespace rgw {
 namespace auth {
@@ -78,6 +79,8 @@ public:
 
   /* Subuser of Account */
   virtual string get_subuser() const = 0;
+
+  virtual string get_role_tenant() const { return ""; }
 };
 
 inline std::ostream& operator<<(std::ostream& out,
@@ -87,6 +90,12 @@ inline std::ostream& operator<<(std::ostream& out,
 }
 
 
+std::unique_ptr<rgw::auth::Identity>
+transform_old_authinfo(CephContext* const cct,
+                       const rgw_user& auth_id,
+                       const int perm_mask,
+                       const bool is_admin,
+                       const uint32_t type);
 std::unique_ptr<Identity> transform_old_authinfo(const req_state* const s);
 
 
@@ -94,7 +103,7 @@ std::unique_ptr<Identity> transform_old_authinfo(const req_state* const s);
  * imposed by a particular rgw::auth::Engine.
  *
  * In contrast to rgw::auth::Engine, implementations of this interface
- * are allowed to handle req_state or RGWRados in the read-write manner.
+ * are allowed to handle req_state or RGWUserCtl in the read-write manner.
  *
  * It's expected that most (if not all) of implementations will also
  * conform to rgw::auth::Identity interface to provide authorization
@@ -284,7 +293,7 @@ public:
    *    interface.
    *
    * On error throws rgw::auth::Exception containing the reason. */
-  virtual result_t authenticate(const DoutPrefixProvider* dpp, const req_state* s) const = 0;
+  virtual result_t authenticate(const DoutPrefixProvider* dpp, const req_state* s, optional_yield y) const = 0;
 };
 
 
@@ -327,13 +336,13 @@ public:
     FALLBACK,
   };
 
-  Engine::result_t authenticate(const DoutPrefixProvider* dpp, const req_state* s) const override final;
+  Engine::result_t authenticate(const DoutPrefixProvider* dpp, const req_state* s, optional_yield y) const override final;
 
   bool is_empty() const {
     return auth_stack.empty();
   }
 
-  static int apply(const DoutPrefixProvider* dpp, const Strategy& auth_strategy, req_state* s) noexcept;
+  static int apply(const DoutPrefixProvider* dpp, const Strategy& auth_strategy, req_state* s, optional_yield y) noexcept;
 
 private:
   /* Using the reference wrapper here to explicitly point out we are not
@@ -357,23 +366,28 @@ class StrategyRegistry;
 class WebIdentityApplier : public IdentityApplier {
 protected:
   CephContext* const cct;
-  RGWRados* const store;
+  RGWCtl* const ctl;
+  string role_session;
+  string role_tenant;
   rgw::web_idp::WebTokenClaims token_claims;
 
   string get_idp_url() const;
 
+  void create_account(const DoutPrefixProvider* dpp,
+                      const rgw_user& acct_user,
+                      const string& display_name,
+                      RGWUserInfo& user_info) const;     /* out */
 public:
   WebIdentityApplier( CephContext* const cct,
-                      RGWRados* const store,
+                      RGWCtl* const ctl,
+                      const string& role_session,
+                      const string& role_tenant,
                       const rgw::web_idp::WebTokenClaims& token_claims)
     : cct(cct),
-      store(store),
+      ctl(ctl),
+      role_session(role_session),
+      role_tenant(role_tenant),
       token_claims(token_claims) {
-  }
-
-  void load_acct_info(const DoutPrefixProvider* dpp, RGWUserInfo& user_info) const override {
-    user_info.user_id = rgw_user(token_claims.sub);
-    user_info.display_name = token_claims.user_name;
   }
 
   void modify_request_state(const DoutPrefixProvider *dpp, req_state* s) const override;
@@ -387,6 +401,9 @@ public:
   }
 
   bool is_owner_of(const rgw_user& uid) const override {
+    if (uid.id == token_claims.sub && uid.tenant == role_tenant && uid.ns == "oidc") {
+      return true;
+    }
     return false;
   }
 
@@ -397,6 +414,8 @@ public:
   void to_str(std::ostream& out) const override;
 
   bool is_identity(const idset_t& ids) const override;
+
+  void load_acct_info(const DoutPrefixProvider* dpp, RGWUserInfo& user_info) const override;
 
   uint32_t get_identity_type() const override {
     return TYPE_WEB;
@@ -415,6 +434,8 @@ public:
 
     virtual aplptr_t create_apl_web_identity( CephContext* cct,
                                               const req_state* s,
+                                              const string& role_session,
+                                              const string& role_tenant,
                                               const rgw::web_idp::WebTokenClaims& token) const = 0;
   };
 };
@@ -500,7 +521,7 @@ protected:
   CephContext* const cct;
 
   /* Read-write is intensional here due to RGWUserInfo creation process. */
-  RGWRados* const store;
+  RGWCtl* const ctl;
 
   /* Supplemental strategy for extracting permissions from ACLs. Its results
    * will be combined (ORed) with a default strategy that is responsible for
@@ -518,13 +539,13 @@ protected:
 
 public:
   RemoteApplier(CephContext* const cct,
-                RGWRados* const store,
+                RGWCtl* const ctl,
                 acl_strategy_t&& extra_acl_strategy,
                 const AuthInfo& info,
 		rgw::auth::ImplicitTenants& implicit_tenant_context,
                 rgw::auth::ImplicitTenants::implicit_tenant_flag_bits implicit_tenant_bit)
     : cct(cct),
-      store(store),
+      ctl(ctl),
       extra_acl_strategy(std::move(extra_acl_strategy)),
       info(info),
       implicit_tenant_context(implicit_tenant_context),
@@ -616,20 +637,35 @@ public:
 };
 
 class RoleApplier : public IdentityApplier {
+public:
+  struct Role {
+    string id;
+    string name;
+    string tenant;
+    vector<string> role_policies;
+  } role;
 protected:
-  const string role_name;
   const rgw_user user_id;
-  vector<std::string> role_policies;
+  string token_policy;
+  string role_session_name;
+  std::vector<string> token_claims;
+  string token_issued_at;
 
 public:
 
   RoleApplier(CephContext* const cct,
-               const string& role_name,
+               const Role& role,
                const rgw_user& user_id,
-               const vector<std::string>& role_policies)
-    : role_name(role_name),
+               const string& token_policy,
+               const string& role_session_name,
+               const std::vector<string>& token_claims,
+               const string& token_issued_at)
+    : role(role),
       user_id(user_id),
-      role_policies(role_policies) {}
+      token_policy(token_policy),
+      role_session_name(role_session_name),
+      token_claims(token_claims),
+      token_issued_at(token_issued_at) {}
 
   uint32_t get_perms_from_aclspec(const DoutPrefixProvider* dpp, const aclspec_t& aclspec) const override {
     return 0;
@@ -638,7 +674,7 @@ public:
     return false;
   }
   bool is_owner_of(const rgw_user& uid) const override {
-    return false;
+    return (this->user_id.id == uid.id && this->user_id.tenant == uid.tenant && this->user_id.ns == uid.ns);
   }
   bool is_identity(const idset_t& ids) const override;
   uint32_t get_perm_mask() const override {
@@ -650,14 +686,18 @@ public:
   string get_acct_name() const override { return {}; }
   string get_subuser() const override { return {}; }
   void modify_request_state(const DoutPrefixProvider* dpp, req_state* s) const override;
+  string get_role_tenant() const override { return role.tenant; }
 
   struct Factory {
     virtual ~Factory() {}
     virtual aplptr_t create_apl_role( CephContext* cct,
                                       const req_state* s,
-                                      const string& role_name,
+                                      const rgw::auth::RoleApplier::Role& role,
                                       const rgw_user& user_id,
-                                      const vector<std::string>& role_policies) const = 0;
+                                      const std::string& token_policy,
+                                      const std::string& role_session,
+                                      const std::vector<string>& token_claims,
+                                      const std::string& token_issued_at) const = 0;
     };
 };
 
@@ -677,7 +717,7 @@ public:
     return "rgw::auth::AnonymousEngine";
   }
 
-  Engine::result_t authenticate(const DoutPrefixProvider* dpp, const req_state* s) const override final;
+  Engine::result_t authenticate(const DoutPrefixProvider* dpp, const req_state* s, optional_yield y) const override final;
 
 protected:
   virtual bool is_applicable(const req_state*) const noexcept {
@@ -691,6 +731,7 @@ protected:
 
 uint32_t rgw_perms_from_aclspec_default_strategy(
   const rgw_user& uid,
-  const rgw::auth::Identity::aclspec_t& aclspec);
+  const rgw::auth::Identity::aclspec_t& aclspec,
+  const DoutPrefixProvider *dpp);
 
 #endif /* CEPH_RGW_AUTH_H */

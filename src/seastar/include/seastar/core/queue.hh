@@ -28,12 +28,15 @@
 
 namespace seastar {
 
+/// Asynchronous single-producer single-consumer queue with limited capacity.
+/// There can be at most one producer-side and at most one consumer-side operation active at any time.
+/// Operations returning a future are considered to be active until the future resolves.
 template <typename T>
 class queue {
     std::queue<T, circular_buffer<T>> _q;
     size_t _max;
-    compat::optional<promise<>> _not_empty;
-    compat::optional<promise<>> _not_full;
+    std::optional<promise<>> _not_empty;
+    std::optional<promise<>> _not_full;
     std::exception_ptr _ex = nullptr;
 private:
     void notify_not_empty();
@@ -51,7 +54,7 @@ public:
     /// Popping from an empty queue will result in undefined behavior.
     T pop();
 
-    /// Consumes items from the queue, passing them to @func, until @func
+    /// Consumes items from the queue, passing them to \c func, until \c func
     /// returns false or the queue it empty
     ///
     /// Returns false if func returned false.
@@ -66,21 +69,25 @@ public:
 
     /// Returns a future<> that becomes available when pop() or consume()
     /// can be called.
+    /// A consumer-side operation. Cannot be called concurrently with other consumer-side operations.
     future<> not_empty();
 
     /// Returns a future<> that becomes available when push() can be called.
+    /// A producer-side operation. Cannot be called concurrently with other producer-side operations.
     future<> not_full();
 
     /// Pops element now or when there is some. Returns a future that becomes
     /// available when some element is available.
     /// If the queue is, or already was, abort()ed, the future resolves with
     /// the exception provided to abort().
+    /// A consumer-side operation. Cannot be called concurrently with other consumer-side operations.
     future<T> pop_eventually();
 
     /// Pushes the element now or when there is room. Returns a future<> which
     /// resolves when data was pushed.
     /// If the queue is, or already was, abort()ed, the future resolves with
     /// the exception provided to abort().
+    /// A producer-side operation. Cannot be called concurrently with other producer-side operations.
     future<> push_eventually(T&& data);
 
     /// Returns the number of items currently in the queue.
@@ -110,12 +117,19 @@ public:
         _ex = ex;
         if (_not_full) {
             _not_full->set_exception(ex);
-            _not_full= compat::nullopt;
+            _not_full= std::nullopt;
         }
         if (_not_empty) {
             _not_empty->set_exception(std::move(ex));
-            _not_empty = compat::nullopt;
+            _not_empty = std::nullopt;
         }
+    }
+
+    /// \brief Check if there is an active consumer
+    ///
+    /// Returns true if another fiber waits for an item to be pushed into the queue
+    bool has_blocked_consumer() const {
+        return bool(_not_empty);
     }
 };
 
@@ -130,7 +144,7 @@ inline
 void queue<T>::notify_not_empty() {
     if (_not_empty) {
         _not_empty->set_value();
-        _not_empty = compat::optional<promise<>>();
+        _not_empty = std::optional<promise<>>();
     }
 }
 
@@ -139,7 +153,7 @@ inline
 void queue<T>::notify_not_full() {
     if (_not_full) {
         _not_full->set_value();
-        _not_full = compat::optional<promise<>>();
+        _not_full = std::optional<promise<>>();
     }
 }
 

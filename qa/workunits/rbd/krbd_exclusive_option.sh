@@ -24,10 +24,10 @@ function assert_locked() {
 
     local actual
     actual="$(rados -p rbd --format=json lock info rbd_header.$IMAGE_ID rbd_lock |
-        python -m json.tool)"
+        python3 -m json.tool --sort-keys)"
 
     local expected
-    expected="$(cat <<EOF | python -m json.tool
+    expected="$(cat <<EOF | python3 -m json.tool --sort-keys
 {
     "lockers": [
         {
@@ -53,13 +53,13 @@ function assert_unlocked() {
         grep '"lockers":\[\]'
 }
 
-function blacklist_add() {
+function blocklist_add() {
     local dev_id="${1#/dev/rbd}"
 
     local client_addr
     client_addr="$(< $SYSFS_DIR/$dev_id/client_addr)"
 
-    ceph osd blacklist add $client_addr
+    ceph osd blocklist add $client_addr
 }
 
 SYSFS_DIR="/sys/bus/rbd/devices"
@@ -68,7 +68,7 @@ IMAGE_NAME="exclusive-option-test"
 rbd create --size 1 --image-feature '' $IMAGE_NAME
 
 IMAGE_ID="$(rbd info --format=json $IMAGE_NAME |
-    python -c "import sys, json; print json.load(sys.stdin)['block_name_prefix'].split('.')[1]")"
+    python3 -c "import sys, json; print(json.load(sys.stdin)['block_name_prefix'].split('.')[1])")"
 
 DEV=$(sudo rbd map $IMAGE_NAME)
 assert_unlocked
@@ -203,7 +203,7 @@ assert_unlocked
 DEV=$(sudo rbd map $IMAGE_NAME)
 assert_locked $DEV
 dd if=/dev/urandom of=$DEV bs=4k count=10 oflag=direct
-{ sleep 10; blacklist_add $DEV; } &
+{ sleep 10; blocklist_add $DEV; } &
 PID=$!
 expect_false dd if=/dev/urandom of=$DEV bs=4k count=200000 oflag=direct
 wait $PID

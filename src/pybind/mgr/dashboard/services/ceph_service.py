@@ -2,18 +2,20 @@
 from __future__ import absolute_import
 
 import json
+import logging
 
 import rados
-
 from mgr_module import CommandResult
-from mgr_util import get_time_series_rates, get_most_recent_rate
+from mgr_util import get_most_recent_rate, get_time_series_rates
 
-from .. import logger, mgr
+from .. import mgr
 
 try:
-    from typing import Dict, Any, Union  # pylint: disable=unused-import
+    from typing import Any, Dict, Optional, Union
 except ImportError:
     pass  # For typing only
+
+logger = logging.getLogger('ceph_service')
 
 
 class SendCommandError(rados.Error):
@@ -23,6 +25,7 @@ class SendCommandError(rados.Error):
         super(SendCommandError, self).__init__(err, errno)
 
 
+# pylint: disable=too-many-public-methods
 class CephService(object):
 
     OSD_FLAG_NO_SCRUB = 'noscrub'
@@ -37,7 +40,7 @@ class CephService(object):
 
     @classmethod
     def get_service_map(cls, service_name):
-        service_map = {}  # type: Dict[str, Dict[str, Any]]
+        service_map = {}  # type: Dict[str, dict]
         for server in mgr.list_servers():
             for service in server['services']:
                 if service['type'] == service_name:
@@ -64,22 +67,55 @@ class CephService(object):
         return [svc for _, svcs in service_map.items() for svc in svcs['services']]
 
     @classmethod
-    def get_service(cls, service_name, service_id):
+    def get_service_data_by_metadata_id(cls,
+                                        service_type: str,
+                                        metadata_id: str) -> Optional[Dict[str, Any]]:
         for server in mgr.list_servers():
             for service in server['services']:
-                if service['type'] == service_name:
-                    inst_id = service['id']
-                    if inst_id == service_id:
-                        metadata = mgr.get_metadata(service_name, inst_id)
-                        status = mgr.get_daemon_status(service_name, inst_id)
+                if service['type'] == service_type:
+                    metadata = mgr.get_metadata(service_type, service['id'])
+                    if metadata_id == metadata['id']:
                         return {
-                            'id': inst_id,
-                            'type': service_name,
+                            'id': metadata['id'],
+                            'service_map_id': str(service['id']),
+                            'type': service_type,
                             'hostname': server['hostname'],
-                            'metadata': metadata,
-                            'status': status
+                            'metadata': metadata
                         }
         return None
+
+    @classmethod
+    def get_service(cls, service_type: str, metadata_id: str) -> Optional[Dict[str, Any]]:
+        svc_data = cls.get_service_data_by_metadata_id(service_type, metadata_id)
+        if svc_data:
+            svc_data['status'] = mgr.get_daemon_status(svc_data['type'], svc_data['service_map_id'])
+        return svc_data
+
+    @classmethod
+    def get_service_perf_counters(cls, service_type: str, service_id: str) -> Dict[str, Any]:
+        schema_dict = mgr.get_perf_schema(service_type, service_id)
+        schema = schema_dict["{}.{}".format(service_type, service_id)]
+        counters = []
+        for key, value in sorted(schema.items()):
+            counter = {'name': str(key), 'description': value['description']}
+            # pylint: disable=W0212
+            if mgr._stattype_to_str(value['type']) == 'counter':
+                counter['value'] = cls.get_rate(
+                    service_type, service_id, key)
+                counter['unit'] = mgr._unit_to_str(value['units'])
+            else:
+                counter['value'] = mgr.get_latest(
+                    service_type, service_id, key)
+                counter['unit'] = ''
+            counters.append(counter)
+
+        return {
+            'service': {
+                'type': service_type,
+                'id': str(service_id)
+            },
+            'counters': counters
+        }
 
     @classmethod
     def get_pool_list(cls, application=None):
@@ -116,6 +152,24 @@ class CephService(object):
         return pools_w_stats
 
     @classmethod
+    def get_erasure_code_profiles(cls):
+        def _serialize_ecp(name, ecp):
+            def serialize_numbers(key):
+                value = ecp.get(key)
+                if value is not None:
+                    ecp[key] = int(value)
+
+            ecp['name'] = name
+            serialize_numbers('k')
+            serialize_numbers('m')
+            return ecp
+
+        ret = []
+        for name, ecp in mgr.get('osd_map').get('erasure_code_profiles', {}).items():
+            ret.append(_serialize_ecp(name, ecp))
+        return ret
+
+    @classmethod
     def get_pool_name_from_id(cls, pool_id):
         # type: (int) -> Union[str, None]
         return mgr.rados.pool_reverse_lookup(pool_id)
@@ -137,8 +191,9 @@ class CephService(object):
             return {}
         return mgr.get("pg_summary")['by_pool'][pool['pool'].__str__()]
 
-    @classmethod
-    def send_command(cls, srv_type, prefix, srv_spec='', **kwargs):
+    @staticmethod
+    def send_command(srv_type, prefix, srv_spec='', **kwargs):
+        # type: (str, str, Optional[str], Any) -> Any
         """
         :type prefix: str
         :param srv_type: mon |
@@ -165,15 +220,129 @@ class CephService(object):
         mgr.send_command(result, srv_type, srv_spec, json.dumps(argdict), "")
         r, outb, outs = result.wait()
         if r != 0:
-            msg = "send_command '{}' failed. (r={}, outs=\"{}\", kwargs={})".format(prefix, r, outs,
-                                                                                    kwargs)
-            logger.error(msg)
+            logger.error("send_command '%s' failed. (r=%s, outs=\"%s\", kwargs=%s)", prefix, r,
+                         outs, kwargs)
+
             raise SendCommandError(outs, prefix, argdict, r)
+
+        try:
+            return json.loads(outb or outs)
+        except Exception:  # pylint: disable=broad-except
+            return outb
+
+    @staticmethod
+    def _get_smart_data_by_device(device):
+        # type: (dict) -> Dict[str, dict]
+        # Check whether the device is associated with daemons.
+        if 'daemons' in device and device['daemons']:
+            dev_smart_data: Dict[str, Any] = {}
+
+            # Get a list of all OSD daemons on all hosts that are 'up'
+            # because SMART data can not be retrieved from daemons that
+            # are 'down' or 'destroyed'.
+            osd_tree = CephService.send_command('mon', 'osd tree')
+            osd_daemons_up = [
+                node['name'] for node in osd_tree.get('nodes', {})
+                if node.get('status') == 'up'
+            ]
+
+            # All daemons on the same host can deliver SMART data,
+            # thus it is not relevant for us which daemon we are using.
+            # NOTE: the list may contain daemons that are 'down' or 'destroyed'.
+            for daemon in device['daemons']:
+                svc_type, svc_id = daemon.split('.')
+                if 'osd' in svc_type:
+                    if daemon not in osd_daemons_up:
+                        continue
+                    try:
+                        dev_smart_data = CephService.send_command(
+                            svc_type, 'smart', svc_id, devid=device['devid'])
+                    except SendCommandError as error:
+                        logger.warning(str(error))
+                        # Try to retrieve SMART data from another daemon.
+                        continue
+                elif 'mon' in svc_type:
+                    try:
+                        dev_smart_data = CephService.send_command(
+                            svc_type, 'device query-daemon-health-metrics', who=daemon)
+                    except SendCommandError as error:
+                        logger.warning(str(error))
+                        # Try to retrieve SMART data from another daemon.
+                        continue
+                else:
+                    dev_smart_data = {}
+                for dev_id, dev_data in dev_smart_data.items():
+                    if 'error' in dev_data:
+                        logger.warning(
+                            '[SMART] Error retrieving smartctl data for device ID "%s": %s',
+                            dev_id, dev_data)
+                break
+
+            return dev_smart_data
+        logger.warning('[SMART] No daemons associated with device ID "%s"',
+                       device['devid'])
+        return {}
+
+    @staticmethod
+    def get_devices_by_host(hostname):
+        # type: (str) -> dict
+        return CephService.send_command('mon',
+                                        'device ls-by-host',
+                                        host=hostname)
+
+    @staticmethod
+    def get_devices_by_daemon(daemon_type, daemon_id):
+        # type: (str, str) -> dict
+        return CephService.send_command('mon',
+                                        'device ls-by-daemon',
+                                        who='{}.{}'.format(
+                                            daemon_type, daemon_id))
+
+    @staticmethod
+    def get_smart_data_by_host(hostname):
+        # type: (str) -> dict
+        """
+        Get the SMART data of all devices on the given host, regardless
+        of the daemon (osd, mon, ...).
+        :param hostname: The name of the host.
+        :return: A dictionary containing the SMART data of every device
+          on the given host. The device name is used as the key in the
+          dictionary.
+        """
+        devices = CephService.get_devices_by_host(hostname)
+        smart_data = {}  # type: dict
+        if devices:
+            for device in devices:
+                if device['devid'] not in smart_data:
+                    smart_data.update(
+                        CephService._get_smart_data_by_device(device))
         else:
-            try:
-                return json.loads(outb)
-            except Exception:  # pylint: disable=broad-except
-                return outb
+            logger.debug('[SMART] could not retrieve device list from host %s', hostname)
+        return smart_data
+
+    @staticmethod
+    def get_smart_data_by_daemon(daemon_type, daemon_id):
+        # type: (str, str) -> Dict[str, dict]
+        """
+        Get the SMART data of the devices associated with the given daemon.
+        :param daemon_type: The daemon type, e.g. 'osd' or 'mon'.
+        :param daemon_id: The daemon identifier.
+        :return: A dictionary containing the SMART data of every device
+          associated with the given daemon. The device name is used as the
+          key in the dictionary.
+        """
+        devices = CephService.get_devices_by_daemon(daemon_type, daemon_id)
+        smart_data = {}  # type: Dict[str, dict]
+        if devices:
+            for device in devices:
+                if device['devid'] not in smart_data:
+                    smart_data.update(
+                        CephService._get_smart_data_by_device(device))
+        else:
+            msg = '[SMART] could not retrieve device list from daemon with type %s and ' +\
+                'with ID %s'
+            logger.debug(msg, daemon_type, daemon_id)
+        return smart_data
 
     @classmethod
     def get_rates(cls, svc_type, svc_name, path):

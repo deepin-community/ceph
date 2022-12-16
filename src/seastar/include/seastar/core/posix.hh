@@ -22,6 +22,7 @@
 #pragma once
 
 #include <seastar/core/sstring.hh>
+#include "abort_on_ebadf.hh"
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -36,7 +37,6 @@
 #include <sys/mman.h>
 #include <signal.h>
 #include <system_error>
-#include <boost/optional.hpp>
 #include <pthread.h>
 #include <signal.h>
 #include <memory>
@@ -44,6 +44,7 @@
 #include <sys/uio.h>
 
 #include <seastar/net/socket_defs.hh>
+#include <seastar/util/std-compat.hh>
 
 namespace seastar {
 
@@ -75,7 +76,7 @@ class file_desc {
 public:
     file_desc() = delete;
     file_desc(const file_desc&) = delete;
-    file_desc(file_desc&& x) : _fd(x._fd) { x._fd = -1; }
+    file_desc(file_desc&& x) noexcept : _fd(x._fd) { x._fd = -1; }
     ~file_desc() { if (_fd != -1) { ::close(_fd); } }
     void operator=(const file_desc&) = delete;
     file_desc& operator=(file_desc&& x) {
@@ -94,6 +95,11 @@ public:
         _fd = -1;
     }
     int get() const { return _fd; }
+
+    static file_desc from_fd(int fd) {
+        return file_desc(fd);
+    }
+
     static file_desc open(sstring name, int flags, mode_t mode = 0) {
         int fd = ::open(name.c_str(), flags, mode);
         throw_system_error_on(fd == -1, "open");
@@ -125,8 +131,18 @@ public:
         throw_system_error_on(fd == -1, "dup");
         return file_desc(fd);
     }
-    file_desc accept(sockaddr& sa, socklen_t& sl, int flags = 0) {
-        auto ret = ::accept4(_fd, &sa, &sl, flags);
+    file_desc accept(socket_address& sa, int flags = 0) {
+        auto ret = ::accept4(_fd, &sa.as_posix_sockaddr(), &sa.addr_length, flags);
+        throw_system_error_on(ret == -1, "accept4");
+        return file_desc(ret);
+    }
+    static file_desc inotify_init(int flags);
+    // return nullopt if no connection is availbale to be accepted
+    std::optional<file_desc> try_accept(socket_address& sa, int flags = 0) {
+        auto ret = ::accept4(_fd, &sa.as_posix_sockaddr(), &sa.addr_length, flags);
+        if (ret == -1 && errno == EAGAIN) {
+            return {};
+        }
         throw_system_error_on(ret == -1, "accept4");
         return file_desc(ret);
     }
@@ -176,6 +192,11 @@ public:
         throw_system_error_on(r == -1, "setsockopt");
         return r;
     }
+    int setsockopt(int level, int optname, const void* data, socklen_t len) {
+        int r = ::setsockopt(_fd, level, optname, data, len);
+        throw_system_error_on(r == -1, "setsockopt");
+        return r;
+    }
     template <typename Data>
     Data getsockopt(int level, int optname) {
         Data data;
@@ -196,7 +217,7 @@ public:
         throw_system_error_on(r == -1, "fstat");
         return buf.st_size;
     }
-    boost::optional<size_t> read(void* buffer, size_t len) {
+    std::optional<size_t> read(void* buffer, size_t len) {
         auto r = ::read(_fd, buffer, len);
         if (r == -1 && errno == EAGAIN) {
             return {};
@@ -204,7 +225,7 @@ public:
         throw_system_error_on(r == -1, "read");
         return { size_t(r) };
     }
-    boost::optional<ssize_t> recv(void* buffer, size_t len, int flags) {
+    std::optional<ssize_t> recv(void* buffer, size_t len, int flags) {
         auto r = ::recv(_fd, buffer, len, flags);
         if (r == -1 && errno == EAGAIN) {
             return {};
@@ -212,7 +233,7 @@ public:
         throw_system_error_on(r == -1, "recv");
         return { ssize_t(r) };
     }
-    boost::optional<size_t> recvmsg(msghdr* mh, int flags) {
+    std::optional<size_t> recvmsg(msghdr* mh, int flags) {
         auto r = ::recvmsg(_fd, mh, flags);
         if (r == -1 && errno == EAGAIN) {
             return {};
@@ -220,7 +241,7 @@ public:
         throw_system_error_on(r == -1, "recvmsg");
         return { size_t(r) };
     }
-    boost::optional<size_t> send(const void* buffer, size_t len, int flags) {
+    std::optional<size_t> send(const void* buffer, size_t len, int flags) {
         auto r = ::send(_fd, buffer, len, flags);
         if (r == -1 && errno == EAGAIN) {
             return {};
@@ -228,15 +249,15 @@ public:
         throw_system_error_on(r == -1, "send");
         return { size_t(r) };
     }
-    boost::optional<size_t> sendto(socket_address& addr, const void* buf, size_t len, int flags) {
-        auto r = ::sendto(_fd, buf, len, flags, &addr.u.sa, sizeof(addr.u.sas));
+    std::optional<size_t> sendto(socket_address& addr, const void* buf, size_t len, int flags) {
+        auto r = ::sendto(_fd, buf, len, flags, &addr.u.sa, addr.length());
         if (r == -1 && errno == EAGAIN) {
             return {};
         }
         throw_system_error_on(r == -1, "sendto");
         return { size_t(r) };
     }
-    boost::optional<size_t> sendmsg(const msghdr* msg, int flags) {
+    std::optional<size_t> sendmsg(const msghdr* msg, int flags) {
         auto r = ::sendmsg(_fd, msg, flags);
         if (r == -1 && errno == EAGAIN) {
             return {};
@@ -257,8 +278,7 @@ public:
     }
     socket_address get_address() {
         socket_address addr;
-        auto len = (socklen_t) sizeof(addr.u.sas);
-        auto r = ::getsockname(_fd, &addr.u.sa, &len);
+        auto r = ::getsockname(_fd, &addr.u.sa, &addr.addr_length);
         throw_system_error_on(r == -1, "getsockname");
         return addr;
     }
@@ -266,7 +286,7 @@ public:
         auto fd = ::listen(_fd, backlog);
         throw_system_error_on(fd == -1, "listen");
     }
-    boost::optional<size_t> write(const void* buf, size_t len) {
+    std::optional<size_t> write(const void* buf, size_t len) {
         auto r = ::write(_fd, buf, len);
         if (r == -1 && errno == EAGAIN) {
             return {};
@@ -274,7 +294,7 @@ public:
         throw_system_error_on(r == -1, "write");
         return { size_t(r) };
     }
-    boost::optional<size_t> writev(const iovec *iov, int iovcnt) {
+    std::optional<size_t> writev(const iovec *iov, int iovcnt) {
         auto r = ::writev(_fd, iov, iovcnt);
         if (r == -1 && errno == EAGAIN) {
             return {};
@@ -407,6 +427,9 @@ public:
 inline
 void throw_system_error_on(bool condition, const char* what_arg) {
     if (condition) {
+        if ((errno == EBADF || errno == ENOTSOCK) && is_abort_on_ebadf_enabled()) {
+            abort();
+        }
         throw std::system_error(errno, std::system_category(), what_arg);
     }
 }
@@ -416,6 +439,10 @@ inline
 void throw_kernel_error(T r) {
     static_assert(std::is_signed<T>::value, "kernel error variables must be signed");
     if (r < 0) {
+        auto ec = -r;
+        if ((ec == EBADF || ec == ENOTSOCK) && is_abort_on_ebadf_enabled()) {
+            abort();
+        }
         throw std::system_error(-r, std::system_category());
     }
 }

@@ -56,7 +56,7 @@ public:
         return std::move(_value);
     }
     void reset() {
-        _value.reset();
+        _value = {};
         _start = nullptr;
     }
     friend class guard;
@@ -120,11 +120,10 @@ protected:
     }
     void postpop() {}
     sstring get_str() {
-        auto s = std::move(_builder).get();
-        return std::move(s);
+        return std::move(_builder).get();
     }
 public:
-    using unconsumed_remainder = compat::optional<temporary_buffer<char>>;
+    using unconsumed_remainder = std::optional<temporary_buffer<char>>;
     future<unconsumed_remainder> operator()(temporary_buffer<char> buf) {
         char* p = buf.get_write();
         char* pe = p + buf.size();

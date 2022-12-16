@@ -5,6 +5,7 @@ os_type: ubuntu
 
 overrides:
   install:
+    ceph:
   ceph:
     conf:
       global:

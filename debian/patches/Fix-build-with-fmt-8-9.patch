@@ -1,0 +1,134 @@
+From: Shengjing Zhu <zhushengjing@cambricon.com>
+Date: Sun, 31 Jul 2022 15:27:17 +0800
+Subject: Fix build with fmt 8/9
+
++ changes in segment_manager.cc and segment_manager.h are backported from
+  part of the large changes in https://github.com/ceph/ceph/commit/d5b0cd13
++ change in node_extent_accessor.h is not forwarded to upstream since it's
+  a workaround. However it doesn't harm since it's just a error message
+  which shouldn't happen anyway.
++ changes in seastar is backported from
+  https://github.com/scylladb/seastar/commit/dfb62861
++ changes in crimson/osd/main.cc is backported from
+  https://github.com/ceph/ceph/commit/58cb9bac
+---
+ src/crimson/os/seastore/CMakeLists.txt                |  1 +
+ .../staged-fltree/node_extent_accessor.h              |  2 +-
+ src/crimson/os/seastore/segment_manager.cc            | 19 +++++++++++++++++++
+ src/crimson/os/seastore/segment_manager.h             |  3 +++
+ src/crimson/osd/main.cc                               |  6 +++---
+ src/seastar/include/seastar/core/print.hh             |  4 ++++
+ 6 files changed, 31 insertions(+), 4 deletions(-)
+ create mode 100644 src/crimson/os/seastore/segment_manager.cc
+
+diff --git a/src/crimson/os/seastore/CMakeLists.txt b/src/crimson/os/seastore/CMakeLists.txt
+index 77f8465..c6d4e93 100644
+--- a/src/crimson/os/seastore/CMakeLists.txt
++++ b/src/crimson/os/seastore/CMakeLists.txt
+@@ -1,6 +1,7 @@
+ add_library(crimson-seastore STATIC
+   cached_extent.cc
+   seastore_types.cc
++  segment_manager.cc
+   segment_manager/ephemeral.cc
+   segment_manager/block.cc
+   transaction_manager.cc
+diff --git a/src/crimson/os/seastore/onode_manager/staged-fltree/node_extent_accessor.h b/src/crimson/os/seastore/onode_manager/staged-fltree/node_extent_accessor.h
+index 94782f5..3c45861 100644
+--- a/src/crimson/os/seastore/onode_manager/staged-fltree/node_extent_accessor.h
++++ b/src/crimson/os/seastore/onode_manager/staged-fltree/node_extent_accessor.h
+@@ -169,7 +169,7 @@ class DeltaRecorderT final: public DeltaRecorder {
+       }
+       default:
+         logger().error("OTree::Extent::Replay: got unknown op {} when replay {:#x}",
+-                       op, node.get_laddr());
++                       static_cast<uint8_t>(op), node.get_laddr());
+         ceph_abort();
+       }
+     } catch (buffer::error& e) {
+diff --git a/src/crimson/os/seastore/segment_manager.cc b/src/crimson/os/seastore/segment_manager.cc
+new file mode 100644
+index 0000000..d4a7132
+--- /dev/null
++++ b/src/crimson/os/seastore/segment_manager.cc
+@@ -0,0 +1,19 @@
++#include "crimson/os/seastore/segment_manager.h"
++
++namespace crimson::os::seastore {
++
++  std::ostream& operator<<(std::ostream &out, Segment::segment_state_t s)
++  {
++    using state_t = Segment::segment_state_t;
++    switch (s) {
++      case state_t::EMPTY:
++        return out << "EMPTY";
++      case state_t::OPEN:
++        return out << "OPEN";
++      case state_t::CLOSED:
++        return out << "CLOSED";
++      default:
++        return out << "INVALID_SEGMENT_STATE!";
++    }
++  }
++}
+diff --git a/src/crimson/os/seastore/segment_manager.h b/src/crimson/os/seastore/segment_manager.h
+index 61c6509..30bdbc4 100644
+--- a/src/crimson/os/seastore/segment_manager.h
++++ b/src/crimson/os/seastore/segment_manager.h
+@@ -73,6 +73,9 @@ public:
+ 
+   virtual ~Segment() {}
+ };
++
++std::ostream& operator<<(std::ostream& out, Segment::segment_state_t);
++
+ using SegmentRef = boost::intrusive_ptr<Segment>;
+ 
+ constexpr size_t PADDR_SIZE = sizeof(paddr_t);
+diff --git a/src/crimson/osd/main.cc b/src/crimson/osd/main.cc
+index a90903e..0db6496 100644
+--- a/src/crimson/osd/main.cc
++++ b/src/crimson/osd/main.cc
+@@ -88,7 +88,7 @@ seastar::future<> make_keyring()
+     if (exists &&
+         keyring.load(nullptr, path) == 0 &&
+         keyring.get_auth(name, auth)) {
+-      seastar::fprint(std::cerr, "already have key in keyring: %s\n", path);
++      fmt::print(std::cerr, "already have key in keyring: %s\n", path);
+       return seastar::now();
+     } else {
+       auth.key.create(std::make_unique<CephContext>().get(), CEPH_CRYPTO_AES);
+@@ -100,7 +100,7 @@ seastar::future<> make_keyring()
+       return crimson::write_file(std::move(bl), path, permissions);
+     }
+   }).handle_exception_type([path](const std::filesystem::filesystem_error& e) {
+-    seastar::fprint(std::cerr, "FATAL: writing new keyring to %s: %s\n", path, e.what());
++    fmt::print(std::cerr, "FATAL: writing new keyring to %s: %s\n", path, e.what());
+     throw e;
+   });
+ }
+@@ -216,7 +216,7 @@ int main(int argc, char* argv[])
+       });
+     });
+   } catch (...) {
+-    seastar::fprint(std::cerr, "FATAL: Exception during startup, aborting: %s\n", std::current_exception());
++    fmt::print(std::cerr, "FATAL: Exception during startup, aborting: %s\n", std::current_exception());
+     return EXIT_FAILURE;
+   }
+ }
+diff --git a/src/seastar/include/seastar/core/print.hh b/src/seastar/include/seastar/core/print.hh
+index 72e3934..c1868e8 100644
+--- a/src/seastar/include/seastar/core/print.hh
++++ b/src/seastar/include/seastar/core/print.hh
+@@ -133,7 +133,11 @@ template <typename... A>
+ sstring
+ format(const char* fmt, A&&... a) {
+     fmt::memory_buffer out;
++#if FMT_VERSION >= 80000
++    fmt::format_to(fmt::appender(out), fmt::runtime(fmt), std::forward<A>(a)...);
++#else
+     fmt::format_to(out, fmt, std::forward<A>(a)...);
++#endif
+     return sstring{out.data(), out.size()};
+ }
+ 

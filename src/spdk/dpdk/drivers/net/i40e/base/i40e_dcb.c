@@ -1,35 +1,6 @@
-/*******************************************************************************
-
-Copyright (c) 2013 - 2015, Intel Corporation
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
- 1. Redistributions of source code must retain the above copyright notice,
-    this list of conditions and the following disclaimer.
-
- 2. Redistributions in binary form must reproduce the above copyright
-    notice, this list of conditions and the following disclaimer in the
-    documentation and/or other materials provided with the distribution.
-
- 3. Neither the name of the Intel Corporation nor the names of its
-    contributors may be used to endorse or promote products derived from
-    this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
-LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-POSSIBILITY OF SUCH DAMAGE.
-
-***************************************************************************/
+/* SPDX-License-Identifier: BSD-3-Clause
+ * Copyright(c) 2001-2020 Intel Corporation
+ */
 
 #include "i40e_adminq.h"
 #include "i40e_prototype.h"
@@ -892,22 +863,41 @@ out:
 /**
  * i40e_init_dcb
  * @hw: pointer to the hw struct
+ * @enable_mib_change: enable mib change event
  *
  * Update DCB configuration from the Firmware
  **/
-enum i40e_status_code i40e_init_dcb(struct i40e_hw *hw)
+enum i40e_status_code i40e_init_dcb(struct i40e_hw *hw, bool enable_mib_change)
 {
 	enum i40e_status_code ret = I40E_SUCCESS;
 	struct i40e_lldp_variables lldp_cfg;
 	u8 adminstatus = 0;
 
 	if (!hw->func_caps.dcb)
-		return ret;
+		return I40E_NOT_SUPPORTED;
 
 	/* Read LLDP NVM area */
-	ret = i40e_read_lldp_cfg(hw, &lldp_cfg);
+	if (hw->flags & I40E_HW_FLAG_FW_LLDP_PERSISTENT) {
+		u8 offset = 0;
+
+		if (hw->mac.type == I40E_MAC_XL710)
+			offset = I40E_LLDP_CURRENT_STATUS_XL710_OFFSET;
+		else if (hw->mac.type == I40E_MAC_X722)
+			offset = I40E_LLDP_CURRENT_STATUS_X722_OFFSET;
+		else
+			return I40E_NOT_SUPPORTED;
+
+		ret = i40e_read_nvm_module_data(hw,
+						I40E_SR_EMP_SR_SETTINGS_PTR,
+						offset,
+						I40E_LLDP_CURRENT_STATUS_OFFSET,
+						I40E_LLDP_CURRENT_STATUS_SIZE,
+						&lldp_cfg.adminstatus);
+	} else {
+		ret = i40e_read_lldp_cfg(hw, &lldp_cfg);
+	}
 	if (ret)
-		return ret;
+		return I40E_ERR_NOT_READY;
 
 	/* Get the LLDP AdminStatus for the current port */
 	adminstatus = lldp_cfg.adminstatus >> (hw->port * 4);
@@ -916,7 +906,7 @@ enum i40e_status_code i40e_init_dcb(struct i40e_hw *hw)
 	/* LLDP agent disabled */
 	if (!adminstatus) {
 		hw->dcbx_status = I40E_DCBX_STATUS_DISABLED;
-		return ret;
+		return I40E_ERR_NOT_READY;
 	}
 
 	/* Get DCBX status */
@@ -925,27 +915,63 @@ enum i40e_status_code i40e_init_dcb(struct i40e_hw *hw)
 		return ret;
 
 	/* Check the DCBX Status */
-	switch (hw->dcbx_status) {
-	case I40E_DCBX_STATUS_DONE:
-	case I40E_DCBX_STATUS_IN_PROGRESS:
+	if (hw->dcbx_status == I40E_DCBX_STATUS_DONE ||
+	    hw->dcbx_status == I40E_DCBX_STATUS_IN_PROGRESS) {
 		/* Get current DCBX configuration */
 		ret = i40e_get_dcb_config(hw);
 		if (ret)
 			return ret;
-		break;
-	case I40E_DCBX_STATUS_DISABLED:
-		return ret;
-	case I40E_DCBX_STATUS_NOT_STARTED:
-	case I40E_DCBX_STATUS_MULTIPLE_PEERS:
-	default:
-		break;
+	} else if (hw->dcbx_status == I40E_DCBX_STATUS_DISABLED) {
+		return I40E_ERR_NOT_READY;
 	}
 
 	/* Configure the LLDP MIB change event */
-	ret = i40e_aq_cfg_lldp_mib_change_event(hw, true, NULL);
+	if (enable_mib_change)
+		ret = i40e_aq_cfg_lldp_mib_change_event(hw, true, NULL);
+
+	return ret;
+}
+
+/**
+ * i40e_get_fw_lldp_status
+ * @hw: pointer to the hw struct
+ * @lldp_status: pointer to the status enum
+ *
+ * Get status of FW Link Layer Discovery Protocol (LLDP) Agent.
+ * Status of agent is reported via @lldp_status parameter.
+ **/
+enum i40e_status_code
+i40e_get_fw_lldp_status(struct i40e_hw *hw,
+			enum i40e_get_fw_lldp_status_resp *lldp_status)
+{
+	enum i40e_status_code ret;
+	struct i40e_virt_mem mem;
+	u8 *lldpmib;
+
+	if (!lldp_status)
+		return I40E_ERR_PARAM;
+
+	/* Allocate buffer for the LLDPDU */
+	ret = i40e_allocate_virt_mem(hw, &mem, I40E_LLDPDU_SIZE);
 	if (ret)
 		return ret;
 
+	lldpmib = (u8 *)mem.va;
+	ret = i40e_aq_get_lldp_mib(hw, 0, 0, (void *)lldpmib,
+				   I40E_LLDPDU_SIZE, NULL, NULL, NULL);
+
+	if (ret == I40E_SUCCESS) {
+		*lldp_status = I40E_GET_FW_LLDP_STATUS_ENABLED;
+	} else if (hw->aq.asq_last_status == I40E_AQ_RC_ENOENT) {
+		/* MIB is not available yet but the agent is running */
+		*lldp_status = I40E_GET_FW_LLDP_STATUS_ENABLED;
+		ret = I40E_SUCCESS;
+	} else if (hw->aq.asq_last_status == I40E_AQ_RC_EPERM) {
+		*lldp_status = I40E_GET_FW_LLDP_STATUS_DISABLED;
+		ret = I40E_SUCCESS;
+	}
+
+	i40e_free_virt_mem(hw, &mem);
 	return ret;
 }
 
@@ -1291,18 +1317,20 @@ static enum i40e_status_code _i40e_read_lldp_cfg(struct i40e_hw *hw,
 {
 	u32 address, offset = (2 * word_offset);
 	enum i40e_status_code ret;
+	__le16 raw_mem;
 	u16 mem;
 
 	ret = i40e_acquire_nvm(hw, I40E_RESOURCE_READ);
 	if (ret != I40E_SUCCESS)
 		return ret;
 
-	ret = i40e_aq_read_nvm(hw, 0x0, module * 2, sizeof(mem), &mem, true,
-			       NULL);
+	ret = i40e_aq_read_nvm(hw, 0x0, module * 2, sizeof(raw_mem), &raw_mem,
+			       true, NULL);
 	i40e_release_nvm(hw);
 	if (ret != I40E_SUCCESS)
 		return ret;
 
+	mem = LE16_TO_CPU(raw_mem);
 	/* Check if this pointer needs to be read in word size or 4K sector
 	 * units.
 	 */
@@ -1315,12 +1343,13 @@ static enum i40e_status_code _i40e_read_lldp_cfg(struct i40e_hw *hw,
 	if (ret != I40E_SUCCESS)
 		goto err_lldp_cfg;
 
-	ret = i40e_aq_read_nvm(hw, module, offset, sizeof(mem), &mem, true,
-			       NULL);
+	ret = i40e_aq_read_nvm(hw, module, offset, sizeof(raw_mem), &raw_mem,
+			       true, NULL);
 	i40e_release_nvm(hw);
 	if (ret != I40E_SUCCESS)
 		return ret;
 
+	mem = LE16_TO_CPU(raw_mem);
 	offset = mem + word_offset;
 	offset *= 2;
 

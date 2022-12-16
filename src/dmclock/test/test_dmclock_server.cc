@@ -613,7 +613,7 @@ namespace crimson {
 	if (client1 == c) return &info1;
 	else if (client2 == c) return &info2;
 	else {
-	  ADD_FAILURE() << "client info looked up for non-existant client";
+	  ADD_FAILURE() << "client info looked up for non-existent client";
 	  return nullptr;
 	}
       };
@@ -666,7 +666,7 @@ namespace crimson {
 	if (client1 == c) return &info1;
 	else if (client2 == c) return &info2;
 	else {
-	  ADD_FAILURE() << "client info looked up for non-existant client";
+	  ADD_FAILURE() << "client info looked up for non-existent client";
 	  return nullptr;
 	}
       };
@@ -723,7 +723,7 @@ namespace crimson {
 	if (client1 == c) return &info1;
 	else if (client2 == c) return &info2;
 	else {
-	  ADD_FAILURE() << "client info looked up for non-existant client";
+	  ADD_FAILURE() << "client info looked up for non-existent client";
 	  return nullptr;
 	}
       };
@@ -812,7 +812,7 @@ namespace crimson {
       info2.push_back(dmc::ClientInfo(0.0, 200.0, 0.0));
       info2.push_back(dmc::ClientInfo(0.0, 50.0, 0.0));
 
-      uint cli_info_group = 0;
+      size_t cli_info_group = 0;
 
       QueueRef pq;
 
@@ -820,7 +820,7 @@ namespace crimson {
 	if (client1 == c) return &info1[cli_info_group];
 	else if (client2 == c) return &info2[cli_info_group];
 	else {
-	  ADD_FAILURE() << "client info looked up for non-existant client";
+	  ADD_FAILURE() << "client info looked up for non-existent client";
 	  return nullptr;
 	}
       };
@@ -909,7 +909,7 @@ namespace crimson {
 	if (client1 == c) return &info1;
 	else if (client2 == c) return &info2;
 	else {
-	  ADD_FAILURE() << "client info looked up for non-existant client";
+	  ADD_FAILURE() << "client info looked up for non-existent client";
 	  return nullptr;
 	}
       };

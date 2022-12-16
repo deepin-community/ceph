@@ -1,23 +1,29 @@
 import json
 import errno
 import logging
-from threading import Event
+from typing import TYPE_CHECKING
 
 import cephfs
 
+from mgr_util import CephfsClient
+
 from .fs_util import listdir
 
-from .operations.volume import ConnectionPool, open_volume, create_volume, \
-    delete_volume, list_volumes, get_pool_names
+from .operations.volume import create_volume, \
+    delete_volume, list_volumes, open_volume, get_pool_names
 from .operations.group import open_group, create_group, remove_group, open_group_unique
 from .operations.subvolume import open_subvol, create_subvol, remove_subvol, \
     create_clone
+from .operations.trash import Trash
 
 from .vol_spec import VolSpec
 from .exception import VolumeException, ClusterError, ClusterTimeout, EvictionError
 from .async_cloner import Cloner
 from .purge_queue import ThreadPoolPurgeQueueMixin
 from .operations.template import SubvolumeOpType
+
+if TYPE_CHECKING:
+    from volumes import Module
 
 log = logging.getLogger(__name__)
 
@@ -30,6 +36,7 @@ def octal_str_to_decimal_int(mode):
     except ValueError:
         raise VolumeException(-errno.EINVAL, "Invalid mode '{0}'".format(mode))
 
+
 def name_to_json(names):
     """
     convert the list of names to json
@@ -39,14 +46,13 @@ def name_to_json(names):
         namedict.append({'name': names[i].decode('utf-8')})
     return json.dumps(namedict, indent=4, sort_keys=True)
 
-class VolumeClient(object):
+
+class VolumeClient(CephfsClient["Module"]):
     def __init__(self, mgr):
-        self.mgr = mgr
-        self.stopping = Event()
+        super().__init__(mgr)
         # volume specification
         self.volspec = VolSpec(mgr.rados.conf_get('client_snapdir'))
-        self.connection_pool = ConnectionPool(self.mgr)
-        self.cloner = Cloner(self, self.mgr.max_concurrent_clones)
+        self.cloner = Cloner(self, self.mgr.max_concurrent_clones, self.mgr.snapshot_clone_delay)
         self.purge_queue = ThreadPoolPurgeQueueMixin(self, 4)
         # on startup, queue purge job for available volumes to kickstart
         # purge for leftover subvolume entries in trash. note that, if the
@@ -58,24 +64,24 @@ class VolumeClient(object):
             self.cloner.queue_job(fs['mdsmap']['fs_name'])
             self.purge_queue.queue_job(fs['mdsmap']['fs_name'])
 
-    def is_stopping(self):
-        return self.stopping.is_set()
-
     def shutdown(self):
+        # Overrides CephfsClient.shutdown()
         log.info("shutting down")
         # first, note that we're shutting down
         self.stopping.set()
-        # second, ask purge threads to quit
-        self.purge_queue.cancel_all_jobs()
-        # third, delete all libcephfs handles from connection pool
-        self.connection_pool.del_all_handles()
+        # stop clones
+        self.cloner.shutdown()
+        # stop purge threads
+        self.purge_queue.shutdown()
+        # last, delete all libcephfs handles from connection pool
+        self.connection_pool.del_all_connections()
 
     def cluster_log(self, msg, lvl=None):
         """
         log to cluster log with default log level as WARN.
         """
         if not lvl:
-            lvl = self.mgr.CLUSTER_LOG_PRIO_WARN
+            lvl = self.mgr.ClusterLogPrio.WARN
         self.mgr.cluster_log("cluster", lvl, msg)
 
     def volume_exception_to_retval(self, ve):
@@ -86,10 +92,10 @@ class VolumeClient(object):
 
     ### volume operations -- create, rm, ls
 
-    def create_fs_volume(self, volname):
+    def create_fs_volume(self, volname, placement):
         if self.is_stopping():
             return -errno.ESHUTDOWN, "", "shutdown in progress"
-        return create_volume(self.mgr, volname)
+        return create_volume(self.mgr, volname, placement)
 
     def delete_fs_volume(self, volname, confirm):
         if self.is_stopping():
@@ -101,14 +107,12 @@ class VolumeClient(object):
                 "that is what you want, re-issue the command followed by " \
                 "--yes-i-really-mean-it.".format(volname)
 
-        ret, out, err = self.mgr.mon_command({
+        ret, out, err = self.mgr.check_mon_command({
             'prefix': 'config get',
             'key': 'mon_allow_pool_delete',
-            'who': 'mon.*',
+            'who': 'mon',
             'format': 'json',
         })
-        if ret != 0:
-            return ret, out, err
         mon_allow_pool_delete = json.loads(out)
         if not mon_allow_pool_delete:
             return -errno.EPERM, "", "pool deletion is disabled; you must first " \
@@ -119,7 +123,7 @@ class VolumeClient(object):
         if not metadata_pool:
             return -errno.ENOENT, "", "volume {0} doesn't exist".format(volname)
         self.purge_queue.cancel_jobs(volname)
-        self.connection_pool.del_fs_handle(volname, wait=True)
+        self.connection_pool.del_connections(volname, wait=True)
         return delete_volume(self.mgr, volname, metadata_pool, data_pools)
 
     def list_fs_volumes(self):
@@ -157,6 +161,7 @@ class VolumeClient(object):
         pool       = kwargs['pool_layout']
         uid        = kwargs['uid']
         gid        = kwargs['gid']
+        mode       = kwargs['mode']
         isolate_nspace = kwargs['namespace_isolated']
 
         try:
@@ -168,6 +173,7 @@ class VolumeClient(object):
                             attrs = {
                                 'uid': uid if uid else subvolume.uid,
                                 'gid': gid if gid else subvolume.gid,
+                                'mode': octal_str_to_decimal_int(mode),
                                 'data_pool': pool,
                                 'pool_namespace': subvolume.namespace if isolate_nspace else None,
                                 'quota': size
@@ -201,7 +207,7 @@ class VolumeClient(object):
                     # the purge threads on dump.
                     self.purge_queue.queue_job(volname)
         except VolumeException as ve:
-            if ve.errno == -errno.EAGAIN:
+            if ve.errno == -errno.EAGAIN and not force:
                 ve = VolumeException(ve.errno, ve.error_str + " (use --force to override)")
                 ret = self.volume_exception_to_retval(ve)
             elif not (ve.errno == -errno.ENOENT and force):
@@ -301,6 +307,24 @@ class VolumeClient(object):
                             [{'bytes_used': usedbytes},{'bytes_quota': nsize},
                              {'bytes_pcent': "undefined" if nsize == 0 else '{0:.2f}'.format((float(usedbytes) / nsize) * 100.0)}],
                             indent=4, sort_keys=True), ""
+        except VolumeException as ve:
+            ret = self.volume_exception_to_retval(ve)
+        return ret
+
+    def subvolume_pin(self, **kwargs):
+        ret         = 0, "", ""
+        volname     = kwargs['vol_name']
+        subvolname  = kwargs['sub_name']
+        pin_type    = kwargs['pin_type']
+        pin_setting = kwargs['pin_setting']
+        groupname   = kwargs['group_name']
+
+        try:
+            with open_volume(self, volname) as fs_handle:
+                with open_group(fs_handle, self.volspec, groupname) as group:
+                    with open_subvol(self.mgr, fs_handle, self.volspec, group, subvolname, SubvolumeOpType.PIN) as subvolume:
+                        subvolume.pin(pin_type, pin_setting)
+                        ret = 0, json.dumps({}), ""
         except VolumeException as ve:
             ret = self.volume_exception_to_retval(ve)
         return ret
@@ -601,13 +625,31 @@ class VolumeClient(object):
     def list_subvolume_groups(self, **kwargs):
         volname = kwargs['vol_name']
         ret     = 0, '[]', ""
+        volume_exists = False
         try:
             with open_volume(self, volname) as fs_handle:
-                groups = listdir(fs_handle, self.volspec.base_dir)
+                volume_exists = True
+                groups = listdir(fs_handle, self.volspec.base_dir, filter_entries=[Trash.GROUP_NAME.encode('utf-8')])
                 ret = 0, name_to_json(groups), ""
         except VolumeException as ve:
-            if not ve.errno == -errno.ENOENT:
+            if not ve.errno == -errno.ENOENT or not volume_exists:
                 ret = self.volume_exception_to_retval(ve)
+        return ret
+
+    def pin_subvolume_group(self, **kwargs):
+        ret           = 0, "", ""
+        volname       = kwargs['vol_name']
+        groupname     = kwargs['group_name']
+        pin_type      = kwargs['pin_type']
+        pin_setting   = kwargs['pin_setting']
+
+        try:
+            with open_volume(self, volname) as fs_handle:
+                with open_group(fs_handle, self.volspec, groupname) as group:
+                    group.pin(pin_type, pin_setting)
+                    ret = 0, json.dumps({}), ""
+        except VolumeException as ve:
+            ret = self.volume_exception_to_retval(ve)
         return ret
 
     ### group snapshot

@@ -7,10 +7,15 @@ The telemetry module sends anonymous data about the cluster back to the Ceph
 developers to help understand how Ceph is used and what problems users may
 be experiencing.
 
+This data is visualized on `public dashboards <https://telemetry-public.ceph.com/>`_
+that allow the community to quickly see summary statistics on how many clusters
+are reporting, their total capacity and OSD count, and version distribution
+trends.
+
 Channels
 --------
 
-The telemetry report is broken down into several "channels," each with
+The telemetry report is broken down into several "channels", each with
 a different type of information.  Assuming telemetry has been enabled,
 individual channels can be turned on and off.  (If telemetry is off,
 the per-channel setting has no effect.)
@@ -18,7 +23,7 @@ the per-channel setting has no effect.)
 * **basic** (default: on): Basic information about the cluster
 
     - capacity of the cluster
-    - number of monitors, managers, OSDs, MDSs, radosgws, or other daemons
+    - number of monitors, managers, OSDs, MDSs, object gateways, or other daemons
     - software version currently being used
     - number and types of RADOS pools and CephFS file systems
     - names of configuration options that have been changed from their
@@ -46,20 +51,11 @@ data like pool names, object names, object contents, hostnames, or device
 serial numbers.
 
 It contains counters and statistics on how the cluster has been
-deployed, the version of Ceph, the distribition of the hosts and other
+deployed, the version of Ceph, the distribution of the hosts and other
 parameters which help the project to gain a better understanding of
 the way Ceph is used.
 
-Data is sent over HTTPS to *telemetry.ceph.com*.
-
-Enabling the module
--------------------
-
-The module must first be enabled.  Note that even if the module is
-enabled, telemetry is still "off" by default, so simply enabling the
-module will *NOT* result in any data being shared.::
-
-  ceph mgr module enable telemetry
+Data is sent secured to *https://telemetry.ceph.com*.
 
 Sample report
 -------------
@@ -76,7 +72,7 @@ particular cluster. To see a preview of the device report use the command::
   ceph telemetry show-device
 
 Please note: In order to generate the device report we use Smartmontools
-version 7.0 and up, which supports JSON output.
+version 7.0 and up, which supports JSON output. 
 If you have any concerns about privacy with regard to the information included in
 this report, please contact the Ceph developers.
 
@@ -156,3 +152,4 @@ completely optional, and disabled by default.::
   ceph config set mgr mgr/telemetry/contact 'John Doe <john.doe@example.com>'
   ceph config set mgr mgr/telemetry/description 'My first Ceph cluster'
   ceph config set mgr mgr/telemetry/channel_ident true
+

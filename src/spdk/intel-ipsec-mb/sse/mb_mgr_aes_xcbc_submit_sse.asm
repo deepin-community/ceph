@@ -25,12 +25,13 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "os.asm"
+%include "include/os.asm"
+%include "include/const.inc"
 %include "job_aes_hmac.asm"
 %include "mb_mgr_datastruct.asm"
 
-%include "reg_sizes.asm"
-%include "memcpy.asm"
+%include "include/reg_sizes.asm"
+%include "include/memcpy.asm"
 %ifndef AES_XCBC_X4
 %define AES_XCBC_X4 aes_xcbc_mac_128_x4
 %define SUBMIT_JOB_AES_XCBC submit_job_aes_xcbc_sse
@@ -143,19 +144,20 @@ fast_copy:
 	movdqa	[lane_data + _xcbc_final_block], xmm0
 	sub	len, 16		; take last block off length
 end_fast_copy:
-
-	mov	[state + _aes_xcbc_lens + 2*lane], WORD(len)
-
 	pxor	xmm0, xmm0
 	shl	lane, 4	; multiply by 16
 	movdqa	[state + _aes_xcbc_args_ICV + lane], xmm0
+
+        ;; insert len into proper lane
+        movdqa  xmm0, [state + _aes_xcbc_lens]
+        XPINSRW xmm0, xmm1, tmp, lane, len, no_scale
+        movdqa  [state + _aes_xcbc_lens], xmm0
 
 	cmp	unused_lanes, 0xff
 	jne	return_null
 
 start_loop:
 	; Find min length
-	movdqa	xmm0, [state + _aes_xcbc_lens]
 	phminposuw	xmm1, xmm0
 	pextrw	len2, xmm1, 0	; min value
 	pextrw	idx, xmm1, 1	; min index (0...3)
@@ -182,6 +184,7 @@ len_is_0:
 	mov	word [state + _aes_xcbc_lens + 2*idx], 16
 	lea	tmp, [lane_data + _xcbc_final_block]
 	mov	[state + _aes_xcbc_args_in + 8*idx], tmp
+        movdqa	xmm0, [state + _aes_xcbc_lens]
 	jmp	start_loop
 
 end_loop:
@@ -200,6 +203,16 @@ end_loop:
 	movdqa	xmm0, [state + _aes_xcbc_args_ICV + idx]
 	movq	[icv], xmm0
 	pextrd	[icv + 8], xmm0, 2
+
+%ifdef SAFE_DATA
+        ;; Clear ICV
+        pxor    xmm0, xmm0
+        movdqa  [state + _aes_xcbc_args_ICV + idx], xmm0
+
+        ;; Clear final block (32 bytes)
+        movdqa  [lane_data + _xcbc_final_block], xmm0
+        movdqa  [lane_data + _xcbc_final_block + 16], xmm0
+%endif
 
 return:
 

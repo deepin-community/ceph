@@ -9,6 +9,7 @@ from teuthology.orchestra import run
 from teuthology import misc as teuthology
 from teuthology import contextutil
 from teuthology.exceptions import ConfigError
+from tasks.ceph_manager import get_valgrind_args
 from tasks.util import get_remote_for_role
 from tasks.util.rgw import rgwadmin, wait_for_radosgw
 from tasks.util.rados import (create_ec_pool,
@@ -84,7 +85,7 @@ def start_rgw(ctx, config, clients):
             '/var/log/ceph/rgw.{client_with_cluster}.log'.format(client_with_cluster=client_with_cluster),
             '--rgw_ops_log_socket_path',
             '{tdir}/rgw.opslog.{client_with_cluster}.sock'.format(tdir=testdir,
-                                                     client_with_cluster=client_with_cluster)
+                                                     client_with_cluster=client_with_cluster),
 	    ])
 
         keystone_role = client_config.get('use-keystone-role', None)
@@ -109,18 +110,89 @@ def start_rgw(ctx, config, clients):
         if client_config.get('dns-s3website-name') is not None:
             rgw_cmd.extend(['--rgw-dns-s3website-name', endpoint.website_dns_name])
 
+
+        vault_role = client_config.get('use-vault-role', None)
+        barbican_role = client_config.get('use-barbican-role', None)
+        pykmip_role = client_config.get('use-pykmip-role', None)
+
+        token_path = '/etc/ceph/vault-root-token'
+        if barbican_role is not None:
+            if not hasattr(ctx, 'barbican'):
+                raise ConfigError('rgw must run after the barbican task')
+
+            barbican_host, barbican_port = \
+                ctx.barbican.endpoints[barbican_role]
+            log.info("Use barbican url=%s:%s", barbican_host, barbican_port)
+
+            rgw_cmd.extend([
+                '--rgw_barbican_url',
+                'http://{bhost}:{bport}'.format(bhost=barbican_host,
+                                                bport=barbican_port),
+                ])
+        elif vault_role is not None:
+            if not ctx.vault.root_token:
+                raise ConfigError('vault: no "root_token" specified')
+            # create token on file
+            ctx.rgw.vault_role = vault_role
+            ctx.cluster.only(client).run(args=['sudo', 'echo', '-n', ctx.vault.root_token, run.Raw('|'), 'sudo', 'tee', token_path])
+            log.info("Token file content")
+            ctx.cluster.only(client).run(args=['cat', token_path])
+            log.info("Restrict access to token file")
+            ctx.cluster.only(client).run(args=['sudo', 'chmod', '600', token_path])
+            ctx.cluster.only(client).run(args=['sudo', 'chown', 'ceph', token_path])
+
+            rgw_cmd.extend([
+                '--rgw_crypt_vault_addr', "{}:{}".format(*ctx.vault.endpoints[vault_role]),
+                '--rgw_crypt_vault_token_file', token_path
+            ])
+        elif pykmip_role is not None:
+            if not hasattr(ctx, 'pykmip'):
+                raise ConfigError('rgw must run after the pykmip task')
+            ctx.rgw.pykmip_role = pykmip_role
+            rgw_cmd.extend([
+                '--rgw_crypt_kmip_addr', "{}:{}".format(*ctx.pykmip.endpoints[pykmip_role]),
+            ])
+
+            clientcert = ctx.ssl_certificates.get('kmip-client')
+            servercert = ctx.ssl_certificates.get('kmip-server')
+            clientca = ctx.ssl_certificates.get('kmiproot')
+
+            clientkey = clientcert.key
+            clientcert = clientcert.certificate
+            serverkey = servercert.key
+            servercert = servercert.certificate
+            rootkey = clientca.key
+            rootcert = clientca.certificate
+
+            cert_path = '/etc/ceph/'
+            ctx.cluster.only(client).run(args=['sudo', 'cp', clientcert, cert_path])
+            ctx.cluster.only(client).run(args=['sudo', 'cp', clientkey, cert_path])
+            ctx.cluster.only(client).run(args=['sudo', 'cp', servercert, cert_path])
+            ctx.cluster.only(client).run(args=['sudo', 'cp', serverkey, cert_path])
+            ctx.cluster.only(client).run(args=['sudo', 'cp', rootkey, cert_path])
+            ctx.cluster.only(client).run(args=['sudo', 'cp', rootcert, cert_path])
+
+            clientcert = cert_path + 'kmip-client.crt'
+            clientkey = cert_path + 'kmip-client.key'
+            servercert = cert_path + 'kmip-server.crt'
+            serverkey = cert_path + 'kmip-server.key'
+            rootkey = cert_path + 'kmiproot.key'
+            rootcert = cert_path + 'kmiproot.crt'
+
+            ctx.cluster.only(client).run(args=['sudo', 'chmod', '600', clientcert, clientkey, servercert, serverkey, rootkey, rootcert])
+            ctx.cluster.only(client).run(args=['sudo', 'chown', 'ceph', clientcert, clientkey, servercert, serverkey, rootkey, rootcert])
+
         rgw_cmd.extend([
             '--foreground',
             run.Raw('|'),
             'sudo',
             'tee',
-            '/var/log/ceph/rgw.{client_with_cluster}.stdout'.format(tdir=testdir,
-                                                       client_with_cluster=client_with_cluster),
+            '/var/log/ceph/rgw.{client_with_cluster}.stdout'.format(client_with_cluster=client_with_cluster),
             run.Raw('2>&1'),
             ])
 
         if client_config.get('valgrind'):
-            cmd_prefix = teuthology.get_valgrind_args(
+            cmd_prefix = get_valgrind_args(
                 testdir,
                 client_with_cluster,
                 cmd_prefix,
@@ -133,6 +205,7 @@ def start_rgw(ctx, config, clients):
         ctx.daemons.add_daemon(
             remote, 'rgw', client_with_id,
             cluster=cluster_name,
+            fsid=ctx.ceph[cluster_name].fsid,
             args=run_cmd,
             logger=log.getChild(client),
             stdin=run.PIPE,
@@ -163,6 +236,7 @@ def start_rgw(ctx, config, clients):
                                                              client=client_with_cluster),
                     ],
                 )
+            ctx.cluster.only(client).run(args=['sudo', 'rm', '-f', token_path])
 
 def assign_endpoints(ctx, config, default_cert):
     role_endpoints = {}

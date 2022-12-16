@@ -176,6 +176,11 @@ class Module(MgrModule):
             "perm": "r"
         },
         {
+            "cmd": "telemetry show-all",
+            "desc": "Show report of all channels",
+            "perm": "r"
+        },
+        {
             "cmd": "telemetry on name=license,type=CephString,req=false",
             "desc": "Enable telemetry reports from this cluster",
             "perm": "rw",
@@ -199,19 +204,19 @@ class Module(MgrModule):
         self.last_report = dict()
         self.report_id = None
         self.salt = None
+        self.config_update_module_option()
 
-    def config_notify(self):
+    def config_update_module_option(self):
         for opt in self.MODULE_OPTIONS:
             setattr(self,
                     opt['name'],
                     self.get_module_option(opt['name']))
             self.log.debug(' %s = %s', opt['name'], getattr(self, opt['name']))
+
+    def config_notify(self):
+        self.config_update_module_option()
         # wake up serve() thread
         self.event.set()
-
-    @staticmethod
-    def parse_timestamp(timestamp):
-        return datetime.strptime(timestamp, '%Y-%m-%d %H:%M:%S.%f')
 
     def load(self):
         self.last_upload = self.get_store('last_upload', None)
@@ -366,6 +371,8 @@ class Module(MgrModule):
             r.append('crash')
         if self.channel_device:
             r.append('device')
+        if self.channel_ident:
+            r.append('ident')
         return r
 
     def gather_device_report(self):
@@ -409,7 +416,7 @@ class Module(MgrModule):
                 # ideally devid is 'vendor_model_serial',
                 # but can also be 'model_serial', 'serial'
                 if '_' in devid:
-                    anon_devid = devid[:devid.rfind('_')] + '_' + str(uuid.uuid1())
+                    anon_devid = f"{devid.rsplit('_', 1)[0]}_{uuid.uuid1()}"
                 else:
                     anon_devid = str(uuid.uuid1())
                 self.set_store('devid-id/%s' % devid, anon_devid)
@@ -438,7 +445,7 @@ class Module(MgrModule):
         if not channels:
             channels = self.get_active_channels()
         report = {
-            'leaderboard': False,
+            'leaderboard': self.leaderboard,
             'report_version': 1,
             'report_timestamp': datetime.utcnow().isoformat(),
             'report_id': self.report_id,
@@ -448,8 +455,6 @@ class Module(MgrModule):
         }
 
         if 'ident' in channels:
-            if self.leaderboard:
-                report['leaderboard'] = True
             for option in ['description', 'contact', 'organization']:
                 report[option] = getattr(self, option)
 
@@ -460,7 +465,7 @@ class Module(MgrModule):
             fs_map = self.get('fs_map')
             df = self.get('df')
 
-            report['created'] = self.parse_timestamp(mon_map['created']).isoformat()
+            report['created'] = mon_map['created']
 
             # mons
             v1_mons = 0
@@ -748,16 +753,14 @@ class Module(MgrModule):
             for opt in self.MODULE_OPTIONS:
                 r[opt['name']] = getattr(self, opt['name'])
             r['last_upload'] = time.ctime(self.last_upload) if self.last_upload else self.last_upload
-            return 0, json.dumps(r, indent=4), ''
+            return 0, json.dumps(r, indent=4, sort_keys=True), ''
         elif command['prefix'] == 'telemetry on':
             if command.get('license') != LICENSE:
                 return -errno.EPERM, '', "Telemetry data is licensed under the " + LICENSE_NAME + " (" + LICENSE_URL + ").\nTo enable, add '--license " + LICENSE + "' to the 'ceph telemetry on' command."
-            self.set_module_option('enabled', True)
-            self.set_module_option('last_opt_revision', REVISION)
+            self.on()
             return 0, '', ''
         elif command['prefix'] == 'telemetry off':
-            self.set_module_option('enabled', False)
-            self.set_module_option('last_opt_revision', 1)
+            self.off()
             return 0, '', ''
         elif command['prefix'] == 'telemetry send':
             if self.last_opt_revision < LAST_REVISION_RE_OPT_IN and command.get('license') != LICENSE:
@@ -767,18 +770,36 @@ class Module(MgrModule):
             return self.send(self.last_report, command.get('endpoint'))
 
         elif command['prefix'] == 'telemetry show':
-            report = self.compile_report(
-                channels=command.get('channels', None)
-            )
-            report = json.dumps(report, indent=4)
+            report = self.get_report(channels=command.get('channels', None))
+            report = json.dumps(report, indent=4, sort_keys=True)
             if self.channel_device:
-               report += '\n \nDevice report is generated separately. To see it run \'ceph telemetry show-device\'.'
+                report += '\n \nDevice report is generated separately. To see it run \'ceph telemetry show-device\'.'
             return 0, report, ''
         elif command['prefix'] == 'telemetry show-device':
-            return 0, json.dumps(self.gather_device_report(), indent=4, sort_keys=True), ''
+            return 0, json.dumps(self.get_report('device'), indent=4, sort_keys=True), ''
+        elif command['prefix'] == 'telemetry show-all':
+            return 0, json.dumps(self.get_report('all'), indent=4, sort_keys=True), ''
         else:
             return (-errno.EINVAL, '',
                     "Command not found '{0}'".format(command['prefix']))
+
+    def on(self):
+        self.set_module_option('enabled', True)
+        self.set_module_option('last_opt_revision', REVISION)
+
+    def off(self):
+        self.set_module_option('enabled', False)
+        self.set_module_option('last_opt_revision', 1)
+
+    def get_report(self, report_type='default', channels=None):
+        if report_type == 'default':
+            return self.compile_report(channels=channels)
+        elif report_type == 'device':
+            return self.gather_device_report()
+        elif report_type == 'all':
+            return {'report': self.compile_report(channels=channels),
+                    'device_report': self.gather_device_report()}
+        return {}
 
     def self_test(self):
         report = self.compile_report()
@@ -806,11 +827,10 @@ class Module(MgrModule):
 
     def serve(self):
         self.load()
-        self.config_notify()
         self.run = True
 
         self.log.debug('Waiting for mgr to warm up')
-        self.event.wait(10)
+        time.sleep(10)
 
         while self.run:
             self.event.clear()

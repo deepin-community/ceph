@@ -6,10 +6,7 @@ import errno
 import logging
 import json
 from datetime import datetime
-try:
-    from typing import List, Dict
-except ImportError:
-    pass # For typing only
+from typing import List, Dict
 
 import cephfs
 
@@ -21,7 +18,7 @@ from ..template import SubvolumeTemplate
 from ..snapshot_util import mksnap, rmsnap
 from ..access import allow_access, deny_access
 from ...exception import IndexException, OpSmException, VolumeException, MetadataMgrException, EvictionError
-from ...fs_util import listsnaps, is_inherited_snap
+from ...fs_util import listsnaps, is_inherited_snap, create_base_dir
 from ..template import SubvolumeOpType
 from ..group import Group
 from ..rankevicter import RankEvicter
@@ -96,6 +93,8 @@ class SubvolumeV1(SubvolumeBase, SubvolumeTemplate):
 
         subvol_path = os.path.join(self.base_path, str(uuid.uuid4()).encode('utf-8'))
         try:
+            # create group directory with default mode(0o755) if it doesn't exist.
+            create_base_dir(self.fs, self.group.path, self.vol_spec.DEFAULT_MODE)
             # create directory and set attributes
             self.fs.mkdirs(subvol_path, mode)
             self.mark_subvolume()
@@ -152,6 +151,13 @@ class SubvolumeV1(SubvolumeBase, SubvolumeTemplate):
             # source snapshot attrs are used to create clone subvolume.
             # attributes of subvolume's content though, are synced during the cloning process.
             attrs = source_subvolume.get_attrs(source_subvolume.snapshot_data_path(snapname))
+
+            # The source of the clone may have exceeded its quota limit as
+            # CephFS quotas are imprecise. Cloning such a source may fail if
+            # the quota on the destination is set before starting the clone
+            # copy. So always set the quota on destination after cloning is
+            # successful.
+            attrs["quota"] = None
 
             # override snapshot pool setting, if one is provided for the clone
             if pool is not None:
@@ -456,7 +462,7 @@ class SubvolumeV1(SubvolumeBase, SubvolumeTemplate):
 
         # Construct auth caps that if present might conflict with the desired
         # auth caps.
-        unwanted_access_level = 'r' if access_level is 'rw' else 'rw'
+        unwanted_access_level = 'r' if access_level == 'rw' else 'rw'
         unwanted_mds_cap = 'allow {0} path={1}'.format(unwanted_access_level, subvol_path.decode('utf-8'))
         unwanted_osd_cap = "allow {0} pool={1}{2}".format(
                 unwanted_access_level, pool, " namespace={0}".format(namespace) if namespace else "")
@@ -667,7 +673,7 @@ class SubvolumeV1(SubvolumeBase, SubvolumeTemplate):
 
     @property
     def state(self):
-        return SubvolumeStates.from_value(self.metadata_mgr.get_global_option(MetadataManager.GLOBAL_META_KEY_STATE))
+        return super(SubvolumeV1, self).state
 
     @state.setter
     def state(self, val):
@@ -765,7 +771,7 @@ class SubvolumeV1(SubvolumeBase, SubvolumeTemplate):
                 track_idx = index.track(tgt_subvolume.base_path)
                 self._add_snap_clone(track_idx, snapname)
         except (IndexException, MetadataMgrException) as e:
-            log.warn("error creating clone index: {0}".format(e))
+            log.warning("error creating clone index: {0}".format(e))
             raise VolumeException(-errno.EINVAL, "error cloning subvolume")
 
     def detach_snapshot(self, snapname, track_id):
@@ -776,5 +782,5 @@ class SubvolumeV1(SubvolumeBase, SubvolumeTemplate):
                 index.untrack(track_id)
                 self._remove_snap_clone(track_id)
         except (IndexException, MetadataMgrException) as e:
-            log.warn("error delining snapshot from clone: {0}".format(e))
+            log.warning("error delining snapshot from clone: {0}".format(e))
             raise VolumeException(-errno.EINVAL, "error delinking snapshot from clone")

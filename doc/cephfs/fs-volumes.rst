@@ -5,7 +5,7 @@ FS volumes and subvolumes
 
 A  single source of truth for CephFS exports is implemented in the volumes
 module of the :term:`Ceph Manager` daemon (ceph-mgr). The OpenStack shared
-file system service (manila_), Ceph Containter Storage Interface (CSI_),
+file system service (manila_), Ceph Container Storage Interface (CSI_),
 storage administrators among others can use the common CLI provided by the
 ceph-mgr volumes module to manage the CephFS exports.
 
@@ -43,11 +43,31 @@ FS Volumes
 
 Create a volume using::
 
-    $ ceph fs volume create <vol_name>
+    $ ceph fs volume create <vol_name> [<placement>]
 
-This creates a CephFS file sytem and its data and metadata pools. It also tries
-to create MDSes for the filesytem using the enabled ceph-mgr orchestrator
-module  (see :doc:`/mgr/orchestrator_cli`) , e.g., rook.
+This creates a CephFS file system and its data and metadata pools. It can also
+try to create MDSes for the filesystem using the enabled ceph-mgr orchestrator
+module (see :doc:`/mgr/orchestrator`), e.g. rook.
+
+<vol_name> is the volume name (an arbitrary string), and
+
+<placement> is an optional string signifying which hosts should have NFS Ganesha
+daemon containers running on them and, optionally, the total number of NFS
+Ganesha daemons the cluster (should you want to have more than one NFS Ganesha
+daemon running per node). For example, the following placement string means
+"deploy NFS Ganesha daemons on nodes host1 and host2 (one daemon per host):
+
+    "host1,host2"
+
+and this placement specification says to deploy two NFS Ganesha daemons each
+on nodes host1 and host2 (for a total of four NFS Ganesha daemons in the
+cluster):
+
+    "4 host1,host2"
+
+For more details on placement specification refer to the `orchestrator doc
+<https://docs.ceph.com/docs/master/mgr/orchestrator/#placement-specification>`_
+but keep in mind that specifying the placement via a YAML file is not supported.
 
 Remove a volume using::
 
@@ -91,7 +111,7 @@ List subvolume groups using::
 
     $ ceph fs subvolumegroup ls <vol_name>
 
-.. note:: Subvolume group snapshot feature is no longer supported in nautilus CephFS (existing group
+.. note:: Subvolume group snapshot feature is no longer supported in mainline CephFS (existing group
           snapshots can still be listed and deleted)
 
 Remove a snapshot of a subvolume group using::
@@ -265,8 +285,7 @@ Protecting snapshots prior to cloning was a pre-requisite in the Nautilus releas
 snapshots were introduced for this purpose. This pre-requisite, and hence the commands to protect/unprotect, is being
 deprecated in mainline CephFS, and may be removed from a future release.
 
-The commands being deprecated are::
-
+The commands being deprecated are:
   $ ceph fs subvolume snapshot protect <vol_name> <subvol_name> <snap_name> [--group_name <subvol_group_name>]
   $ ceph fs subvolume snapshot unprotect <vol_name> <subvol_name> <snap_name> [--group_name <subvol_group_name>]
 
@@ -364,6 +383,40 @@ On successful cancelation, the cloned subvolume is moved to `canceled` state::
   }
 
 .. note:: The canceled cloned can be deleted by using --force option in `fs subvolume rm` command.
+
+
+.. _subvol-pinning:
+
+Pinning Subvolumes and Subvolume Groups
+---------------------------------------
+
+
+Subvolumes and subvolume groups can be automatically pinned to ranks according
+to policies. This can help distribute load across MDS ranks in predictable and
+stable ways.  Review :ref:`cephfs-pinning` and :ref:`cephfs-ephemeral-pinning`
+for details on how pinning works.
+
+Pinning is configured by::
+
+  $ ceph fs subvolumegroup pin <vol_name> <group_name> <pin_type> <pin_setting>
+
+or for subvolumes::
+
+  $ ceph fs subvolume pin <vol_name> <group_name> <pin_type> <pin_setting>
+
+Typically you will want to set subvolume group pins. The ``pin_type`` may be
+one of ``export``, ``distributed``, or ``random``. The ``pin_setting``
+corresponds to the extended attributed "value" as in the pinning documentation
+referenced above.
+
+So, for example, setting a distributed pinning strategy on a subvolume group::
+
+  $ ceph fs subvolumegroup pin cephfilesystem-a csi distributed 1
+
+Will enable distributed subtree partitioning policy for the "csi" subvolume
+group.  This will cause every subvolume within the group to be automatically
+pinned to one of the available ranks on the file system.
+
 
 .. _manila: https://github.com/openstack/manila
 .. _CSI: https://github.com/ceph/ceph-csi

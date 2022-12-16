@@ -1,4 +1,4 @@
-# Vhost processing {#vhost_processing}
+# Virtualized I/O with Vhost-user {#vhost_processing}
 
 # Table of Contents {#vhost_processing_toc}
 
@@ -10,10 +10,10 @@
 
 # Introduction {#vhost_processing_intro}
 
-This document is intended to provide an overall high level insight into how
-Vhost works behind the scenes.
-Code snippets used in this document might have been simplified for the sake
-of readability and should not be used as an API or implementation reference.
+This document is intended to provide an overview of how Vhost works behind the
+scenes. Code snippets used in this document might have been simplified for the
+sake of readability and should not be used as an API or implementation
+reference.
 
 Reading from the
 [Virtio specification](http://docs.oasis-open.org/virtio/virtio/v1.0/virtio-v1.0.html):
@@ -89,6 +89,7 @@ device (SPDK) can access it directly. The memory can be fragmented into multiple
 physically-discontiguous regions and Vhost-user specification puts a limit on
 their number - currently 8. The driver sends a single message for each region with
 the following data:
+
  * file descriptor - for mmap
  * user address - for memory translations in Vhost-user messages (e.g.
    translating vring addresses)
@@ -106,6 +107,7 @@ as they use common SCSI I/O to inquiry the underlying disk(s).
 
 Afterwards, the driver requests the number of maximum supported queues and
 starts sending virtqueue data, which consists of:
+
  * unique virtqueue id
  * index of the last processed vring descriptor
  * vring addresses (from user address space)

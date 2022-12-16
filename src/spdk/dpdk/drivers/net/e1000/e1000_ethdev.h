@@ -35,6 +35,9 @@
 #define IGB_MAX_RX_QUEUE_NUM           8
 #define IGB_MAX_RX_QUEUE_NUM_82576     16
 
+#define E1000_I219_MAX_RX_QUEUE_NUM		2
+#define E1000_I219_MAX_TX_QUEUE_NUM		2
+
 #define E1000_SYN_FILTER_ENABLE        0x00000001 /* syn filter enable field */
 #define E1000_SYN_FILTER_QUEUE         0x0000000E /* syn filter queue field */
 #define E1000_SYN_FILTER_QUEUE_SHIFT   1          /* syn filter queue field */
@@ -87,6 +90,13 @@
 	ETH_RSS_IPV6_EX | \
 	ETH_RSS_IPV6_TCP_EX | \
 	ETH_RSS_IPV6_UDP_EX)
+
+/*
+ * The overhead from MTU to max frame size.
+ * Considering VLAN so a tag needs to be counted.
+ */
+#define E1000_ETH_OVERHEAD (RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + \
+				VLAN_TAG_SIZE)
 
 /*
  * Maximum number of Ring Descriptors.
@@ -149,7 +159,7 @@ struct e1000_vfta {
  */
 #define E1000_MAX_VF_MC_ENTRIES         30
 struct e1000_vf_info {
-	uint8_t vf_mac_addresses[ETHER_ADDR_LEN];
+	uint8_t vf_mac_addresses[RTE_ETHER_ADDR_LEN];
 	uint16_t vf_mc_hashes[E1000_MAX_VF_MC_ENTRIES];
 	uint16_t num_vf_mc_hashes;
 	uint16_t default_vf_vlan_id;
@@ -236,7 +246,8 @@ struct igb_ethertype_filter {
 struct igb_rte_flow_rss_conf {
 	struct rte_flow_action_rss conf; /**< RSS parameters. */
 	uint8_t key[IGB_HKEY_MAX_INDEX * sizeof(uint32_t)]; /* Hash key. */
-	uint16_t queue[IGB_MAX_RX_QUEUE_NUM]; /**< Queues indices to use. */
+	/* Queues indices to use. */
+	uint16_t queue[IGB_MAX_RX_QUEUE_NUM_82576];
 };
 
 /*
@@ -340,17 +351,17 @@ struct igb_flow_mem {
 };
 
 TAILQ_HEAD(igb_ntuple_filter_list, igb_ntuple_filter_ele);
-struct igb_ntuple_filter_list igb_filter_ntuple_list;
+extern struct igb_ntuple_filter_list igb_filter_ntuple_list;
 TAILQ_HEAD(igb_ethertype_filter_list, igb_ethertype_filter_ele);
-struct igb_ethertype_filter_list igb_filter_ethertype_list;
+extern struct igb_ethertype_filter_list igb_filter_ethertype_list;
 TAILQ_HEAD(igb_syn_filter_list, igb_eth_syn_filter_ele);
-struct igb_syn_filter_list igb_filter_syn_list;
+extern struct igb_syn_filter_list igb_filter_syn_list;
 TAILQ_HEAD(igb_flex_filter_list, igb_flex_filter_ele);
-struct igb_flex_filter_list igb_filter_flex_list;
+extern struct igb_flex_filter_list igb_filter_flex_list;
 TAILQ_HEAD(igb_rss_filter_list, igb_rss_conf_ele);
-struct igb_rss_filter_list igb_filter_rss_list;
+extern struct igb_rss_filter_list igb_filter_rss_list;
 TAILQ_HEAD(igb_flow_mem_list, igb_flow_mem);
-struct igb_flow_mem_list igb_flow_list;
+extern struct igb_flow_mem_list igb_flow_list;
 
 extern const struct rte_flow_ops igb_flow_ops;
 
@@ -506,12 +517,14 @@ int eth_igb_syn_filter_set(struct rte_eth_dev *dev,
 int eth_igb_add_del_flex_filter(struct rte_eth_dev *dev,
 			struct rte_eth_flex_filter *filter,
 			bool add);
-int igb_rss_conf_init(struct igb_rte_flow_rss_conf *out,
+int igb_rss_conf_init(struct rte_eth_dev *dev,
+		      struct igb_rte_flow_rss_conf *out,
 		      const struct rte_flow_action_rss *in);
 int igb_action_rss_same(const struct rte_flow_action_rss *comp,
 			const struct rte_flow_action_rss *with);
 int igb_config_rss_filter(struct rte_eth_dev *dev,
 			struct igb_rte_flow_rss_conf *conf,
 			bool add);
+void em_flush_desc_rings(struct rte_eth_dev *dev);
 
 #endif /* _E1000_ETHDEV_H_ */

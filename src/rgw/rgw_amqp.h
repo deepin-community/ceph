@@ -1,13 +1,14 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 #pragma once
 
 #include <string>
 #include <functional>
+#include <boost/optional.hpp>
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 
-class CephContext;
+#include "include/common_fwd.h"
 
 namespace rgw::amqp {
 // forward declaration of connection object
@@ -30,7 +31,8 @@ bool init(CephContext* cct);
 void shutdown();
 
 // connect to an amqp endpoint
-connection_ptr_t connect(const std::string& url, const std::string& exchange);
+connection_ptr_t connect(const std::string& url, const std::string& exchange, bool mandatory_delivery, bool verify_ssl,
+        boost::optional<const std::string&> ca_location);
 
 // publish a message over a connection that was already created
 int publish(connection_ptr_t& conn,
@@ -69,9 +71,6 @@ size_t get_max_inflight();
 
 // maximum number of messages in the queue
 size_t get_max_queue();
-
-// disconnect from an amqp broker
-bool disconnect(connection_ptr_t& conn);
 
 }
 

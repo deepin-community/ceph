@@ -25,7 +25,7 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "datastruct.asm"
+%include "include/datastruct.asm"
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;; Define constants
@@ -69,8 +69,27 @@ END_FIELDS
 %assign _CBCMAC_spec_fields_size	_FIELD_OFFSET
 %assign _CBCMAC_spec_fields_align	_STRUCT_ALIGN
 
-START_FIELDS	; JOB_AES_HMAC
+START_FIELDS	; AES CMAC Specific Fields
+;;;	name				size	align
+FIELD	__key_expanded,			8,	8	; ptr to exp keys
+FIELD	__skey1,			8,	8	; ptr to subkey 1
+FIELD	__skey2,			8,	8	; ptr to subkey 2
+END_FIELDS
 
+%assign _AES_CMAC_spec_fields_size	_FIELD_OFFSET
+%assign _AES_CMAC_spec_fields_align	_STRUCT_ALIGN
+
+START_FIELDS	; GCM Specific Fields
+;;;	name				size	align
+FIELD	__gcm_aad,			8,	8	; pointer to AAD
+FIELD	__gcm_aad_len,			8,	8	; 64-bit AAD length
+END_FIELDS
+
+%assign _GCM_spec_fields_size	_FIELD_OFFSET
+%assign _GCM_spec_fields_align	_STRUCT_ALIGN
+
+
+START_FIELDS	; JOB_AES_HMAC
 ;;;	name				size	align
 FIELD	_aes_enc_key_expanded,		8,	8	; pointer to exp enc keys
 FIELD	_aes_dec_key_expanded,		8,	8	; pointer to exp dec keys
@@ -79,9 +98,9 @@ FIELD	_src,				8,	8	; pointer to src buffer
 FIELD	_dst,				8,	8	; pointer to dst buffer
 FIELD	_cipher_start_src_offset_in_bytes, \
 					8,	8
-FIELD	_msg_len_to_cipher_in_bytes,	8,	8
+FIELD	_msg_len_to_cipher,	        8,	8
 FIELD	_hash_start_src_offset_in_bytes,8,	8
-FIELD	_msg_len_to_hash_in_bytes,	8,	8
+FIELD	_msg_len_to_hash,	        8,	8
 FIELD	_iv,				8,	8	; pointer to IV
 FIELD	_iv_len_in_bytes,		8,	8
 FIELD	_auth_tag_output,		8,	8	; pointer to hash output
@@ -89,7 +108,9 @@ FIELD	_auth_tag_output_len_in_bytes,	8,	8
 
 UNION	_u,	_HMAC_spec_fields_size,     _HMAC_spec_fields_align, \
 		_AES_XCBC_spec_fields_size, _AES_XCBC_spec_fields_align, \
-		_CBCMAC_spec_fields_size, _CBCMAC_spec_fields_align
+		_CBCMAC_spec_fields_size, _CBCMAC_spec_fields_align, \
+                _AES_CMAC_spec_fields_size, _AES_CMAC_spec_fields_align, \
+                _GCM_spec_fields_size, _GCM_spec_fields_align
 
 FIELD	_status,			4,	4	; JOB_STS
 FIELD	_cipher_mode,			4,	4	; JOB_CIPHER_MODE
@@ -100,14 +121,24 @@ FIELD	_user_data,			8,	8
 FIELD	_user_data2,			8,	8
 END_FIELDS
 
+%assign _msg_len_to_cipher_in_bytes _msg_len_to_cipher
+%assign _msg_len_to_cipher_in_bits  _msg_len_to_cipher
+%assign _msg_len_to_hash_in_bytes   _msg_len_to_hash
+%assign _msg_len_to_hash_in_bits    _msg_len_to_hash
+
 %assign _JOB_AES_HMAC_size	_FIELD_OFFSET
 %assign _JOB_AES_HMAC_align	_STRUCT_ALIGN
 
-%assign _auth_key_xor_ipad	_u + __auth_key_xor_ipad
-%assign _auth_key_xor_opad	_u + __auth_key_xor_opad
-%assign _k1_expanded		_u + __k1_expanded
-%assign _k2			_u + __k2
-%assign _k3			_u + __k3
-%assign _cbcmac_aad	        _u + __aad
-%assign _cbcmac_aad_len	        _u + __aad_len
+%assign _auth_key_xor_ipad              _u + __auth_key_xor_ipad
+%assign _auth_key_xor_opad	        _u + __auth_key_xor_opad
+%assign _k1_expanded		        _u + __k1_expanded
+%assign _k2			        _u + __k2
+%assign _k3			        _u + __k3
+%assign _cbcmac_aad	                _u + __aad
+%assign _cbcmac_aad_len	                _u + __aad_len
+%assign _key_expanded		        _u + __key_expanded
+%assign _skey1			        _u + __skey1
+%assign _skey2			        _u + __skey2
+%assign _gcm_aad	                _u + __gcm_aad
+%assign _gcm_aad_len	                _u + __gcm_aad_len
 

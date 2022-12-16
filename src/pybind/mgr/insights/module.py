@@ -2,8 +2,9 @@ import datetime
 import json
 import re
 import threading
-import six
-from mgr_module import MgrModule, CommandResult
+
+from mgr_module import CLICommand, CLIReadCommand, HandleCommandResult
+from mgr_module import MgrModule, CommandResult, NotifyType
 from . import health as health_util
 
 # hours of crash history to report
@@ -17,21 +18,10 @@ INSIGHTS_HEALTH_CHECK = "MGR_INSIGHTS_WARNING"
 # version tag for persistent data format
 ON_DISK_VERSION = 1
 
+
 class Module(MgrModule):
-    COMMANDS = [
-        {
-            "cmd": "insights",
-            "desc": "Retrieve insights report",
-            "perm": "r",
-            "poll": "false",
-        },
-        {
-            'cmd': 'insights prune-health name=hours,type=CephString',
-            'desc': 'Remove health history older than <hours> hours',
-            'perm': 'rw',
-            "poll": "false",
-        },
-    ]
+
+    NOTIFY_TYPES = [NotifyType.health]
 
     def __init__(self, *args, **kwargs):
         super(Module, self).__init__(*args, **kwargs)
@@ -42,10 +32,30 @@ class Module(MgrModule):
         # health history tracking
         self._pending_health = []
         self._health_slot = None
+        self._store = {}
 
-    def notify(self, ttype, ident):
+    # The following three functions, get_store, set_store, and get_store_prefix
+    # mask the functions defined in the parent to avoid storing large keys
+    # persistently to disk as that was proving problematic. Long term we may
+    # implement a different mechanism to make these persistent. When that day
+    # comes it should just be a matter of deleting these three functions.
+    def get_store(self, key):
+        return self._store.get(key)
+
+    def set_store(self, key, value):
+        if value is None:
+            if key in self._store:
+                del self._store[key]
+        else:
+            self._store[key] = value
+
+    def get_store_prefix(self, prefix):
+        return { k: v for k, v in self._store.items() if k.startswith(prefix) }
+
+
+    def notify(self, ttype: NotifyType, ident):
         """Queue updates for processing"""
-        if ttype == "health":
+        if ttype == NotifyType.health:
             self.log.info("Received health check update {} pending".format(
                 len(self._pending_health)))
             health = json.loads(self.get("health")["json"])
@@ -121,7 +131,7 @@ class Module(MgrModule):
         """Filter hourly health reports timestamp"""
         matches = filter(
             lambda t: f(health_util.HealthHistorySlot.key_to_time(t[0])),
-            six.iteritems(self.get_store_prefix(health_util.HEALTH_HISTORY_KEY_PREFIX)))
+            self.get_store_prefix(health_util.HEALTH_HISTORY_KEY_PREFIX).items())
         return map(lambda t: t[0], matches)
 
     def _health_prune_history(self, hours):
@@ -171,20 +181,20 @@ class Module(MgrModule):
             "major": m.group("major"),
             "minor": m.group("minor")
         }
-        return { k:int(v) for k,v in six.iteritems(ver) }
+        return {k: int(v) for k, v in ver.items()}
 
     def _crash_history(self, hours):
         """
         Load crash history for the past N hours from the crash module.
         """
         params = dict(
-            prefix = "crash json_report",
-            hours = hours
+            prefix="crash json_report",
+            hours=hours
         )
 
         result = dict(
-            summary = {},
-            hours = params["hours"],
+            summary={},
+            hours=params["hours"],
         )
 
         health_check_details = []
@@ -240,7 +250,11 @@ class Module(MgrModule):
                     ret={}, outs=\"{}\"".format(ret, outs))
             return [], ["Failed to read monitor config dump"]
 
-    def do_report(self, inbuf, command):
+    @CLIReadCommand('insights')
+    def do_report(self):
+        '''
+        Retrieve insights report
+        '''
         health_check_details = []
         report = {}
 
@@ -291,17 +305,16 @@ class Module(MgrModule):
                 }
             })
 
-        return 0, json.dumps(report, indent=2, cls=health_util.HealthEncoder), ""
+        result = json.dumps(report, indent=2, cls=health_util.HealthEncoder)
+        return HandleCommandResult(stdout=result)
 
-    def do_prune_health(self, inbuf, command):
-        try:
-            hours = int(command['hours'])
-        except ValueError:
-            return errno.EINVAL, '', 'hours argument must be integer'
-
+    @CLICommand('insights prune-health')
+    def do_prune_health(self, hours: int):
+        '''
+        Remove health history older than <hours> hours
+        '''
         self._health_prune_history(hours)
-
-        return 0, "", ""
+        return HandleCommandResult()
 
     def testing_set_now_time_offset(self, hours):
         """
@@ -309,14 +322,6 @@ class Module(MgrModule):
         the selftest module to manage testing scenarios related to tracking
         health history.
         """
-        hours = long(hours)
-        health_util.NOW_OFFSET = datetime.timedelta(hours = hours)
+        hours = int(hours)
+        health_util.NOW_OFFSET = datetime.timedelta(hours=hours)
         self.log.warning("Setting now time offset {}".format(health_util.NOW_OFFSET))
-
-    def handle_command(self, inbuf, command):
-        if command["prefix"] == "insights":
-            return self.do_report(inbuf, command)
-        elif command["prefix"] == "insights prune-health":
-            return self.do_prune_health(inbuf, command)
-        else:
-            raise NotImplementedError(cmd["prefix"])

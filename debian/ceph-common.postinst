@@ -109,7 +109,7 @@ case "$1" in
 
        # create /run/ceph.  fail softly if systemd isn't present or
        # something.
-       [ -x /bin/systemd-tmpfiles ] && systemd-tmpfiles --create || true
+       [ -x $(command -v systemd-tmpfiles)"" ] && systemd-tmpfiles --create || true
 
        # Complete renames of /etc/default/ceph
        if [ -n "$2" ] &&

@@ -8,17 +8,15 @@ include $(RTE_SDK)/mk/rte.vars.mk
 #
 LIB = librte_pmd_softnic.a
 
-CFLAGS += -DALLOW_EXPERIMENTAL_API
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
 LDLIBS += -lrte_pipeline -lrte_port -lrte_table
 LDLIBS += -lrte_eal -lrte_mbuf -lrte_mempool -lrte_ring
 LDLIBS += -lrte_ethdev -lrte_net -lrte_kvargs -lrte_sched
+LDLIBS += -lrte_cryptodev
 LDLIBS += -lrte_bus_vdev
 
 EXPORT_MAP := rte_pmd_softnic_version.map
-
-LIBABIVER := 1
 
 #
 # all source are stored in SRCS-y
@@ -33,6 +31,9 @@ SRCS-$(CONFIG_RTE_LIBRTE_PMD_SOFTNIC) += rte_eth_softnic_action.c
 SRCS-$(CONFIG_RTE_LIBRTE_PMD_SOFTNIC) += rte_eth_softnic_pipeline.c
 SRCS-$(CONFIG_RTE_LIBRTE_PMD_SOFTNIC) += rte_eth_softnic_thread.c
 SRCS-$(CONFIG_RTE_LIBRTE_PMD_SOFTNIC) += rte_eth_softnic_cli.c
+SRCS-$(CONFIG_RTE_LIBRTE_PMD_SOFTNIC) += rte_eth_softnic_flow.c
+SRCS-$(CONFIG_RTE_LIBRTE_PMD_SOFTNIC) += rte_eth_softnic_meter.c
+SRCS-$(CONFIG_RTE_LIBRTE_PMD_SOFTNIC) += rte_eth_softnic_cryptodev.c
 SRCS-$(CONFIG_RTE_LIBRTE_PMD_SOFTNIC) += parser.c
 SRCS-$(CONFIG_RTE_LIBRTE_PMD_SOFTNIC) += conn.c
 
@@ -41,8 +42,8 @@ SRCS-$(CONFIG_RTE_LIBRTE_PMD_SOFTNIC) += conn.c
 #
 SYMLINK-y-include += rte_eth_softnic.h
 
-ifneq ($(CONFIG_RTE_EXEC_ENV),"linuxapp")
-$(info Softnic PMD can only operate in a linuxapp environment, \
+ifneq ($(CONFIG_RTE_EXEC_ENV_LINUX),y)
+$(info Softnic PMD can only operate in a linux environment, \
 please change the definition of the RTE_TARGET environment variable)
 all:
 clean:

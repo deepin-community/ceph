@@ -11,15 +11,16 @@
   </table>
 </ng-template>
 
-<div class="progress oaprogress"
+<div class="progress"
      data-placement="left"
-     [tooltip]="usageTooltipTpl">
-  <div class="progress-bar progress-bar-info"
+     [ngbTooltip]="usageTooltipTpl">
+  <div class="progress-bar bg-info"
+       [ngClass]="{'bg-warning': usedPercentage/100 >= warningThreshold, 'bg-danger': usedPercentage/100 >= errorThreshold}"
        role="progressbar"
        [style.width]="usedPercentage + '%'">
     <span>{{ usedPercentage | number: '1.0-' + decimals }}%</span>
   </div>
-  <div class="progress-bar progress-bar-freespace"
+  <div class="progress-bar bg-freespace"
        role="progressbar"
        [style.width]="freePercentage + '%'">
   </div>

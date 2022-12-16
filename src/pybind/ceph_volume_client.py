@@ -1,7 +1,7 @@
 """
 Copyright (C) 2015 Red Hat, Inc.
 
-LGPL2.1.  See file COPYING.
+LGPL-2.1 or LGPL-3.0.  See file COPYING.
 """
 
 from contextlib import contextmanager
@@ -581,31 +581,10 @@ class CephFSVolumeClient(object):
             log.info("Pool {0} already exists".format(pool_name))
             return existing_id
 
-        osd_count = len(osd_map['osds'])
-
-        # We can't query the actual cluster config remotely, but since this is
-        # just a heuristic we'll assume that the ceph.conf we have locally reflects
-        # that in use in the rest of the cluster.
-        pg_warn_max_per_osd = int(self.rados.conf_get('mon_max_pg_per_osd'))
-
-        other_pgs = 0
-        for pool in osd_map['pools']:
-            if not pool['pool_name'].startswith(self.POOL_PREFIX):
-                other_pgs += pool['pg_num']
-
-        # A basic heuristic for picking pg_num: work out the max number of
-        # PGs we can have without tripping a warning, then subtract the number
-        # of PGs already created by non-manila pools, then divide by ten.  That'll
-        # give you a reasonable result on a system where you have "a few" manila
-        # shares.
-        pg_num = ((pg_warn_max_per_osd * osd_count) - other_pgs) // 10
-        # TODO Alternatively, respect an override set by the user.
-
         self._rados_command(
             'osd pool create',
             {
                 'pool': pool_name,
-                'pg_num': int(pg_num),
             }
         )
 
@@ -629,7 +608,7 @@ class CephFSVolumeClient(object):
             raise ValueError("group ID cannot end with '{0}'.".format(
                 META_FILE_EXT))
         path = self._get_group_path(group_id)
-        self._mkdir_p(path, mode)
+        self.fs.mkdirs(path, mode)
 
     def destroy_group(self, group_id):
         path = self._get_group_path(group_id)
@@ -639,23 +618,6 @@ class CephFSVolumeClient(object):
             pass
         else:
             self.fs.rmdir(path)
-
-    def _mkdir_p(self, path, mode=0o755):
-        try:
-            self.fs.stat(path)
-        except cephfs.ObjectNotFound:
-            pass
-        else:
-            return
-
-        parts = path.split(os.path.sep)
-
-        for i in range(1, len(parts) + 1):
-            subpath = os.path.join(*parts[0:i])
-            try:
-                self.fs.stat(subpath)
-            except cephfs.ObjectNotFound:
-                self.fs.mkdir(subpath, mode)
 
     def create_volume(self, volume_path, size=None, data_isolated=False, namespace_isolated=True,
                       mode=0o755):
@@ -674,7 +636,7 @@ class CephFSVolumeClient(object):
         path = self._get_path(volume_path)
         log.info("create_volume: {0}".format(path))
 
-        self._mkdir_p(path, mode)
+        self.fs.mkdirs(path, mode)
 
         if size is not None:
             self.fs.setxattr(path, 'ceph.quota.max_bytes', to_bytes(size), 0)
@@ -732,7 +694,7 @@ class CephFSVolumeClient(object):
 
         # Create the trash folder if it doesn't already exist
         trash = os.path.join(self.volume_prefix, "_deleting")
-        self._mkdir_p(trash)
+        self.fs.mkdirs(trash, 0o755)
 
         # We'll move it to here
         trashed_volume = os.path.join(trash, volume_path.volume_id)

@@ -144,13 +144,14 @@ protected:
 public:
     lw_shared_ptr<T> shared_from_this();
     lw_shared_ptr<const T> shared_from_this() const;
+    long use_count() const noexcept { return _count; }
 
     template <typename X>
     friend class lw_shared_ptr;
     template <typename X>
-    friend class internal::lw_shared_ptr_accessors_esft;
+    friend struct internal::lw_shared_ptr_accessors_esft;
     template <typename X, class Y>
-    friend class internal::lw_shared_ptr_accessors;
+    friend struct internal::lw_shared_ptr_accessors;
 };
 
 template <typename T>
@@ -166,9 +167,9 @@ struct shared_ptr_no_esft : private lw_shared_ptr_counter_base {
     template <typename X>
     friend class lw_shared_ptr;
     template <typename X>
-    friend class internal::lw_shared_ptr_accessors_no_esft;
+    friend struct internal::lw_shared_ptr_accessors_no_esft;
     template <typename X, class Y>
-    friend class internal::lw_shared_ptr_accessors;
+    friend struct internal::lw_shared_ptr_accessors;
 };
 
 
@@ -471,6 +472,7 @@ class enable_shared_from_this : private shared_ptr_count_base {
 public:
     shared_ptr<T> shared_from_this();
     shared_ptr<const T> shared_from_this() const;
+    long use_count() const noexcept { return count; }
 
     template <typename U>
     friend class shared_ptr;

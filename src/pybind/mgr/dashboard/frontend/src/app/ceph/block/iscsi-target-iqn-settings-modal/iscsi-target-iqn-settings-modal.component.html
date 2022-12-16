@@ -1,10 +1,9 @@
-<cd-modal [modalRef]="modalRef">
+<cd-modal [modalRef]="activeModal">
   <ng-container class="modal-title"
                 i18n>Advanced Settings</ng-container>
 
   <ng-container class="modal-content">
     <form name="settingsForm"
-          class="form"
           #formDir="ngForm"
           [formGroup]="settingsForm"
           novalidate>
@@ -13,8 +12,7 @@
            i18n>Changing these parameters from their default values is usually not necessary.</p>
 
         <div class="form-group row"
-             *ngFor="let setting of settingsForm.controls | keyvalue"
-             [ngClass]="{'has-error': settingsForm.showError(setting.key, formDir)}">
+             *ngFor="let setting of settingsForm.controls | keyvalue">
           <div class="col-sm-12">
             <cd-iscsi-setting [settingsForm]="settingsForm"
                               [formDir]="formDir"
@@ -25,15 +23,9 @@
       </div>
 
       <div class="modal-footer">
-        <div class="button-group text-right">
-          <cd-submit-button i18n
-                            [form]="settingsForm"
-                            (submitAction)="save()">Confirm</cd-submit-button>
-          <cd-back-button [back]="modalRef.hide"
-                          name="Cancel"
-                          i18n-name>
-          </cd-back-button>
-        </div>
+        <cd-form-button-panel (submitActionEvent)="save()"
+                              [form]="settingsForm"
+                              [submitText]="actionLabels.UPDATE"></cd-form-button-panel>
       </div>
     </form>
   </ng-container>

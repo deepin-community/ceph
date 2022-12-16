@@ -2,6 +2,8 @@ import os
 import errno
 import logging
 
+from ceph.deployment.service_spec import ServiceSpec, PlacementSpec
+
 import cephfs
 import orchestrator
 
@@ -9,9 +11,9 @@ from .exception import VolumeException
 
 log = logging.getLogger(__name__)
 
-def create_pool(mgr, pool_name, pg_num):
+def create_pool(mgr, pool_name):
     # create the given pool
-    command = {'prefix': 'osd pool create', 'pool': pool_name, 'pg_num': pg_num}
+    command = {'prefix': 'osd pool create', 'pool': pool_name}
     return mgr.mon_command(command)
 
 def remove_pool(mgr, pool_name):
@@ -33,12 +35,12 @@ def remove_filesystem(mgr, fs_name):
     command = {'prefix': 'fs rm', 'fs_name': fs_name, 'yes_i_really_mean_it': True}
     return mgr.mon_command(command)
 
-def create_mds(mgr, fs_name):
-    spec = orchestrator.StatelessServiceSpec()
-    spec.name = fs_name
+def create_mds(mgr, fs_name, placement):
+    spec = ServiceSpec(service_type='mds',
+                                    service_id=fs_name,
+                                    placement=PlacementSpec.from_string(placement))
     try:
-        completion = mgr.add_stateless_service("mds", spec)
-        mgr._orchestrator_wait([completion])
+        completion = mgr.apply([spec], no_overwrite=True)
         orchestrator.raise_if_exception(completion)
     except (ImportError, orchestrator.OrchestratorError):
         return 0, "", "Volume created successfully (no MDS daemons created)"
@@ -56,16 +58,20 @@ def volume_exists(mgr, fs_name):
             return True
     return False
 
-def listdir(fs, dirpath):
+def listdir(fs, dirpath, filter_entries=None):
     """
     Get the directory names (only dirs) for a given path
     """
     dirs = []
+    if filter_entries is None:
+        filter_entries = [b".", b".."]
+    else:
+        filter_entries.extend([b".", b".."])
     try:
         with fs.opendir(dirpath) as dir_handle:
             d = fs.readdir(dir_handle)
             while d:
-                if (d.d_name not in (b".", b"..")) and d.is_dir():
+                if (d.d_name not in filter_entries) and d.is_dir():
                     dirs.append(d.d_name)
                 d = fs.readdir(dir_handle)
     except cephfs.Error as e:
@@ -159,3 +165,15 @@ def get_ancestor_xattr(fs, path, attr):
             raise VolumeException(-e.args[0], e.args[1])
         else:
             return get_ancestor_xattr(fs, os.path.split(path)[0], attr)
+
+def create_base_dir(fs, path, mode):
+    """
+    Create volspec base/group directory if it doesn't exist
+    """
+    try:
+        fs.stat(path)
+    except cephfs.Error as e:
+        if e.args[0] == errno.ENOENT:
+            fs.mkdirs(path, mode)
+        else:
+            raise VolumeException(-e.args[0], e.args[1])

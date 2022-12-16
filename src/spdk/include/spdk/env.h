@@ -40,6 +40,8 @@
 #define SPDK_ENV_H
 
 #include "spdk/stdinc.h"
+#include "spdk/queue.h"
+#include "spdk/pci_ids.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -54,7 +56,7 @@ extern "C" {
 #define SPDK_MALLOC_DMA    0x01
 
 /**
- * Memory is sharable across process boundries.
+ * Memory is sharable across process boundaries.
  */
 #define SPDK_MALLOC_SHARE  0x02
 
@@ -65,8 +67,6 @@ extern "C" {
  * Memzone flags
  */
 #define SPDK_MEMZONE_NO_IOVA_CONTIG 0x00100000 /**< no iova contiguity */
-
-struct spdk_pci_device;
 
 /**
  * \brief Environment initialization options
@@ -82,23 +82,26 @@ struct spdk_env_opts {
 	bool			hugepage_single_segments;
 	bool			unlink_hugepage;
 	size_t			num_pci_addr;
+	const char		*hugedir;
 	struct spdk_pci_addr	*pci_blacklist;
 	struct spdk_pci_addr	*pci_whitelist;
+	const char		*iova_mode;
+	uint64_t		base_virtaddr;
 
 	/** Opaque context for use of the env implementation. */
 	void			*env_context;
 };
 
 /**
- * Allocate dma/sharable memory based on a given dma_flg. It is a physically
- * contiguous memory buffer with the given size, alignment and socket id.
+ * Allocate dma/sharable memory based on a given dma_flg. It is a memory buffer
+ * with the given size, alignment and socket id.
  *
  * \param size Size in bytes.
- * \param align Alignment value for the allocated memory. If '0', the allocated
- * buffer is suitably aligned (in the same manner as malloc()). Otherwise, the
- * allocated buffer is aligned to the multiple of align. In this case, it must
- * be a power of two.
- * \param phys_addr A pointer to the variable to hold the physical address of
+ * \param align If non-zero, the allocated buffer is aligned to a multiple of
+ * align. In this case, it must be a power of two. The returned buffer is always
+ * aligned to at least cache line size.
+ * \param phys_addr **Deprecated**. Please use spdk_vtophys() for retrieving physical
+ * addresses. A pointer to the variable to hold the physical address of
  * the allocated buffer is passed. If NULL, the physical address is not returned.
  * \param socket_id Socket ID to allocate memory on, or SPDK_ENV_SOCKET_ID_ANY
  * for any socket.
@@ -110,16 +113,15 @@ struct spdk_env_opts {
 void *spdk_malloc(size_t size, size_t align, uint64_t *phys_addr, int socket_id, uint32_t flags);
 
 /**
- * Allocate dma/sharable memory based on a given dma_flg. It is a physically
- * contiguous memory buffer with the given size, alignment and socket id.
- * Also, the buffer will be zeroed.
+ * Allocate dma/sharable memory based on a given dma_flg. It is a memory buffer
+ * with the given size, alignment and socket id. Also, the buffer will be zeroed.
  *
  * \param size Size in bytes.
- * \param align Alignment value for the allocated memory. If '0', the allocated
- * buffer is suitably aligned (in the same manner as malloc()). Otherwise, the
- * allocated buffer is aligned to the multiple of align. In this case, it must
- * be a power of two.
- * \param phys_addr A pointer to the variable to hold the physical address of
+ * \param align If non-zero, the allocated buffer is aligned to a multiple of
+ * align. In this case, it must be a power of two. The returned buffer is always
+ * aligned to at least cache line size.
+ * \param phys_addr **Deprecated**. Please use spdk_vtophys() for retrieving physical
+ * addresses. A pointer to the variable to hold the physical address of
  * the allocated buffer is passed. If NULL, the physical address is not returned.
  * \param socket_id Socket ID to allocate memory on, or SPDK_ENV_SOCKET_ID_ANY
  * for any socket.
@@ -128,6 +130,20 @@ void *spdk_malloc(size_t size, size_t align, uint64_t *phys_addr, int socket_id,
  * \return a pointer to the allocated memory buffer.
  */
 void *spdk_zmalloc(size_t size, size_t align, uint64_t *phys_addr, int socket_id, uint32_t flags);
+
+/**
+ * Resize a dma/sharable memory buffer with the given new size and alignment.
+ * Existing contents are preserved.
+ *
+ * \param buf Buffer to resize.
+ * \param size Size in bytes.
+ * \param align If non-zero, the allocated buffer is aligned to a multiple of
+ * align. In this case, it must be a power of two. The returned buffer is always
+ * aligned to at least cache line size.
+ *
+ * \return a pointer to the resized memory buffer.
+ */
+void *spdk_realloc(void *buf, size_t size, size_t align);
 
 /**
  * Free buffer memory that was previously allocated with spdk_malloc() or spdk_zmalloc().
@@ -144,8 +160,11 @@ void spdk_free(void *buf);
 void spdk_env_opts_init(struct spdk_env_opts *opts);
 
 /**
- * Initialize the environment library. This must be called prior to using
- * any other functions in this library.
+ * Initialize or reinitialize the environment library.
+ * For initialization, this must be called prior to using any other functions
+ * in this library. For reinitialization, the parameter `opts` must be set to
+ * NULL and this must be called after the environment library was finished by
+ * spdk_env_fini() within the same process.
  *
  * \param opts Environment initialization options.
  * \return 0 on success, or negative errno on failure.
@@ -153,14 +172,21 @@ void spdk_env_opts_init(struct spdk_env_opts *opts);
 int spdk_env_init(const struct spdk_env_opts *opts);
 
 /**
- * Allocate a pinned, physically contiguous memory buffer with the given size
- * and alignment.
+ * Release any resources of the environment library that were allocated with
+ * spdk_env_init(). After this call, no SPDK env function calls may be made.
+ * It is expected that common usage of this function is to call it just before
+ * terminating the process or before reinitializing the environment library
+ * within the same process.
+ */
+void spdk_env_fini(void);
+
+/**
+ * Allocate a pinned memory buffer with the given size and alignment.
  *
  * \param size Size in bytes.
- * \param align Alignment value for the allocated memory. If '0', the allocated
- * buffer is suitably aligned (in the same manner as malloc()). Otherwise, the
- * allocated buffer is aligned to the multiple of align. In this case, it must
- * be a power of two.
+ * \param align If non-zero, the allocated buffer is aligned to a multiple of
+ * align. In this case, it must be a power of two. The returned buffer is always
+ * aligned to at least cache line size.
  * \param phys_addr A pointer to the variable to hold the physical address of
  * the allocated buffer is passed. If NULL, the physical address is not returned.
  *
@@ -169,14 +195,12 @@ int spdk_env_init(const struct spdk_env_opts *opts);
 void *spdk_dma_malloc(size_t size, size_t align, uint64_t *phys_addr);
 
 /**
- * Allocate a pinned, physically contiguous memory buffer with the given size,
- * alignment and socket id.
+ * Allocate a pinned, memory buffer with the given size, alignment and socket id.
  *
  * \param size Size in bytes.
- * \param align Alignment value for the allocated memory. If '0', the allocated
- * buffer is suitably aligned (in the same manner as malloc()). Otherwise, the
- * allocated buffer is aligned to the multiple of align. In this case, it must
- * be a power of two.
+ * \param align If non-zero, the allocated buffer is aligned to a multiple of
+ * align. In this case, it must be a power of two. The returned buffer is always
+ * aligned to at least cache line size.
  * \param phys_addr A pointer to the variable to hold the physical address of
  * the allocated buffer is passed. If NULL, the physical address is not returned.
  * \param socket_id Socket ID to allocate memory on, or SPDK_ENV_SOCKET_ID_ANY
@@ -187,14 +211,13 @@ void *spdk_dma_malloc(size_t size, size_t align, uint64_t *phys_addr);
 void *spdk_dma_malloc_socket(size_t size, size_t align, uint64_t *phys_addr, int socket_id);
 
 /**
- * Allocate a pinned, physically contiguous memory buffer with the given size
- * and alignment. The buffer will be zeroed.
+ * Allocate a pinned memory buffer with the given size and alignment. The buffer
+ * will be zeroed.
  *
  * \param size Size in bytes.
- * \param align Alignment value for the allocated memory. If '0', the allocated
- * buffer is suitably aligned (in the same manner as malloc()). Otherwise, the
- * allocated buffer is aligned to the multiple of align. In this case, it must
- * be a power of two.
+ * \param align If non-zero, the allocated buffer is aligned to a multiple of
+ * align. In this case, it must be a power of two. The returned buffer is always
+ * aligned to at least cache line size.
  * \param phys_addr A pointer to the variable to hold the physical address of
  * the allocated buffer is passed. If NULL, the physical address is not returned.
  *
@@ -203,14 +226,13 @@ void *spdk_dma_malloc_socket(size_t size, size_t align, uint64_t *phys_addr, int
 void *spdk_dma_zmalloc(size_t size, size_t align, uint64_t *phys_addr);
 
 /**
- * Allocate a pinned, physically contiguous memory buffer with the given size,
- * alignment and socket id. The buffer will be zeroed.
+ * Allocate a pinned memory buffer with the given size, alignment and socket id.
+ * The buffer will be zeroed.
  *
  * \param size Size in bytes.
- * \param align Alignment value for the allocated memory. If '0', the allocated
- * buffer is suitably aligned (in the same manner as malloc()). Otherwise, the
- * allocated buffer is aligned to the multiple of align. In this case, it must
- * be a power of two.
+ * \param align If non-zero, the allocated buffer is aligned to a multiple of
+ * align. In this case, it must be a power of two. The returned buffer is always
+ * aligned to at least cache line size.
  * \param phys_addr A pointer to the variable to hold the physical address of
  * the allocated buffer is passed. If NULL, the physical address is not returned.
  * \param socket_id Socket ID to allocate memory on, or SPDK_ENV_SOCKET_ID_ANY
@@ -226,10 +248,9 @@ void *spdk_dma_zmalloc_socket(size_t size, size_t align, uint64_t *phys_addr, in
  *
  * \param buf Buffer to resize.
  * \param size Size in bytes.
- * \param align Alignment value for the allocated memory. If '0', the allocated
- * buffer is suitably aligned (in the same manner as malloc()). Otherwise, the
- * allocated buffer is aligned to the multiple of align. In this case, it must
- * be a power of two.
+ * \param align If non-zero, the allocated buffer is aligned to a multiple of
+ * align. In this case, it must be a power of two. The returned buffer is always
+ * aligned to at least cache line size.
  * \param phys_addr A pointer to the variable to hold the physical address of
  * the allocated buffer is passed. If NULL, the physical address is not returned.
  *
@@ -247,7 +268,8 @@ void spdk_dma_free(void *buf);
 
 /**
  * Reserve a named, process shared memory zone with the given size, socket_id
- * and flags.
+ * and flags. Unless `SPDK_MEMZONE_NO_IOVA_CONTIG` flag is provided, the returned
+ * memory will be IOVA contiguous.
  *
  * \param name Name to set for this memory zone.
  * \param len Length in bytes.
@@ -261,7 +283,8 @@ void *spdk_memzone_reserve(const char *name, size_t len, int socket_id, unsigned
 
 /**
  * Reserve a named, process shared memory zone with the given size, socket_id,
- * flags and alignment.
+ * flags and alignment. Unless `SPDK_MEMZONE_NO_IOVA_CONTIG` flag is provided,
+ * the returned memory will be IOVA contiguous.
  *
  * \param name Name to set for this memory zone.
  * \param len Length in bytes.
@@ -407,6 +430,27 @@ void spdk_mempool_put_bulk(struct spdk_mempool *mp, void **ele_arr, size_t count
 size_t spdk_mempool_count(const struct spdk_mempool *pool);
 
 /**
+ * Iterate through all elements of the pool and call a function on each one.
+ *
+ * \param mp Memory pool to iterate on.
+ * \param obj_cb Function to call on each element.
+ * \param obj_cb_arg Opaque pointer passed to the callback function.
+ *
+ * \return Number of elements iterated.
+ */
+uint32_t spdk_mempool_obj_iter(struct spdk_mempool *mp, spdk_mempool_obj_cb_t obj_cb,
+			       void *obj_cb_arg);
+
+/**
+ * Lookup the memory pool identified by the given name.
+ *
+ * \param name Name of the memory pool.
+ *
+ * \return a pointer to the memory pool on success, or NULL on failure.
+ */
+struct spdk_mempool *spdk_mempool_lookup(const char *name);
+
+/**
  * Get the number of dedicated CPU cores utilized by this env abstraction.
  *
  * \return the number of dedicated CPU cores.
@@ -511,6 +555,11 @@ uint64_t spdk_get_ticks_hz(void);
  */
 void spdk_delay_us(unsigned int us);
 
+/**
+ * Pause CPU execution for a short while
+ */
+void spdk_pause(void);
+
 struct spdk_ring;
 
 enum spdk_ring_type {
@@ -553,10 +602,12 @@ size_t spdk_ring_count(struct spdk_ring *ring);
  * \param ring A pointer to the ring.
  * \param objs A pointer to the array to be queued.
  * \param count Length count of the array of objects.
+ * \param free_space If non-NULL, amount of free space after the enqueue has finished.
  *
  * \return the number of objects enqueued.
  */
-size_t spdk_ring_enqueue(struct spdk_ring *ring, void **objs, size_t count);
+size_t spdk_ring_enqueue(struct spdk_ring *ring, void **objs, size_t count,
+			 size_t *free_space);
 
 /**
  * Dequeue count objects from the ring into the array objs.
@@ -569,17 +620,27 @@ size_t spdk_ring_enqueue(struct spdk_ring *ring, void **objs, size_t count);
  */
 size_t spdk_ring_dequeue(struct spdk_ring *ring, void **objs, size_t count);
 
+/**
+ * Reports whether the SPDK application is using the IOMMU for DMA
+ *
+ * \return True if we are using the IOMMU, false otherwise.
+ */
+bool spdk_iommu_is_enabled(void);
+
 #define SPDK_VTOPHYS_ERROR	(0xFFFFFFFFFFFFFFFFULL)
 
 /**
  * Get the physical address of a buffer.
  *
  * \param buf A pointer to a buffer.
+ * \param size Contains the size of the memory region pointed to by vaddr.
+ * If vaddr is successfully translated, then this is updated with the size of
+ * the memory region for which the translation is valid.
  *
  * \return the physical address of this buffer on success, or SPDK_VTOPHYS_ERROR
  * on failure.
  */
-uint64_t spdk_vtophys(void *buf);
+uint64_t spdk_vtophys(void *buf, uint64_t *size);
 
 struct spdk_pci_addr {
 	uint32_t			domain;
@@ -589,54 +650,155 @@ struct spdk_pci_addr {
 };
 
 struct spdk_pci_id {
-	uint16_t	vendor_id;
-	uint16_t	device_id;
-	uint16_t	subvendor_id;
-	uint16_t	subdevice_id;
+	uint32_t	class_id;	/**< Class ID or SPDK_PCI_CLASS_ANY_ID. */
+	uint16_t	vendor_id;	/**< Vendor ID or SPDK_PCI_ANY_ID. */
+	uint16_t	device_id;	/**< Device ID or SPDK_PCI_ANY_ID. */
+	uint16_t	subvendor_id;	/**< Subsystem vendor ID or SPDK_PCI_ANY_ID. */
+	uint16_t	subdevice_id;	/**< Subsystem device ID or SPDK_PCI_ANY_ID. */
+};
+
+/** Device needs PCI BAR mapping (done with either IGB_UIO or VFIO) */
+#define SPDK_PCI_DRIVER_NEED_MAPPING 0x0001
+/** Device needs PCI BAR mapping with enabled write combining (wc) */
+#define SPDK_PCI_DRIVER_WC_ACTIVATE 0x0002
+
+void spdk_pci_driver_register(const char *name, struct spdk_pci_id *id_table, uint32_t flags);
+
+struct spdk_pci_device {
+	struct spdk_pci_device		*parent;
+	void				*dev_handle;
+	struct spdk_pci_addr		addr;
+	struct spdk_pci_id		id;
+	int				socket_id;
+	const char			*type;
+
+	int (*map_bar)(struct spdk_pci_device *dev, uint32_t bar,
+		       void **mapped_addr, uint64_t *phys_addr, uint64_t *size);
+	int (*unmap_bar)(struct spdk_pci_device *dev, uint32_t bar,
+			 void *addr);
+	int (*cfg_read)(struct spdk_pci_device *dev, void *value,
+			uint32_t len, uint32_t offset);
+	int (*cfg_write)(struct spdk_pci_device *dev, void *value,
+			 uint32_t len, uint32_t offset);
+
+	struct _spdk_pci_device_internal {
+		struct spdk_pci_driver		*driver;
+		bool				attached;
+		/* optional fd for exclusive access to this device on this process */
+		int				claim_fd;
+		bool				pending_removal;
+		/* The device was successfully removed on a DPDK interrupt thread,
+		 * but to prevent data races we couldn't remove it from the global
+		 * device list right away. It'll be removed as soon as possible
+		 * on a regular thread when any public pci function is called.
+		 */
+		bool				removed;
+		TAILQ_ENTRY(spdk_pci_device)	tailq;
+	} internal;
 };
 
 typedef int (*spdk_pci_enum_cb)(void *enum_ctx, struct spdk_pci_device *pci_dev);
 
-/**
- * Enumerate NVMe devices.
- *
- * \param enum_cb Called when the enumerate operation completes.
- * \param enum_ctx Argument passed to the callback function.
- *
- * \return 0 on success, -1 on failure.
- */
-int spdk_pci_nvme_enumerate(spdk_pci_enum_cb enum_cb, void *enum_ctx);
+#define SPDK_PCI_DEVICE(vend, dev)	        \
+	.class_id = SPDK_PCI_CLASS_ANY_ID,      \
+	.vendor_id = (vend),                    \
+	.device_id = (dev),                     \
+	.subvendor_id = SPDK_PCI_ANY_ID,        \
+	.subdevice_id = SPDK_PCI_ANY_ID
+
+#define SPDK_PCI_DRIVER_REGISTER(name, id_table, flags)			\
+__attribute__((constructor)) static void pci_drv ## _register(void)	\
+{									\
+	spdk_pci_driver_register(name, id_table, flags);		\
+}
 
 /**
- * Enumerate I/OAT device.
+ * Get the VMD PCI driver object.
  *
- * \param enum_cb Called when the enumerate operation completes.
- * \param enum_ctx Argument passed to the callback function.
- *
- * \return 0 on success, -1 on failure.
+ * \return PCI driver.
  */
-int spdk_pci_ioat_enumerate(spdk_pci_enum_cb enum_cb, void *enum_ctx);
+struct spdk_pci_driver *spdk_pci_vmd_get_driver(void);
 
 /**
- * Enumerate virtio device.
+ * Get the I/OAT PCI driver object.
  *
- * \param enum_cb Called when the enumerate operation completes.
- * \param enum_ctx Argument passed to the callback function.
- *
- * \return 0 on success, -1 on failure.
+ * \return PCI driver.
  */
-int spdk_pci_virtio_enumerate(spdk_pci_enum_cb enum_cb, void *enum_ctx);
+struct spdk_pci_driver *spdk_pci_ioat_get_driver(void);
 
 /**
- * Get a mapping of the virtual address to the BAR of the PCI device.
+ * Get the IDXD PCI driver object.
+ *
+ * \return PCI driver.
+ */
+struct spdk_pci_driver *spdk_pci_idxd_get_driver(void);
+
+/**
+ * Get the Virtio PCI driver object.
+ *
+ * \return PCI driver.
+ */
+struct spdk_pci_driver *spdk_pci_virtio_get_driver(void);
+
+/**
+ * Get PCI driver by name (e.g. "nvme", "vmd", "ioat").
+ */
+struct spdk_pci_driver *spdk_pci_get_driver(const char *name);
+
+/**
+ * Get the NVMe PCI driver object.
+ *
+ * \return PCI driver.
+ */
+struct spdk_pci_driver *spdk_pci_nvme_get_driver(void);
+
+/**
+ * Enumerate all PCI devices supported by the provided driver and try to
+ * attach those that weren't attached yet. The provided callback will be
+ * called for each such device and its return code will decide whether that
+ * device is attached or not. Attached devices have to be manually detached
+ * with spdk_pci_device_detach() to be attach-able again.
+ *
+ * \param driver Driver for a specific device type.
+ * \param enum_cb Callback to be called for each non-attached PCI device.
+ * The return code can be as follows:
+ *  -1 - device was not attached, the enumeration is stopped
+ *   0 - device attached successfully, enumeration continues
+ *   1 - device was not attached, enumeration continues
+ * \param enum_ctx Additional context passed to the callback function.
+ *
+ * \return -1 if an internal error occured or the provided callback returned -1,
+ *         0 otherwise
+ */
+int spdk_pci_enumerate(struct spdk_pci_driver *driver, spdk_pci_enum_cb enum_cb, void *enum_ctx);
+
+/**
+ * Begin iterating over enumerated PCI device by calling this function to get
+ * the first PCI device. If there no PCI devices enumerated, return NULL
+ *
+ * \return a pointer to a PCI device on success, NULL otherwise.
+ */
+struct spdk_pci_device *spdk_pci_get_first_device(void);
+
+/**
+ * Continue iterating over enumerated PCI devices.
+ * If no additional PCI devices, return NULL
+ *
+ * \param prev Previous PCI device returned from \ref spdk_pci_get_first_device
+ * or \ref spdk_pci_get_next_device
+ *
+ * \return a pointer to the next PCI device on success, NULL otherwise.
+ */
+struct spdk_pci_device *spdk_pci_get_next_device(struct spdk_pci_device *prev);
+
+/**
+ * Map a PCI BAR in the current process.
  *
  * \param dev PCI device.
- * \param bar Index to the BAR.
- * \param mapped_addr A pointer to the pointer to hold the virtual address of
- *  the mapping.
- * \param phys_addr A pointer to the variable to hold the physical address of
- * the mapping.
- * \param size A pointer to the variable to hold the mapped size in bytes.
+ * \param bar BAR number.
+ * \param mapped_addr A variable to store the virtual address of the mapping.
+ * \param phys_addr A variable to store the physical address of the mapping.
+ * \param size A variable to store the size of the bar (in bytes).
  *
  * \return 0 on success.
  */
@@ -644,122 +806,125 @@ int spdk_pci_device_map_bar(struct spdk_pci_device *dev, uint32_t bar,
 			    void **mapped_addr, uint64_t *phys_addr, uint64_t *size);
 
 /**
- * Remove the mapping of the virtual address to the BAR of the PCI device.
+ * Unmap a PCI BAR from the current process. This happens automatically when
+ * the PCI device is detached.
  *
  * \param dev PCI device.
- * \param bar Index to the BAR.
- * \param addr Virtual address to remove that must be the mapped_addr returned
- * by a previous call to spdk_pci_device_map_bar().
+ * \param bar BAR number.
+ * \param mapped_addr Virtual address of the bar.
  *
  * \return 0 on success.
  */
-int spdk_pci_device_unmap_bar(struct spdk_pci_device *dev, uint32_t bar, void *addr);
+int spdk_pci_device_unmap_bar(struct spdk_pci_device *dev, uint32_t bar,
+			      void *mapped_addr);
 
 /**
- * Get the domain address of a PCI device.
+ * Get the domain of a PCI device.
  *
- * \param dev A pointer to the PCI device.
+ * \param dev PCI device.
  *
- * \return the domain address of PCI device.
+ * \return PCI device domain.
  */
 uint32_t spdk_pci_device_get_domain(struct spdk_pci_device *dev);
 
 /**
- * Get the bus address of a PCI device.
+ * Get the bus number of a PCI device.
  *
- * \param dev A pointer to the PCI device.
+ * \param dev PCI device.
  *
- * \return the bus address of PCI device.
+ * \return PCI bus number.
  */
 uint8_t spdk_pci_device_get_bus(struct spdk_pci_device *dev);
 
 /**
- * Get the device address of a PCI device.
+ * Get the device number within the PCI bus the device is on.
  *
- * \param dev A pointer to the PCI device.
+ * \param dev PCI device.
  *
- * \return the device address of PCI device.
+ * \return PCI device number.
  */
 uint8_t spdk_pci_device_get_dev(struct spdk_pci_device *dev);
 
 /**
- * Get the function address of a PCI device.
+ * Get the particular function number represented by struct spdk_pci_device.
  *
- * \param dev A pointer to the PCI device.
+ * \param dev PCI device.
  *
- * \return the function address of PCI device.
+ * \return PCI function number.
  */
 uint8_t spdk_pci_device_get_func(struct spdk_pci_device *dev);
 
 /**
- * Get the PCI address of a PCI device.
+ * Get the full DomainBDF address of a PCI device.
  *
- * \param dev A pointer to the PCI device.
+ * \param dev PCI device.
  *
- * \return the PCI address structure.
+ * \return PCI address.
  */
 struct spdk_pci_addr spdk_pci_device_get_addr(struct spdk_pci_device *dev);
 
 /**
  * Get the vendor ID of a PCI device.
  *
- * \param dev A pointer to the PCI device.
+ * \param dev PCI device.
  *
- * \return the vendor ID of PCI device.
+ * \return vendor ID.
  */
 uint16_t spdk_pci_device_get_vendor_id(struct spdk_pci_device *dev);
 
 /**
  * Get the device ID of a PCI device.
  *
- * \param dev A pointer to the PCI device.
+ * \param dev PCI device.
  *
- * \return the device ID of PCI device.
+ * \return device ID.
  */
 uint16_t spdk_pci_device_get_device_id(struct spdk_pci_device *dev);
 
 /**
  * Get the subvendor ID of a PCI device.
  *
- * \param dev A pointer to the PCI device.
+ * \param dev PCI device.
  *
- * \return the subvendor ID of PCI device.
+ * \return subvendor ID.
  */
 uint16_t spdk_pci_device_get_subvendor_id(struct spdk_pci_device *dev);
 
 /**
  * Get the subdevice ID of a PCI device.
  *
- * \param dev A pointer to the PCI device.
+ * \param dev PCI device.
  *
- * \return the subdevice ID of PCI device.
+ * \return subdevice ID.
  */
 uint16_t spdk_pci_device_get_subdevice_id(struct spdk_pci_device *dev);
 
 /**
- * Allocate a PCI ID struct for the PCI device.
+ * Get the PCI ID of a PCI device.
  *
- * \param dev A pointer to the PCI device.
+ * \param dev PCI device.
  *
- * \return a PCI ID struct.
+ * \return PCI ID.
  */
 struct spdk_pci_id spdk_pci_device_get_id(struct spdk_pci_device *dev);
 
 /**
- * Get the NUMA socket ID of a PCI device.
+ * Get the NUMA node the PCI device is on.
  *
- * \param dev PCI device to get the socket ID of.
+ * \param dev PCI device.
  *
- * \return the socket ID (>= 0) of PCI device.
+ * \return NUMA node index (>= 0).
  */
 int spdk_pci_device_get_socket_id(struct spdk_pci_device *dev);
 
 /**
- * Get the serial number of a PCI device.
+ * Serialize the PCIe Device Serial Number into the provided buffer.
+ * The buffer will contain a 16-character-long serial number followed by
+ * a NULL terminator.
  *
- * \param dev A pointer to the PCI device.
- * \param sn String to store the serial number.
- * \param len Length of the 'sn'.
+ * \param dev PCI device.
+ * \param sn Buffer to store the serial number in.
+ * \param len Length of buffer. Must be at least 17.
  *
  * \return 0 on success, -1 on failure.
  */
@@ -772,147 +937,159 @@ int spdk_pci_device_get_serial_number(struct spdk_pci_device *dev, char *sn, siz
  * As long as this file remains open with the lock acquired, other processes will
  * not be able to successfully call this function on the same PCI device.
  *
- * \param pci_addr PCI address of the device to claim
+ * The device can be un-claimed by the owning process with spdk_pci_device_unclaim().
+ * It will be also unclaimed automatically when detached.
  *
- * \return -1 if the device has already been claimed, an fd otherwise. This fd
- * should be closed when the application no longer needs access to the PCI device
- * (including when it is hot removed).
+ * \param dev PCI device to claim.
+ *
+ * \return -EACCES if the device has already been claimed,
+ *	   negative errno on unexpected errors,
+ *	   0 on success.
  */
-int spdk_pci_device_claim(const struct spdk_pci_addr *pci_addr);
+int spdk_pci_device_claim(struct spdk_pci_device *dev);
 
 /**
- * Detach a PCI device.
+ * Undo spdk_pci_device_claim().
  *
- * \param device PCI device to detach.
+ * \param dev PCI device to unclaim.
+ */
+void spdk_pci_device_unclaim(struct spdk_pci_device *dev);
+
+/**
+ * Release all resources associated with the given device and detach it. As long
+ * as the PCI device is physically available, it will attachable again.
+ *
+ * \param device PCI device.
  */
 void spdk_pci_device_detach(struct spdk_pci_device *device);
 
 /**
- * Attach a NVMe device.
+ * Attach a PCI device. This will bypass all blacklist rules and explicitly
+ * attach a device at the provided address. The return code of the provided
+ * callback will decide whether that device is attached or not. Attached
+ * devices have to be manually detached with spdk_pci_device_detach() to be
+ * attach-able again.
  *
- * \param enum_cb Called when the attach operation completes.
- * \param enum_ctx Argument passed to the callback function.
- * \param pci_address PCI address of the NVMe device.
+ * \param driver Driver for a specific device type. The device will only be
+ * attached if it's supported by this driver.
+ * \param enum_cb Callback to be called for the PCI device once it's found.
+ * The return code can be as follows:
+ *  -1, 1 - an error occurred, fail the attach request entirely
+ *   0 - device attached successfully
+ * \param enum_ctx Additional context passed to the callback function.
+ * \param pci_address Address of the device to attach.
  *
- * \return 0 on success, -1 on failure.
+ * \return -1 if a device at the provided PCI address couldn't be found,
+ *         -1 if an internal error happened or the provided callback returned non-zero,
+ *         0 otherwise
  */
-int spdk_pci_nvme_device_attach(spdk_pci_enum_cb enum_cb, void *enum_ctx,
-				struct spdk_pci_addr *pci_address);
+int spdk_pci_device_attach(struct spdk_pci_driver *driver, spdk_pci_enum_cb enum_cb,
+			   void *enum_ctx, struct spdk_pci_addr *pci_address);
 
 /**
- * Attach a I/OAT device.
- *
- * \param enum_cb Called when the attach operation completes.
- * \param enum_ctx Argument passed to the callback function.
- * \param pci_address PCI address of the I/OAT device.
- *
- * \return 0 on success, -1 on failure.
- */
-int spdk_pci_ioat_device_attach(spdk_pci_enum_cb enum_cb, void *enum_ctx,
-				struct spdk_pci_addr *pci_address);
-
-/**
- * Attach a virtio device.
- *
- * \param enum_cb Called when the attach operation completes.
- * \param enum_ctx Argument passed to the callback function.
- * \param pci_address PCI address of the virtio device.
- *
- * \return 0 on success, -1 on failure.
- */
-int spdk_pci_virtio_device_attach(spdk_pci_enum_cb enum_cb, void *enum_ctx,
-				  struct spdk_pci_addr *pci_address);
-
-/**
- * Read PCI configuration space in any specified size.
+ * Read \c len bytes from the PCI configuration space.
  *
  * \param dev PCI device.
- * \param value A pointer to the buffer to hold the value.
- * \param len Length in bytes to read.
- * \param offset Offset in bytes.
+ * \param buf A buffer to copy the data into.
+ * \param len Number of bytes to read.
+ * \param offset Offset (in bytes) in the PCI config space to start reading from.
  *
  * \return 0 on success, -1 on failure.
  */
-int spdk_pci_device_cfg_read(struct spdk_pci_device *dev, void *value, uint32_t len,
+int spdk_pci_device_cfg_read(struct spdk_pci_device *dev, void *buf, uint32_t len,
 			     uint32_t offset);
 
 /**
- * Write PCI configuration space in any specified size.
+ * Write \c len bytes into the PCI configuration space.
  *
  * \param dev PCI device.
- * \param value A pointer to the value to write.
- * \param len Length in bytes to write.
- * \param offset Offset in bytes.
+ * \param buf A buffer to copy the data from.
+ * \param len Number of bytes to write.
+ * \param offset Offset (in bytes) in the PCI config space to start writing to.
  *
  * \return 0 on success, -1 on failure.
  */
-int spdk_pci_device_cfg_write(struct spdk_pci_device *dev, void *value, uint32_t len,
+int spdk_pci_device_cfg_write(struct spdk_pci_device *dev, void *buf, uint32_t len,
 			      uint32_t offset);
+
 /**
- * Read 1 byte from PCI configuration space.
+ * Read 1 byte from the PCI configuration space.
  *
  * \param dev PCI device.
- * \param value A pointer to the buffer to hold the value.
- * \param offset Offset in bytes.
+ * \param value A buffer to copy the data into.
+ * \param offset Offset (in bytes) in the PCI config space to start reading from.
  *
  * \return 0 on success, -1 on failure.
  */
 int spdk_pci_device_cfg_read8(struct spdk_pci_device *dev, uint8_t *value, uint32_t offset);
 
 /**
- * Write 1 byte to PCI configuration space.
+ * Write 1 byte into the PCI configuration space.
  *
  * \param dev PCI device.
  * \param value A value to write.
- * \param offset Offset in bytes.
+ * \param offset Offset (in bytes) in the PCI config space to start writing to.
  *
  * \return 0 on success, -1 on failure.
  */
 int spdk_pci_device_cfg_write8(struct spdk_pci_device *dev, uint8_t value, uint32_t offset);
 
 /**
- * Read 2 bytes from PCI configuration space.
+ * Read 2 bytes from the PCI configuration space.
  *
  * \param dev PCI device.
- * \param value A pointer to the buffer to hold the value.
- * \param offset Offset in bytes.
+ * \param value A buffer to copy the data into.
+ * \param offset Offset (in bytes) in the PCI config space to start reading from.
  *
  * \return 0 on success, -1 on failure.
  */
 int spdk_pci_device_cfg_read16(struct spdk_pci_device *dev, uint16_t *value, uint32_t offset);
 
 /**
- * Write 2 bytes to PCI configuration space.
+ * Write 2 bytes into the PCI configuration space.
  *
  * \param dev PCI device.
  * \param value A value to write.
- * \param offset Offset in bytes.
+ * \param offset Offset (in bytes) in the PCI config space to start writing to.
  *
  * \return 0 on success, -1 on failure.
  */
 int spdk_pci_device_cfg_write16(struct spdk_pci_device *dev, uint16_t value, uint32_t offset);
 
 /**
- * Read 4 bytes from PCI configuration space.
+ * Read 4 bytes from the PCI configuration space.
  *
  * \param dev PCI device.
- * \param value A pointer to the buffer to hold the value.
- * \param offset Offset in bytes.
+ * \param value A buffer to copy the data into.
+ * \param offset Offset (in bytes) in the PCI config space to start reading from.
  *
  * \return 0 on success, -1 on failure.
  */
 int spdk_pci_device_cfg_read32(struct spdk_pci_device *dev, uint32_t *value, uint32_t offset);
 
 /**
- * Write 4 bytes to PCI configuration space.
+ * Write 4 bytes into the PCI configuration space.
  *
  * \param dev PCI device.
  * \param value A value to write.
- * \param offset Offset in bytes.
+ * \param offset Offset (in bytes) in the PCI config space to start writing to.
  *
  * \return 0 on success, -1 on failure.
  */
 int spdk_pci_device_cfg_write32(struct spdk_pci_device *dev, uint32_t value, uint32_t offset);
+
+/**
+ * Check if device was requested to be removed from the process. This can be
+ * caused either by physical device hotremoval or OS-triggered removal. In the
+ * latter case, the device may continue to function properly even if this
+ * function returns \c true . The upper-layer driver may check this function
+ * periodically and eventually detach the device.
+ *
+ * \param dev PCI device.
+ *
+ * \return if device was requested to be removed
+ */
+bool spdk_pci_device_is_removed(struct spdk_pci_device *dev);
 
 /**
  * Compare two PCI addresses.
@@ -946,6 +1123,32 @@ int spdk_pci_addr_parse(struct spdk_pci_addr *addr, const char *bdf);
  * \return 0 on success, or a negated errno on failure.
  */
 int spdk_pci_addr_fmt(char *bdf, size_t sz, const struct spdk_pci_addr *addr);
+
+/**
+ * Hook a custom PCI device into the PCI layer. The device will be attachable,
+ * enumerable, and will call provided callbacks on each PCI resource access
+ * request.
+ *
+ * \param drv driver that will be able to attach the device
+ * \param dev fully initialized PCI device struct
+ */
+void spdk_pci_hook_device(struct spdk_pci_driver *drv, struct spdk_pci_device *dev);
+
+/**
+ * Un-hook a custom PCI device from the PCI layer. The device must not be attached.
+ *
+ * \param dev fully initialized PCI device struct
+ */
+void spdk_pci_unhook_device(struct spdk_pci_device *dev);
+
+/**
+ * Return the type of the PCI device.
+ *
+ * \param dev PCI device
+ *
+ * \return string representing the type of the device
+ */
+const char *spdk_pci_device_get_type(const struct spdk_pci_device *dev);
 
 /**
  * Remove any CPU affinity from the current thread.
@@ -1044,7 +1247,8 @@ int spdk_mem_map_clear_translation(struct spdk_mem_map *map, uint64_t vaddr, uin
  * \param map Memory map.
  * \param vaddr Virtual address.
  * \param size Contains the size of the memory region pointed to by vaddr.
- * Updated with the size of the memory region for which the translation is valid.
+ * If vaddr is successfully translated, then this is updated with the size of
+ * the memory region for which the translation is valid.
  *
  * \return the translation of vaddr stored in the map, or default_translation
  * as specified in spdk_mem_map_alloc() if vaddr is not present in the map.
@@ -1075,6 +1279,20 @@ int spdk_mem_register(void *vaddr, size_t len);
  * \return 0 on success, negative errno on failure.
  */
 int spdk_mem_unregister(void *vaddr, size_t len);
+
+/**
+ * Reserve the address space specified in all memory maps.
+ *
+ * This pre-allocates the necessary space in the memory maps such that
+ * future calls to spdk_mem_register() on that region require no
+ * internal memory allocations.
+ *
+ * \param vaddr Virtual address to reserve
+ * \param len Length in bytes of vaddr
+ *
+ * \return 0 on success, negated errno on failure.
+ */
+int spdk_mem_reserve(void *vaddr, size_t len);
 
 #ifdef __cplusplus
 }

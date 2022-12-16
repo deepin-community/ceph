@@ -383,7 +383,7 @@ static const round_trip_instance_t round_trip_instances[] = {
                           {96, 32, 112, 208, 304, 32}}},
 };
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     RoundTripTests, RoundTripTest, ::testing::Combine(
         ::testing::ValuesIn(round_trip_instances),
         ::testing::ValuesIn(modes)));
@@ -429,7 +429,7 @@ static const round_trip_instance_t round_trip_perf_instances[] = {
                             {96,  0, 256,  0, 4194304, 32}}},
 };
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     RoundTripPerfTests, RoundTripPerfTest, ::testing::Combine(
         ::testing::ValuesIn(round_trip_perf_instances),
         ::testing::ValuesIn(modes)));

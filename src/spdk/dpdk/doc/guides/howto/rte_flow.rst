@@ -8,7 +8,7 @@ This document demonstrates some concrete examples for programming flow rules
 with the ``rte_flow`` APIs.
 
 * Detail of the rte_flow APIs can be found in the following link:
-  :ref:`Generic flow API <Generic_flow_API>` .
+  :doc:`../prog_guide/rte_flow`.
 
 * Details of the TestPMD commands to set the flow rules can be found in the
   following link: :ref:`TestPMD Flow rules <testpmd_rte_flow>`
@@ -23,7 +23,7 @@ In this example we will create a simple rule that drops packets whose IPv4
 destination equals 192.168.3.2. This code is equivalent to the following
 testpmd command (wrapped for clarity)::
 
-  tpmd> flow create 0 ingress pattern eth / vlan /
+  testpmd> flow create 0 ingress pattern eth / vlan /
                     ipv4 dst is 192.168.3.2 / end actions drop / end
 
 Code
@@ -32,10 +32,10 @@ Code
 .. code-block:: c
 
   /* create the attribute structure */
-  struct rte_flow_attr attr = {.ingress = 1};
+  struct rte_flow_attr attr = { .ingress = 1 };
   struct rte_flow_item pattern[MAX_PATTERN_IN_FLOW];
   struct rte_flow_action actions[MAX_ACTIONS_IN_FLOW];
-  struct rte_flow_item_etc eth;
+  struct rte_flow_item_eth eth;
   struct rte_flow_item_vlan vlan;
   struct rte_flow_item_ipv4 ipv4;
   struct rte_flow *flow;
@@ -45,7 +45,7 @@ Code
   pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
   pattern[0].spec = &eth;
 
-  /* set the vlan to pas all packets */
+  /* set the vlan to pass all packets */
   pattern[1] = RTE_FLOW_ITEM_TYPE_VLAN;
   pattern[1].spec = &vlan;
 
@@ -55,15 +55,15 @@ Code
   pattern[2].spec = &ipv4;
 
   /* end the pattern array */
-  pattern[3].type = RTE_FLOW_ITEM)TYPE_END;
+  pattern[3].type = RTE_FLOW_ITEM_TYPE_END;
 
   /* create the drop action */
   actions[0].type = RTE_FLOW_ACTION_TYPE_DROP;
   actions[1].type = RTE_FLOW_ACTION_TYPE_END;
 
   /* validate and create the flow rule */
-  if (!rte_flow_validate(port_id, &attr, pattern, actions, &error)
-      flow = rte_flow_create(port_id, &attr, pattern, actions, &error)
+  if (!rte_flow_validate(port_id, &attr, pattern, actions, &error))
+      flow = rte_flow_create(port_id, &attr, pattern, actions, &error);
 
 Output
 ~~~~~~
@@ -118,9 +118,9 @@ a mask.
 This code is equivalent to the following testpmd command (wrapped for
 clarity)::
 
-  tpmd> flow create 0 ingress pattern eth / vlan /
+  testpmd> flow create 0 ingress pattern eth / vlan /
                     ipv4 dst spec 192.168.3.0 dst mask 255.255.255.0 /
-	            end actions drop / end
+                    end actions drop / end
 
 Code
 ~~~~
@@ -130,7 +130,7 @@ Code
   struct rte_flow_attr attr = {.ingress = 1};
   struct rte_flow_item pattern[MAX_PATTERN_IN_FLOW];
   struct rte_flow_action actions[MAX_ACTIONS_IN_FLOW];
-  struct rte_flow_item_etc eth;
+  struct rte_flow_item_eth eth;
   struct rte_flow_item_vlan vlan;
   struct rte_flow_item_ipv4 ipv4;
   struct rte_flow_item_ipv4 ipv4_mask;
@@ -141,7 +141,7 @@ Code
   pattern[0].type = RTE_FLOW_ITEM_TYPE_ETH;
   pattern[0].spec = &eth;
 
-  /* set the vlan to pas all packets */
+  /* set the vlan to pass all packets */
   pattern[1] = RTE_FLOW_ITEM_TYPE_VLAN;
   pattern[1].spec = &vlan;
 
@@ -153,15 +153,15 @@ Code
   pattern[2].mask = &ipv4_mask;
 
   /* end the pattern array */
-  pattern[3].type = RTE_FLOW_ITEM)TYPE_END;
+  pattern[3].type = RTE_FLOW_ITEM_TYPE_END;
 
   /* create the drop action */
   actions[0].type = RTE_FLOW_ACTION_TYPE_DROP;
   actions[1].type = RTE_FLOW_ACTION_TYPE_END;
 
   /* validate and create the flow rule */
-  if (!rte_flow_validate(port_id, &attr, pattern, actions, &error)
-      flow = rte_flow_create(port_id, &attr, pattern, actions, &error)
+  if (!rte_flow_validate(port_id, &attr, pattern, actions, &error))
+      flow = rte_flow_create(port_id, &attr, pattern, actions, &error);
 
 Output
 ~~~~~~
@@ -219,7 +219,7 @@ In this example we will create a rule that routes all vlan id 123 to queue 3.
 This code is equivalent to the following testpmd command (wrapped for
 clarity)::
 
-  tpmd> flow create 0 ingress pattern eth / vlan vid spec 123 /
+  testpmd> flow create 0 ingress pattern eth / vlan vid spec 123 /
                     end actions queue index 3 / end
 
 Code
@@ -227,10 +227,10 @@ Code
 
 .. code-block:: c
 
-  struct rte_flow_attr attr = {.ingress = 1};
+  struct rte_flow_attr attr = { .ingress = 1 };
   struct rte_flow_item pattern[MAX_PATTERN_IN_FLOW];
   struct rte_flow_action actions[MAX_ACTIONS_IN_FLOW];
-  struct rte_flow_item_etc eth;
+  struct rte_flow_item_eth eth;
   struct rte_flow_item_vlan vlan;
   struct rte_flow_action_queue queue = { .index = 3 };
   struct rte_flow *flow;
@@ -246,16 +246,16 @@ Code
   pattern[1].spec = &vlan;
 
   /* end the pattern array */
-  pattern[2].type = RTE_FLOW_ITEM)TYPE_END;
+  pattern[2].type = RTE_FLOW_ITEM_TYPE_END;
 
   /* create the queue action */
   actions[0].type = RTE_FLOW_ACTION_TYPE_QUEUE;
-  actions[0].conf = &queue
+  actions[0].conf = &queue;
   actions[1].type = RTE_FLOW_ACTION_TYPE_END;
 
   /* validate and create the flow rule */
-  if (!rte_flow_validate(port_id, &attr, pattern, actions, &error)
-      flow = rte_flow_create(port_id, &attr, pattern, actions, &error)
+  if (!rte_flow_validate(port_id, &attr, pattern, actions, &error))
+      flow = rte_flow_create(port_id, &attr, pattern, actions, &error);
 
 Output
 ~~~~~~

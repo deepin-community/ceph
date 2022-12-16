@@ -2,4 +2,4 @@ overrides:
   ceph:
     conf:
       client:
-        rbd default map options: ms_mode=secure
+        rbd default map options: ms_mode=secure,read_from_replica=balance

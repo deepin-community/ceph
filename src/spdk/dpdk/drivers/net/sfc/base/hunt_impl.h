@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2012-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2012-2019 Solarflare Communications Inc.
  */
 
 #ifndef _SYS_HUNT_IMPL_H
@@ -10,11 +10,15 @@
 #include "efx.h"
 #include "efx_regs.h"
 #include "efx_regs_ef10.h"
-#include "efx_mcdi.h"
 
 #ifdef	__cplusplus
 extern "C" {
 #endif
+
+#define	HUNT_TXQ_MAXNDESCS			4096
+#define	HUNT_TXQ_MAXNDESCS_BUG35388_WORKAROUND	2048
+
+#define	HUNT_EVQ_MAXNBUFS	(64)
 
 /* Missing register definitions */
 #ifndef	ER_DZ_TX_PIOBUF_OFST

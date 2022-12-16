@@ -35,12 +35,12 @@ typedef struct {
 
 static PyObject *osdmap_get_epoch(BasePyOSDMap *self, PyObject *obj)
 {
-  return PyInt_FromLong(self->osdmap->get_epoch());
+  return PyLong_FromLong(self->osdmap->get_epoch());
 }
 
 static PyObject *osdmap_get_crush_version(BasePyOSDMap* self, PyObject *obj)
 {
-  return PyInt_FromLong(self->osdmap->get_crush_version());
+  return PyLong_FromLong(self->osdmap->get_crush_version());
 }
 
 static PyObject *osdmap_dump(BasePyOSDMap* self, PyObject *obj)
@@ -128,14 +128,14 @@ static PyObject *osdmap_calc_pg_upmaps(BasePyOSDMap* self, PyObject *args)
   set<int64_t> pools;
   for (auto i = 0; i < PyList_Size(pool_list); ++i) {
     PyObject *pool_name = PyList_GET_ITEM(pool_list, i);
-    if (!PyString_Check(pool_name)) {
+    if (!PyUnicode_Check(pool_name)) {
       derr << __func__ << " " << pool_name << " not a string" << dendl;
       return nullptr;
     }
     auto pool_id = self->osdmap->lookup_pg_pool_name(
-      PyString_AsString(pool_name));
+      PyUnicode_AsUTF8(pool_name));
     if (pool_id < 0) {
-      derr << __func__ << " pool '" << PyString_AsString(pool_name)
+      derr << __func__ << " pool '" << PyUnicode_AsUTF8(pool_name)
            << "' does not exist" << dendl;
       return nullptr;
     }
@@ -155,7 +155,7 @@ static PyObject *osdmap_calc_pg_upmaps(BasePyOSDMap* self, PyObject *args)
 				 incobj->inc);
   PyEval_RestoreThread(tstate);
   dout(10) << __func__ << " r = " << r << dendl;
-  return PyInt_FromLong(r);
+  return PyLong_FromLong(r);
 }
 
 static PyObject *osdmap_map_pool_pgs_up(BasePyOSDMap* self, PyObject *args)
@@ -377,7 +377,7 @@ BasePyOSDMapIncremental_dealloc(BasePyOSDMapIncremental *self)
 static PyObject *osdmap_inc_get_epoch(BasePyOSDMapIncremental *self,
     PyObject *obj)
 {
-  return PyInt_FromLong(self->inc->epoch);
+  return PyLong_FromLong(self->inc->epoch);
 }
 
 static PyObject *osdmap_inc_dump(BasePyOSDMapIncremental *self,
@@ -560,7 +560,7 @@ static PyObject *crush_get_item_name(BasePyCRUSH *self, PyObject *args)
   if (!self->crush->item_exists(item)) {
     Py_RETURN_NONE;
   }
-  return PyString_FromString(self->crush->get_item_name(item));
+  return PyUnicode_FromString(self->crush->get_item_name(item));
 }
 
 static PyObject *crush_get_item_weight(BasePyCRUSH *self, PyObject *args)
@@ -573,6 +573,19 @@ static PyObject *crush_get_item_weight(BasePyCRUSH *self, PyObject *args)
     Py_RETURN_NONE;
   }
   return PyFloat_FromDouble(self->crush->get_item_weightf(item));
+}
+
+static PyObject *crush_find_roots(BasePyCRUSH *self)
+{
+  set<int> roots;
+  self->crush->find_roots(&roots);
+  PyFormatter f;
+  f.open_array_section("roots");
+  for (auto root : roots) {
+    f.dump_int("root", root);
+  }
+  f.close_section();
+  return f.get();
 }
 
 static PyObject *crush_find_takes(BasePyCRUSH *self, PyObject *obj)
@@ -618,6 +631,8 @@ PyMethodDef BasePyCRUSH_methods[] = {
     "Get item name"},
   {"_get_item_weight", (PyCFunction)crush_get_item_weight, METH_VARARGS,
     "Get item weight"},
+  {"_find_roots", (PyCFunction)crush_find_roots, METH_NOARGS,
+   "Find all tree roots"},
   {"_find_takes", (PyCFunction)crush_find_takes, METH_NOARGS,
     "Find distinct TAKE roots"},
   {"_get_take_weight_osd_map", (PyCFunction)crush_get_take_weight_osd_map,

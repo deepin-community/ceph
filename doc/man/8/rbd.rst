@@ -64,8 +64,9 @@ Parameters
      format is understood by all versions of librbd and the kernel rbd module,
      but does not support newer features like cloning.
 
-   * format 2 - Use the second rbd format, which is supported by
-     librbd and kernel since version 3.11 (except for striping). This adds
+   * format 2 - Use the second rbd format, which is supported by librbd since
+     the Bobtail release and the kernel rbd module since kernel 3.10 (except
+     for "fancy" striping, which is supported since kernel 4.17). This adds
      support for cloning and is more easily extensible to allow more
      features in the future.
 
@@ -116,7 +117,7 @@ Parameters
    string. This is useful for situations where an image must
    be open from more than one client at once, like during
    live migration of a virtual machine, or for use underneath
-   a clustered filesystem.
+   a clustered file system.
 
 .. option:: --format format
 
@@ -252,7 +253,7 @@ Commands
   Show the rbd images that are mapped via the rbd kernel module
   (default) or other supported device.
 
-:command:`device map` [-t | --device-type *device-type*] [--read-only] [--exclusive] [-o | --options *device-options*] *image-spec* | *snap-spec*
+:command:`device map` [-t | --device-type *device-type*] [--cookie *device-cookie*] [--show-cookie] [--read-only] [--exclusive] [-o | --options *device-options*] *image-spec* | *snap-spec*
   Map the specified image to a block device via the rbd kernel module
   (default) or other supported device (*nbd* on Linux or *ggate* on
   FreeBSD).
@@ -267,19 +268,44 @@ Commands
   The --options argument is a comma separated list of device type
   specific options (opt1,opt2=val,...).
 
+:command:`device attach` [-t | --device-type *device-type*] --device *device-path* [--cookie *device-cookie*] [--show-cookie] [--read-only] [--exclusive] [--force] [-o | --options *device-options*] *image-spec* | *snap-spec*
+  Attach the specified image to the specified block device (currently only
+  `nbd` on Linux). This operation is unsafe and should not be normally used.
+  In particular, specifying the wrong image or the wrong block device may
+  lead to data corruption as no validation is performed by `nbd` kernel driver.
+
+  The --options argument is a comma separated list of device type
+  specific options (opt1,opt2=val,...).
+
+:command:`device detach` [-t | --device-type *device-type*] [-o | --options *device-options*] *image-spec* | *snap-spec* | *device-path*
+  Detach the block device that was mapped or attached (currently only `nbd`
+  on Linux). This operation is unsafe and should not be normally used.
+
+  The --options argument is a comma separated list of device type
+  specific options (opt1,opt2=val,...).
+
 :command:`diff` [--from-snap *snap-name*] [--whole-object] *image-spec* | *snap-spec*
   Dump a list of byte extents in the image that have changed since the specified start
   snapshot, or since the image was created.  Each output line includes the starting offset
   (in bytes), the length of the region (in bytes), and either 'zero' or 'data' to indicate
   whether the region is known to be zeros or may contain other data.
 
-:command:`du` [-p | --pool *pool-name*] [*image-spec* | *snap-spec*]
+:command:`du` [-p | --pool *pool-name*] [*image-spec* | *snap-spec*] [--merge-snapshots]
   Will calculate the provisioned and actual disk usage of all images and
   associated snapshots within the specified pool.  It can also be used against
   individual images and snapshots.
 
   If the RBD fast-diff feature is not enabled on images, this operation will
   require querying the OSDs for every potential object within the image.
+
+  The --merge-snapshots will merge snapshots used space into their parent images.
+
+:command:`encryption format` *image-spec* *format* *passphrase-file* [--cipher-alg *alg*]
+  Formats image to an encrypted format.
+  All data previously written to the image will become unreadable.
+  A cloned image cannot be formatted, although encrypted images can be cloned.
+  Supported formats: *luks1*, *luks2*.
+  Supported cipher algorithms: *aes-128*, *aes-256* (default).
 
 :command:`export` [--export-format *format (1 or 2)*] (*image-spec* | *snap-spec*) [*dest-path*]
   Export image to dest path (use - for stdout).
@@ -449,7 +475,7 @@ Commands
   Execute image migration. This step is run after a successful migration
   prepare step and copies image data to the destination.
 
-:command:`migration prepare` [--order *order*] [--object-size *object-size*] [--image-feature *image-feature*] [--image-shared] [--stripe-unit *stripe-unit*] [--stripe-count *stripe-count*] [--data-pool *data-pool*] *src-image-spec* [*dest-image-spec*]
+:command:`migration prepare` [--order *order*] [--object-size *object-size*] [--image-feature *image-feature*] [--image-shared] [--stripe-unit *stripe-unit*] [--stripe-count *stripe-count*] [--data-pool *data-pool*] [--import-only] [--source-spec *json*] [--source-spec-path *path*] *src-image-spec* [*dest-image-spec*]
   Prepare image migration. This is the first step when migrating an
   image, i.e. changing the image location, format or other
   parameters that can't be changed dynamically. The destination can
@@ -457,6 +483,11 @@ Commands
   After this step the source image is set as a parent of the
   destination image, and the image is accessible in copy-on-write mode
   by its destination spec.
+
+  An image can also be migrated from a read-only import source by adding the
+  *--import-only* optional and providing a JSON-encoded *--source-spec* or a
+  path to a JSON-encoded source-spec file using the *--source-spec-path*
+  optionals.
 
 :command:`mirror image demote` *image-spec*
   Demote a primary image to non-primary for RBD mirroring.
@@ -467,13 +498,15 @@ Commands
   can be explicitly disabled mirroring for each image within
   the pool.
 
-:command:`mirror image enable` *image-spec*
+:command:`mirror image enable` *image-spec* *mode*
   Enable RBD mirroring for an image. If the mirroring is
   configured in ``image`` mode for the image's pool, then it
   can be explicitly enabled mirroring for each image within
   the pool.
 
-  This requires the RBD journaling feature is enabled.
+  The mirror image mode can either be ``journal`` (default) or
+  ``snapshot``. The ``journal`` mode requires the RBD journaling
+  feature.
 
 :command:`mirror image promote` [--force] *image-spec*
   Promote a non-primary image to primary for RBD mirroring.
@@ -533,6 +566,18 @@ Commands
   Show status for all mirrored images in the pool.
   With --verbose, also show additionally output status
   details for every mirroring image in the pool.
+
+:command:`mirror snapshot schedule add` [-p | --pool *pool*] [--namespace *namespace*] [--image *image*] *interval* [*start-time*]
+  Add mirror snapshot schedule.
+
+:command:`mirror snapshot schedule list` [-R | --recursive] [--format *format*] [--pretty-format] [-p | --pool *pool*] [--namespace *namespace*] [--image *image*]
+  List mirror snapshot schedule.
+
+:command:`mirror snapshot schedule remove` [-p | --pool *pool*] [--namespace *namespace*] [--image *image*] *interval* [*start-time*]
+  Remove mirror snapshot schedule.
+
+:command:`mirror snapshot schedule status` [-p | --pool *pool*] [--format *format*] [--pretty-format] [--namespace *namespace*] [--image *image*]
+  Show mirror snapshot schedule status.
 
 :command:`mv` *src-image-spec* *dest-image-spec*
   Rename an image.  Note: rename across pools is not supported.
@@ -611,7 +656,7 @@ Commands
   Reclaim space for zeroed image extents. The default sparse size is
   4096 bytes and can be changed via --sparse-size option with the
   following restrictions: it should be power of two, not less than
-  4096, and not larger image object size.
+  4096, and not larger than image object size.
 
 :command:`status` *image-spec*
   Show the status of the image, including which clients have it open.
@@ -633,6 +678,18 @@ Commands
   Delete an image from trash. If image deferment time has not expired
   you can not removed it unless use force. But an actively in-use by clones 
   or has snapshots can not be removed.
+
+:command:`trash purge schedule add` [-p | --pool *pool*] [--namespace *namespace*] *interval* [*start-time*]
+  Add trash purge schedule.
+
+:command:`trash purge schedule list` [-R | --recursive] [--format *format*] [--pretty-format] [-p | --pool *pool*] [--namespace *namespace*]
+  List trash purge schedule.
+
+:command:`trash purge schedule remove` [-p | --pool *pool*] [--namespace *namespace*] *interval* [*start-time*]
+  Remove trash purge schedule.
+
+:command:`trash purge schedule status` [-p | --pool *pool*] [--format *format*] [--pretty-format] [--namespace *namespace*]
+  Show trash purge schedule status.
 
 :command:`watch` *image-spec*
   Watch events on image.
@@ -682,8 +739,7 @@ The striping is controlled by three parameters:
   we move on to the next [*stripe_count*] objects.
 
 By default, [*stripe_unit*] is the same as the object size and [*stripe_count*] is 1.  Specifying a different
-[*stripe_unit*] requires that the STRIPINGV2 feature be supported (added in Ceph v0.53) and format 2 images be
-used.
+[*stripe_unit*] and/or [*stripe_count*] is often referred to as using "fancy" striping and requires format 2.
 
 
 Kernel rbd (krbd) options
@@ -773,6 +829,57 @@ Per mapping (block device) `rbd device map` options:
   solid-state drives).  For filestore with filestore_punch_hole = false, the
   recommended setting is image object size (typically 4M).
 
+* crush_location=x - Specify the location of the client in terms of CRUSH
+  hierarchy (since 5.8).  This is a set of key-value pairs separated from
+  each other by '|', with keys separated from values by ':'.  Note that '|'
+  may need to be quoted or escaped to avoid it being interpreted as a pipe
+  by the shell.  The key is the bucket type name (e.g. rack, datacenter or
+  region with default bucket types) and the value is the bucket name.  For
+  example, to indicate that the client is local to rack "myrack", data center
+  "mydc" and region "myregion"::
+
+    crush_location=rack:myrack|datacenter:mydc|region:myregion
+
+  Each key-value pair stands on its own: "myrack" doesn't need to reside in
+  "mydc", which in turn doesn't need to reside in "myregion".  The location
+  is not a path to the root of the hierarchy but rather a set of nodes that
+  are matched independently, owning to the fact that bucket names are unique
+  within a CRUSH map.  "Multipath" locations are supported, so it is possible
+  to indicate locality for multiple parallel hierarchies::
+
+    crush_location=rack:myrack1|rack:myrack2|datacenter:mydc
+
+* read_from_replica=no - Disable replica reads, always pick the primary OSD
+  (since 5.8, default).
+
+* read_from_replica=balance - When issued a read on a replicated pool, pick
+  a random OSD for serving it (since 5.8).
+
+  This mode is safe for general use only since Octopus (i.e. after "ceph osd
+  require-osd-release octopus").  Otherwise it should be limited to read-only
+  workloads such as images mapped read-only everywhere or snapshots.
+
+* read_from_replica=localize - When issued a read on a replicated pool, pick
+  the most local OSD for serving it (since 5.8).  The locality metric is
+  calculated against the location of the client given with crush_location;
+  a match with the lowest-valued bucket type wins.  For example, with default
+  bucket types, an OSD in a matching rack is closer than an OSD in a matching
+  data center, which in turn is closer than an OSD in a matching region.
+
+  This mode is safe for general use only since Octopus (i.e. after "ceph osd
+  require-osd-release octopus").  Otherwise it should be limited to read-only
+  workloads such as images mapped read-only everywhere or snapshots.
+
+* compression_hint=none - Don't set compression hints (since 5.8, default).
+
+* compression_hint=compressible - Hint to the underlying OSD object store
+  backend that the data is compressible, enabling compression in passive mode
+  (since 5.8).
+
+* compression_hint=incompressible - Hint to the underlying OSD object store
+  backend that the data is incompressible, disabling compression in aggressive
+  mode (since 5.8).
+
 * ms_mode=legacy - Use msgr1 on-the-wire protocol (since 5.11, default).
 
 * ms_mode=crc - Use msgr2.1 on-the-wire protocol, select 'crc' mode, also
@@ -791,6 +898,15 @@ Per mapping (block device) `rbd device map` options:
 * ms_mode=prefer-secure - Use msgr2.1 on-the-wire protocol, select 'secure'
   mode (since 5.11).  If the daemon denies 'secure' mode in favor of 'crc'
   mode, agree to 'crc' mode.
+
+* rxbounce - Use a bounce buffer when receiving data (since 5.17).  The default
+  behaviour is to read directly into the destination buffer.  A bounce buffer
+  is needed if the destination buffer isn't guaranteed to be stable (i.e. remain
+  unchanged while it is being read to).  In particular this is the case for
+  Windows where a system-wide "dummy" (throwaway) page may be mapped into the
+  destination buffer in order to generate a single large I/O.  Otherwise,
+  "libceph: ... bad crc/signature" or "libceph: ... integrity error, bad crc"
+  errors and associated performance degradation are expected.
 
 * udev - Wait for udev device manager to finish executing all matching
   "add" rules and release the device before exiting (default).  This option

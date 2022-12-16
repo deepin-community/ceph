@@ -16,8 +16,8 @@
 #define ECORE_SB_ATT_IDX	0x0001
 #define ECORE_SB_EVENT_MASK	0x0003
 
-#define SB_ALIGNED_SIZE(p_hwfn)					\
-	ALIGNED_TYPE_SIZE(struct status_block_e4, p_hwfn)
+#define SB_ALIGNED_SIZE(p_hwfn) \
+	ALIGNED_TYPE_SIZE(struct status_block, p_hwfn)
 
 #define ECORE_SB_INVALID_IDX	0xffff
 
@@ -256,5 +256,6 @@ enum _ecore_status_t ecore_int_set_timer_res(struct ecore_hwfn *p_hwfn,
 enum _ecore_status_t ecore_pglueb_rbc_attn_handler(struct ecore_hwfn *p_hwfn,
 						   struct ecore_ptt *p_ptt,
 						   bool is_hw_init);
+void ecore_pf_flr_igu_cleanup(struct ecore_hwfn *p_hwfn);
 
 #endif /* __ECORE_INT_H__ */

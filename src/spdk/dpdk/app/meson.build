@@ -1,30 +1,42 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Copyright(c) 2017 Intel Corporation
+# Copyright(c) 2017-2019 Intel Corporation
 
-apps = ['pdump',
+if is_windows
+	subdir_done()
+endif
+
+apps = [
+	'pdump',
 	'proc-info',
+	'test-acl',
 	'test-bbdev',
+	'test-cmdline',
+	'test-compress-perf',
 	'test-crypto-perf',
 	'test-eventdev',
-	'test-pmd']
+	'test-fib',
+	'test-pipeline',
+	'test-pmd',
+	'test-sad']
 
 # for BSD only
 lib_execinfo = cc.find_library('execinfo', required: false)
 
+default_cflags = machine_args + ['-DALLOW_EXPERIMENTAL_API']
+
 foreach app:apps
 	build = true
 	name = app
-	allow_experimental_apis = false
 	sources = []
 	includes = []
-	cflags = machine_args
+	cflags = default_cflags
 	objs = [] # other object files to link against, used e.g. for
 	          # instruction-set optimized versions of code
 
 	# use "deps" for internal DPDK dependencies, and "ext_deps" for
 	# external package/library requirements
 	ext_deps = []
-	deps = []
+	deps = dpdk_app_link_libraries
 
 	subdir(name)
 
@@ -38,11 +50,7 @@ foreach app:apps
 
 		link_libs = []
 		if get_option('default_library') == 'static'
-			link_libs = dpdk_drivers
-		endif
-
-		if allow_experimental_apis
-			cflags += '-DALLOW_EXPERIMENTAL_API'
+			link_libs = dpdk_static_libraries + dpdk_drivers
 		endif
 
 		executable('dpdk-' + name,
@@ -55,3 +63,6 @@ foreach app:apps
 				install: true)
 	endif
 endforeach
+
+# special case the autotests
+subdir('test')

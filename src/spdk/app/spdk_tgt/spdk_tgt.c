@@ -38,11 +38,6 @@
 #include "spdk/event.h"
 #include "spdk/vhost.h"
 
-/* TODO: this should be handled by configure */
-#if defined(SPDK_CONFIG_VHOST) && !defined(__linux__)
-#undef SPDK_CONFIG_VHOST
-#endif
-
 #ifdef SPDK_CONFIG_VHOST
 #define SPDK_VHOST_OPTS "S:"
 #else
@@ -77,7 +72,7 @@ spdk_tgt_save_pid(const char *pid_path)
 }
 
 
-static void
+static int
 spdk_tgt_parse_arg(int ch, char *arg)
 {
 	switch (ch) {
@@ -89,11 +84,14 @@ spdk_tgt_parse_arg(int ch, char *arg)
 		spdk_vhost_set_socket_path(arg);
 		break;
 #endif
+	default:
+		return -EINVAL;
 	}
+	return 0;
 }
 
 static void
-spdk_tgt_started(void *arg1, void *arg2)
+spdk_tgt_started(void *arg1)
 {
 	if (g_pid_path) {
 		spdk_tgt_save_pid(g_pid_path);
@@ -119,7 +117,7 @@ main(int argc, char **argv)
 		return rc;
 	}
 
-	rc = spdk_app_start(&opts, spdk_tgt_started, NULL, NULL);
+	rc = spdk_app_start(&opts, spdk_tgt_started, NULL);
 	spdk_app_fini();
 
 	return rc;

@@ -1,7 +1,7 @@
 {
   "subsystems": [
     {
-      "subsystem": "copy",
+      "subsystem": "accel",
       "config": null
     },
     {
@@ -20,23 +20,24 @@
             "bdev_io_pool_size": 65536,
             "bdev_io_cache_size": 256
           },
-          "method": "set_bdev_options"
+          "method": "bdev_set_options"
         },
         {
           "params": {
             "retry_count": 4,
             "timeout_us": 0,
             "nvme_adminq_poll_period_us": 1000000,
+            "nvme_ioq_poll_period_us": 0,
             "action_on_timeout": "none"
           },
-          "method": "set_bdev_nvme_options"
+          "method": "bdev_nvme_set_options"
         },
         {
           "params": {
             "enable": false,
             "period_us": 100000
           },
-          "method": "set_bdev_nvme_hotplug"
+          "method": "bdev_nvme_set_hotplug"
         },
         {
           "params": {
@@ -47,7 +48,7 @@
             "traddr": "naa.vhost.0",
             "vq_count": 8
           },
-          "method": "construct_virtio_dev"
+          "method": "bdev_virtio_attach_controller"
         },
         {
           "params": {
@@ -58,7 +59,7 @@
             "traddr": "naa.vhost.1",
             "vq_count": 8
           },
-          "method": "construct_virtio_dev"
+          "method": "bdev_virtio_attach_controller"
         },
         {
           "params": {
@@ -69,7 +70,7 @@
             "traddr": "vhost.1",
             "vq_count": 1
           },
-          "method": "construct_virtio_dev"
+          "method": "bdev_virtio_attach_controller"
         }
       ]
     },
@@ -84,18 +85,13 @@
           "params": {
             "acceptor_poll_rate": 10000
           },
-          "method": "set_nvmf_target_config"
+          "method": "nvmf_set_config"
         },
         {
           "params": {
-            "in_capsule_data_size": 4096,
-            "io_unit_size": 131072,
-            "max_qpairs_per_ctrlr": 64,
-            "max_queue_depth": 128,
-            "max_io_size": 131072,
             "max_subsystems": 1024
           },
-          "method": "set_nvmf_target_options"
+          "method": "nvmf_set_max_subsystems"
         }
       ]
     },
@@ -127,10 +123,9 @@
             "max_sessions": 128,
             "error_recovery_level": 0,
             "disable_chap": false,
-            "min_connections_per_core": 4,
             "default_time2wait": 2
           },
-          "method": "set_iscsi_options"
+          "method": "iscsi_set_options"
         }
       ]
     }

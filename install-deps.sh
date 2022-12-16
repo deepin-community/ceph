@@ -23,23 +23,28 @@ export LC_ALL=C # the following is vulnerable to i18n
 
 ARCH=$(uname -m)
 
-function install_seastar_deps {
-    if [ $WITH_SEASTAR ]; then
-        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-              ragel libc-ares-dev libhwloc-dev libnuma-dev libpciaccess-dev \
-              libcrypto++-dev libgnutls28-dev libsctp-dev libprotobuf-dev \
-              protobuf-compiler systemtap-sdt-dev libyaml-cpp-dev
-    fi
+function in_jenkins() {
+    test -n "$JENKINS_HOME"
 }
 
 function munge_ceph_spec_in {
+    local with_seastar=$1
+    shift
+    local with_zbd=$1
+    shift
     local for_make_check=$1
     shift
     local OUTFILE=$1
     sed -e 's/@//g' < ceph.spec.in > $OUTFILE
     # http://rpm.org/user_doc/conditional_builds.html
-    if [ $WITH_SEASTAR ]; then
+    if $with_seastar; then
         sed -i -e 's/%bcond_with seastar/%bcond_without seastar/g' $OUTFILE
+    fi
+    if $with_jaeger; then
+        sed -i -e 's/%bcond_with jaeger/%bcond_without jaeger/g' $OUTFILE
+    fi
+    if $with_zbd; then
+        sed -i -e 's/%bcond_with zbd/%bcond_without zbd/g' $OUTFILE
     fi
     if $for_make_check; then
         sed -i -e 's/%bcond_with make_check/%bcond_without make_check/g' $OUTFILE
@@ -48,6 +53,8 @@ function munge_ceph_spec_in {
 
 function munge_debian_control {
     local version=$1
+    shift
+    local with_seastar=$1
     shift
     local for_make_check=$1
     shift
@@ -58,6 +65,13 @@ function munge_debian_control {
 	    grep -v babeltrace debian/control > $control
 	    ;;
     esac
+    if $with_seastar; then
+	sed -i -e 's/^# Crimson[[:space:]]//g' $control
+    fi
+    if $with_jaeger; then
+	sed -i -e 's/^# Jaeger[[:space:]]//g' $control
+	sed -i -e 's/^# Crimson      libyaml-cpp-dev,/d' $control
+    fi
     if $for_make_check; then
         sed -i 's/^# Make-Check[[:space:]]/             /g' $control
     fi
@@ -65,6 +79,7 @@ function munge_debian_control {
 }
 
 function ensure_decent_gcc_on_ubuntu {
+    in_jenkins && echo "CI_DEBUG: Start ensure_decent_gcc_on_ubuntu() in install-deps.sh"
     # point gcc to the one offered by g++-7 if the used one is not
     # new enough
     local old=$(gcc -dumpfullversion -dumpversion)
@@ -77,8 +92,7 @@ function ensure_decent_gcc_on_ubuntu {
     if [ ! -f /usr/bin/g++-${new} ]; then
 	$SUDO tee /etc/apt/sources.list.d/ubuntu-toolchain-r.list <<EOF
 deb [lang=none] http://ppa.launchpad.net/ubuntu-toolchain-r/test/ubuntu $codename main
-deb [arch=amd64 lang=none] http://mirror.cs.uchicago.edu/ubuntu-toolchain-r $codename main
-deb [arch=amd64,i386 lang=none] http://mirror.yandex.ru/mirrors/launchpad/ubuntu-toolchain-r $codename main
+deb [arch=amd64 lang=none] http://mirror.nullivex.com/ppa/ubuntu-toolchain-r-test $codename main
 EOF
 	# import PPA's signing key into APT's keyring
 	cat << ENDOFKEY | $SUDO apt-key add -
@@ -105,6 +119,8 @@ ENDOFKEY
             old=4.8;;
         xenial)
             old=5;;
+        bionic)
+            old=7;;
     esac
     $SUDO update-alternatives --remove-all gcc || true
     $SUDO update-alternatives \
@@ -122,22 +138,43 @@ ENDOFKEY
     # cmake uses the latter by default
     $SUDO ln -nsf /usr/bin/gcc /usr/bin/${ARCH}-linux-gnu-gcc
     $SUDO ln -nsf /usr/bin/g++ /usr/bin/${ARCH}-linux-gnu-g++
+
+    in_jenkins && echo "CI_DEBUG: End ensure_decent_gcc_on_ubuntu() in install-deps.sh"
+}
+
+function ensure_python3_sphinx_on_ubuntu {
+    in_jenkins && echo "CI_DEBUG: Running ensure_python3_sphinx_on_ubuntu() in install-deps.sh"
+    local sphinx_command=/usr/bin/sphinx-build
+    # python-sphinx points $sphinx_command to
+    # ../share/sphinx/scripts/python2/sphinx-build when it's installed
+    # let's "correct" this
+    if test -e $sphinx_command  && head -n1 $sphinx_command | grep -q python$; then
+        $SUDO env DEBIAN_FRONTEND=noninteractive apt-get -y remove python-sphinx
+    fi
 }
 
 function install_pkg_on_ubuntu {
+    in_jenkins && echo "CI_DEBUG: Running install_pkg_on_ubuntu() in install-deps.sh"
     local project=$1
     shift
     local sha1=$1
     shift
     local codename=$1
     shift
+    local force=$1
+    shift
     local pkgs=$@
     local missing_pkgs
-    for pkg in $pkgs; do
-	if ! dpkg -s $pkg &> /dev/null; then
-	    missing_pkgs+=" $pkg"
-	fi
-    done
+    if [ $force = "force" ]; then
+	missing_pkgs="$@"
+    else
+	for pkg in $pkgs; do
+	    if ! apt -qq list $pkg 2>/dev/null | grep -q installed; then
+		missing_pkgs+=" $pkg"
+                in_jenkins && echo "CI_DEBUG: missing_pkgs=$missing_pkgs"
+	    fi
+	done
+    fi
     if test -n "$missing_pkgs"; then
 	local shaman_url="https://shaman.ceph.com/api/repos/${project}/master/${sha1}/ubuntu/${codename}/repo"
 	$SUDO curl --silent --location $shaman_url --output /etc/apt/sources.list.d/$project.list
@@ -147,18 +184,28 @@ function install_pkg_on_ubuntu {
 }
 
 function install_boost_on_ubuntu {
-    local codename=$1
-    if dpkg -s ceph-libboost1.67-dev &> /dev/null; then
-	$SUDO env DEBIAN_FRONTEND=noninteractive apt-get -y remove 'ceph-libboost.*1.67.*'
-	$SUDO rm /etc/apt/sources.list.d/ceph-libboost1.67.list
+    local ver=1.73
+    in_jenkins && echo "CI_DEBUG: Running install_boost_on_ubuntu() in install-deps.sh"
+    local installed_ver=$(apt -qq list --installed ceph-libboost*-dev 2>/dev/null |
+                              grep -e 'libboost[0-9].[0-9]\+-dev' |
+                              cut -d' ' -f2 |
+                              cut -d'.' -f1,2)
+    if test -n "$installed_ver"; then
+        if echo "$installed_ver" | grep -q "^$ver"; then
+            return
+        else
+            $SUDO env DEBIAN_FRONTEND=noninteractive apt-get -y remove "ceph-libboost.*${installed_ver}.*"
+            $SUDO rm -f /etc/apt/sources.list.d/ceph-libboost${installed_ver}.list
+        fi
     fi
+    local codename=$1
     local project=libboost
-    local ver=1.72
-    local sha1=1d7c7a00cc3f37e340bae0360191a757b44ec80c
+    local sha1=7aba8a1882670522ee1d1ee1bba0ea170b292dec
     install_pkg_on_ubuntu \
 	$project \
 	$sha1 \
 	$codename \
+	check \
 	ceph-libboost-atomic$ver-dev \
 	ceph-libboost-chrono$ver-dev \
 	ceph-libboost-container$ver-dev \
@@ -177,34 +224,32 @@ function install_boost_on_ubuntu {
 	ceph-libboost-timer$ver-dev
 }
 
+function install_libzbd_on_ubuntu {
+    in_jenkins && echo "CI_DEBUG: Running install_libzbd_on_ubuntu() in install-deps.sh"
+    local codename=$1
+    local project=libzbd
+    local sha1=1fadde94b08fab574b17637c2bebd2b1e7f9127b
+    install_pkg_on_ubuntu \
+        $project \
+        $sha1 \
+        $codename \
+        check \
+        libzbd-dev
+}
+
 function version_lt {
     test $1 != $(echo -e "$1\n$2" | sort -rV | head -n 1)
 }
 
-function ensure_decent_gcc_on_rh {
-    local old=$(gcc -dumpversion)
-    local expected=5.1
-    local dts_ver=$1
-    if version_lt $old $expected; then
-	if test -t 1; then
-	    # interactive shell
-	    cat <<EOF
-Your GCC is too old. Please run following command to add DTS to your environment:
-
-scl enable devtoolset-8 bash
-
-Or add following line to the end of ~/.bashrc to add it permanently:
-
-source scl_source enable devtoolset-8
-
-see https://www.softwarecollections.org/en/scls/rhscl/devtoolset-7/ for more details.
-EOF
-	else
-	    # non-interactive shell
-	    source /opt/rh/devtoolset-$dts_ver/enable
-	fi
-    fi
-}
+for_make_check=false
+if tty -s; then
+    # interactive
+    for_make_check=true
+elif [ $FOR_MAKE_CHECK ]; then
+    for_make_check=true
+else
+    for_make_check=false
+fi
 
 if [ x$(uname)x = xFreeBSDx ]; then
     $SUDO pkg install -yq \
@@ -214,7 +259,7 @@ if [ x$(uname)x = xFreeBSDx ]; then
         devel/gperf \
         devel/gmake \
         devel/cmake \
-        devel/yasm \
+        devel/nasm \
         devel/boost-all \
         devel/boost-python-libs \
         devel/valgrind \
@@ -223,7 +268,6 @@ if [ x$(uname)x = xFreeBSDx ]; then
         devel/libtool \
         devel/google-perftools \
         lang/cython \
-        devel/py-virtualenv \
         databases/leveldb \
         net/openldap24-client \
         archivers/snappy \
@@ -241,11 +285,10 @@ if [ x$(uname)x = xFreeBSDx ]; then
         textproc/py-sphinx \
         emulators/fuse \
         java/junit \
-        lang/python \
-        lang/python27 \
         lang/python36 \
         devel/py-pip \
         devel/py-flake8 \
+        devel/py-tox \
         devel/py-argparse \
         devel/py-nose \
         devel/py-prettytable \
@@ -255,7 +298,7 @@ if [ x$(uname)x = xFreeBSDx ]; then
         www/npm \
         www/fcgi \
         security/nss \
-        security/kbr5 \
+        security/krb5 \
         security/oath-toolkit \
         sysutils/flock \
         sysutils/fusefs-libs \
@@ -265,31 +308,21 @@ if [ x$(uname)x = xFreeBSDx ]; then
 
     exit
 else
-    for_make_check=false
-    if tty -s; then
-        # interactive
-        for_make_check=true
-    elif [ $FOR_MAKE_CHECK ]; then
-        for_make_check=true
-    else
-        for_make_check=false
-    fi
+    [ $WITH_SEASTAR ] && with_seastar=true || with_seastar=false
+    [ $WITH_JAEGER ] && with_jaeger=true || with_jaeger=false
+    [ $WITH_ZBD ] && with_zbd=true || with_zbd=false
     source /etc/os-release
     case "$ID" in
-    debian|ubuntu|devuan)
+    debian|ubuntu|devuan|elementary)
         echo "Using apt-get to install dependencies"
         $SUDO apt-get install -y devscripts equivs
         $SUDO apt-get install -y dpkg-dev
+        ensure_python3_sphinx_on_ubuntu
         case "$VERSION" in
-            *Trusty*)
-                ensure_decent_gcc_on_ubuntu 8 trusty
-                ;;
-            *Xenial*)
-                ensure_decent_gcc_on_ubuntu 8 xenial
-                install_boost_on_ubuntu xenial
-                ;;
             *Bionic*)
-                install_boost_on_ubuntu bionic
+                ensure_decent_gcc_on_ubuntu 9 bionic
+                [ ! $NO_BOOST_PKGS ] && install_boost_on_ubuntu bionic
+                $with_zbd && install_libzbd_on_ubuntu bionic
                 ;;
             *)
                 $SUDO apt-get install -y gcc
@@ -301,8 +334,9 @@ else
         fi
         touch $DIR/status
 
+        in_jenkins && echo "CI_DEBUG: Running munge_debian_control() in install-deps.sh"
 	backports=""
-	control=$(munge_debian_control "$VERSION" "$for_make_check" "debian/control")
+	control=$(munge_debian_control "$VERSION" "$with_seastar" "$for_make_check" "debian/control")
         case "$VERSION" in
             *squeeze*|*wheezy*)
                 backports="-t $codename-backports"
@@ -312,95 +346,53 @@ else
 	# make a metapackage that expresses the build dependencies,
 	# install it, rm the .deb; then uninstall the package as its
 	# work is done
+        in_jenkins && echo "CI_DEBUG: Running mk-build-deps in install-deps.sh"
 	$SUDO env DEBIAN_FRONTEND=noninteractive mk-build-deps --install --remove --tool="apt-get -y --no-install-recommends $backports" $control || exit 1
+        in_jenkins && echo "CI_DEBUG: Removing ceph-build-deps"
 	$SUDO env DEBIAN_FRONTEND=noninteractive apt-get -y remove ceph-build-deps
-	install_seastar_deps
 	if [ "$control" != "debian/control" ] ; then rm $control; fi
         ;;
     centos|fedora|rhel|ol|virtuozzo)
-        yumdnf="dnf"
         builddepcmd="dnf -y builddep --allowerasing"
-        if [[ $ID =~ centos|rhel ]] && version_lt $VERSION_ID 8; then
-            yumdnf="yum"
-            builddepcmd="yum-builddep -y --setopt=*.skip_if_unavailable=true"
-        fi
-        echo "Using $yumdnf to install dependencies"
-	if [ "$ID" = "centos" -a "$ARCH" = "aarch64" ]; then
-	    $SUDO yum-config-manager --disable centos-sclo-sclo || true
-	    $SUDO yum-config-manager --disable centos-sclo-rh || true
-	    $SUDO yum remove centos-release-scl || true
-	fi
+        echo "Using dnf to install dependencies"
         case "$ID" in
             fedora)
-                $SUDO $yumdnf install -y $yumdnf-utils
+                $SUDO dnf install -y dnf-utils
                 ;;
             centos|rhel|ol|virtuozzo)
                 MAJOR_VERSION="$(echo $VERSION_ID | cut -d. -f1)"
-                $SUDO $yumdnf install -y $yumdnf-utils
-                if test $ID = rhel ; then
-                    $SUDO yum-config-manager --enable rhel-$MAJOR_VERSION-server-optional-rpms
-                fi
+                $SUDO dnf install -y dnf-utils
                 rpm --quiet --query epel-release || \
-		    $SUDO $yumdnf -y install --nogpgcheck https://dl.fedoraproject.org/pub/epel/epel-release-latest-$MAJOR_VERSION.noarch.rpm
+		    $SUDO dnf -y install --nogpgcheck https://dl.fedoraproject.org/pub/epel/epel-release-latest-$MAJOR_VERSION.noarch.rpm
                 $SUDO rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-EPEL-$MAJOR_VERSION
                 $SUDO rm -f /etc/yum.repos.d/dl.fedoraproject.org*
-                if test $ID = centos -a $MAJOR_VERSION = 7 ; then
-		    $SUDO $yumdnf install -y python36-devel
-		    case "$ARCH" in
-			x86_64)
-			    $SUDO $yumdnf -y install centos-release-scl
-			    dts_ver=8
-			    ;;
-			aarch64)
-			    $SUDO $yumdnf -y install centos-release-scl-rh
-			    $SUDO yum-config-manager --disable centos-sclo-rh
-			    $SUDO yum-config-manager --enable centos-sclo-rh-testing
-			    dts_ver=8
-			    ;;
-		    esac
-                elif test $ID = rhel -a $MAJOR_VERSION = 7 ; then
-                    $SUDO yum-config-manager \
-			  --enable rhel-server-rhscl-7-rpms \
-			  --enable rhel-7-server-devtools-rpms
-                    dts_ver=8
-                elif test $ID = centos -a $MAJOR_VERSION = 8 ; then
-                    $SUDO dnf config-manager --set-enabled PowerTools
+		if test $ID = centos -a $MAJOR_VERSION = 8 ; then
+                    # Enable 'powertools' or 'PowerTools' repo
+                    $SUDO dnf config-manager --set-enabled $(dnf repolist --all 2>/dev/null|gawk 'tolower($0) ~ /^powertools\s/{print $1}')
+		    # before EPEL8 and PowerTools provide all dependencies, we use sepia for the dependencies
+                    $SUDO dnf config-manager --add-repo http://apt-mirror.front.sepia.ceph.com/lab-extras/8/
+                    $SUDO dnf config-manager --setopt=apt-mirror.front.sepia.ceph.com_lab-extras_8_.gpgcheck=0 --save
                 elif test $ID = rhel -a $MAJOR_VERSION = 8 ; then
-                    $SUDO subscription-manager repos --enable "codeready-builder-for-rhel-8-*-rpms"
+                    $SUDO subscription-manager repos --enable "codeready-builder-for-rhel-8-${ARCH}-rpms"
+		    $SUDO dnf config-manager --add-repo http://apt-mirror.front.sepia.ceph.com/lab-extras/8/
+		    $SUDO dnf config-manager --setopt=apt-mirror.front.sepia.ceph.com_lab-extras_8_.gpgcheck=0 --save
                 fi
                 ;;
         esac
-        munge_ceph_spec_in $for_make_check $DIR/ceph.spec
-        $SUDO $yumdnf install -y \*rpm-macros
+        munge_ceph_spec_in $with_seastar $with_zbd $for_make_check $DIR/ceph.spec
+        # for python3_pkgversion macro defined by python-srpm-macros, which is required by python3-devel
+        $SUDO dnf install -y python3-devel
         $SUDO $builddepcmd $DIR/ceph.spec 2>&1 | tee $DIR/yum-builddep.out
         [ ${PIPESTATUS[0]} -ne 0 ] && exit 1
-	if [ -n "$dts_ver" ]; then
-            ensure_decent_gcc_on_rh $dts_ver
-	fi
-        ! grep -q -i error: $DIR/yum-builddep.out || exit 1
+        IGNORE_YUM_BUILDEP_ERRORS="ValueError: SELinux policy is not managed or store cannot be accessed."
+        sed "/$IGNORE_YUM_BUILDEP_ERRORS/d" $DIR/yum-builddep.out | grep -qi "error:" && exit 1
         ;;
     opensuse*|suse|sles)
         echo "Using zypper to install dependencies"
         zypp_install="zypper --gpg-auto-import-keys --non-interactive install --no-recommends"
         $SUDO $zypp_install systemd-rpm-macros rpm-build || exit 1
-        if [ -e /usr/bin/python2 ] ; then
-            # see https://tracker.ceph.com/issues/23981
-            $SUDO $zypp_install python2-virtualenv python2-devel || exit 1
-        fi
-        munge_ceph_spec_in $for_make_check $DIR/ceph.spec
+        munge_ceph_spec_in $with_seastar false $for_make_check $DIR/ceph.spec
         $SUDO $zypp_install $(rpmspec -q --buildrequires $DIR/ceph.spec) || exit 1
-        ;;
-    alpine)
-        # for now we need the testing repo for leveldb
-        TESTREPO="http://nl.alpinelinux.org/alpine/edge/testing"
-        if ! grep -qF "$TESTREPO" /etc/apk/repositories ; then
-            $SUDO echo "$TESTREPO" | sudo tee -a /etc/apk/repositories > /dev/null
-        fi
-        source alpine/APKBUILD.in
-        $SUDO apk --update add abuild build-base ccache $makedepends
-        if id -u build >/dev/null 2>&1 ; then
-           $SUDO addgroup build abuild
-        fi
         ;;
     *)
         echo "$ID is unknown, dependencies will have to be installed manually."
@@ -410,34 +402,27 @@ else
 fi
 
 function populate_wheelhouse() {
+    in_jenkins && echo "CI_DEBUG: Running populate_wheelhouse() in install-deps.sh"
     local install=$1
     shift
 
     # although pip comes with virtualenv, having a recent version
     # of pip matters when it comes to using wheel packages
-    pip --timeout 300 $install 'setuptools >= 0.8' 'pip >= 7.0' 'wheel >= 0.24' || return 1
+    PIP_OPTS="--timeout 300 --exists-action i"
+    pip $PIP_OPTS $install \
+      'setuptools >= 0.8' 'pip >= 7.0' 'wheel >= 0.24' 'tox >= 2.9.1' || return 1
     if test $# != 0 ; then
-        pip --timeout 300 $install $@ || return 1
+        pip $PIP_OPTS $install $@ || return 1
     fi
 }
 
 function activate_virtualenv() {
+    in_jenkins && echo "CI_DEBUG: Running activate_virtualenv() in install-deps.sh"
     local top_srcdir=$1
-    local interpreter=$2
-    local env_dir=$top_srcdir/install-deps-$interpreter
+    local env_dir=$top_srcdir/install-deps-python3
 
     if ! test -d $env_dir ; then
-        # Make a temporary virtualenv to get a fresh version of virtualenv
-        # because CentOS 7 has a buggy old version (v1.10.1)
-        # https://github.com/pypa/virtualenv/issues/463
-        virtualenv ${env_dir}_tmp
-        # install setuptools before upgrading virtualenv, as the latter needs
-        # a recent setuptools for setup commands like `extras_require`.
-        ${env_dir}_tmp/bin/pip install --upgrade setuptools
-        ${env_dir}_tmp/bin/pip install --upgrade virtualenv
-        ${env_dir}_tmp/bin/virtualenv --python $interpreter $env_dir
-        rm -rf ${env_dir}_tmp
-
+        python3 -m venv ${env_dir}
         . $env_dir/bin/activate
         if ! populate_wheelhouse install ; then
             rm -rf $env_dir
@@ -447,41 +432,49 @@ function activate_virtualenv() {
     . $env_dir/bin/activate
 }
 
+function preload_wheels_for_tox() {
+    in_jenkins && echo "CI_DEBUG: Running preload_wheels_for_tox() in install-deps.sh"
+    local ini=$1
+    shift
+    pushd . > /dev/null
+    cd $(dirname $ini)
+    local require_files=$(ls *requirements*.txt 2>/dev/null) || true
+    local constraint_files=$(ls *constraints*.txt 2>/dev/null) || true
+    local require=$(echo -n "$require_files" | sed -e 's/^/-r /')
+    local constraint=$(echo -n "$constraint_files" | sed -e 's/^/-c /')
+    local md5=wheelhouse/md5
+    if test "$require"; then
+        if ! test -f $md5 || ! md5sum -c $md5 > /dev/null; then
+            rm -rf wheelhouse
+        fi
+    fi
+    if test "$require" && ! test -d wheelhouse ; then
+        type python3 > /dev/null 2>&1 || continue
+        activate_virtualenv $top_srcdir || exit 1
+        populate_wheelhouse "wheel -w $wip_wheelhouse" $require $constraint || exit 1
+        mv $wip_wheelhouse wheelhouse
+        md5sum $require_files $constraint_files > $md5
+    fi
+    popd > /dev/null
+}
+
 # use pip cache if possible but do not store it outside of the source
 # tree
 # see https://pip.pypa.io/en/stable/reference/pip_install.html#caching
-mkdir -p install-deps-cache
-top_srcdir=$(pwd)
-export XDG_CACHE_HOME=$top_srcdir/install-deps-cache
-wip_wheelhouse=wheelhouse-wip
+if $for_make_check; then
+    mkdir -p install-deps-cache
+    top_srcdir=$(pwd)
+    export XDG_CACHE_HOME=$top_srcdir/install-deps-cache
+    wip_wheelhouse=wheelhouse-wip
+    #
+    # preload python modules so that tox can run without network access
+    #
+    find . -name tox.ini | while read ini ; do
+        preload_wheels_for_tox $ini
+    done
+    rm -rf $top_srcdir/install-deps-python3
+    rm -rf $XDG_CACHE_HOME
+    type git > /dev/null || (echo "Dashboard uses git to pull dependencies." ; false)
+fi
 
-#
-# preload python modules so that tox can run without network access
-#
-find . -name tox.ini | while read ini ; do
-    (
-        cd $(dirname $ini)
-        require=$(ls *requirements.txt 2>/dev/null | sed -e 's/^/-r /')
-        md5=wheelhouse/md5
-        if test "$require"; then
-            if ! test -f $md5 || ! md5sum -c $md5 ; then
-                rm -rf wheelhouse
-            fi
-        fi
-        if test "$require" && ! test -d wheelhouse ; then
-            for interpreter in python2.7 python3 ; do
-                type $interpreter > /dev/null 2>&1 || continue
-                activate_virtualenv $top_srcdir $interpreter || exit 1
-                populate_wheelhouse "wheel -w $wip_wheelhouse" $require || exit 1
-            done
-            mv $wip_wheelhouse wheelhouse
-            md5sum *requirements.txt > $md5
-        fi
-    )
-done
-
-for interpreter in python2.7 python3 ; do
-    rm -rf $top_srcdir/install-deps-$interpreter
-done
-rm -rf $XDG_CACHE_HOME
-git --version || (echo "Dashboard uses git to pull dependencies." ; false)
+in_jenkins && echo "CI_DEBUG: End install-deps.sh" || true
