@@ -5,7 +5,7 @@ Event Device Drivers
 ====================
 
 The following are a list of event device PMDs, which can be used from an
-application trough the eventdev API.
+application through the eventdev API.
 
 .. toctree::
     :maxdepth: 2
@@ -13,6 +13,8 @@ application trough the eventdev API.
 
     dpaa
     dpaa2
+    dsw
     sw
     octeontx
+    octeontx2
     opdl

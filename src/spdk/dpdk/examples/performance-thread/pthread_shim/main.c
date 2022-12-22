@@ -2,7 +2,6 @@
  * Copyright(c) 2015 Intel Corporation
  */
 
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -119,7 +118,7 @@ void *helloworld_pthread(void *arg)
  */
 __thread pthread_t tid[HELLOW_WORLD_MAX_LTHREADS];
 
-static void *initial_lthread(void *args __attribute__((unused)))
+static void *initial_lthread(void *args __rte_unused)
 {
 	int lcore = (int) rte_lcore_id();
 	/*
@@ -205,7 +204,7 @@ static void *initial_lthread(void *args __attribute__((unused)))
  * in the core mask
  */
 static int
-lthread_scheduler(void *args __attribute__((unused)))
+lthread_scheduler(void *args __rte_unused)
 {
 	/* create initial thread  */
 	struct lthread *lt;

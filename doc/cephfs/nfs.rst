@@ -1,18 +1,28 @@
+.. _cephfs-nfs:
+
 ===
 NFS
 ===
 
-CephFS namespaces can be exported over NFS protocol using the
-`NFS-Ganesha NFS server <https://github.com/nfs-ganesha/nfs-ganesha/wiki>`_.
+CephFS namespaces can be exported over NFS protocol using the NFS-Ganesha NFS
+server.  This document provides information on configuring NFS-Ganesha
+clusters manually.  The simplest and preferred way of managing NFS-Ganesha
+clusters and CephFS exports is using ``ceph nfs ...`` commands. See
+:doc:`/mgr/nfs` for more details. As the deployment is done using cephadm or
+rook.
 
 Requirements
 ============
 
--  Ceph filesystem (preferably latest stable luminous or higher versions)
+-  Ceph file system (preferably latest stable luminous or higher versions)
 -  In the NFS server host machine, 'libcephfs2' (preferably latest stable
    luminous or higher), 'nfs-ganesha' and 'nfs-ganesha-ceph' packages (latest
    ganesha v2.5 stable or higher versions)
 -  NFS-Ganesha server host connected to the Ceph public network
+
+.. note::
+   It is recommended to use 3.5 or later stable version of NFS-Ganesha
+   packages with pacific (16.2.x) or later stable version of Ceph packages.
 
 Configuring NFS-Ganesha to export CephFS
 ========================================
@@ -56,10 +66,10 @@ Configuration for libcephfs clients
 Required ceph.conf for libcephfs clients includes:
 
 * a [client] section with ``mon_host`` option set to let the clients connect
-  to the Ceph cluster's monitors, e.g., ::
+  to the Ceph cluster's monitors, usually generated via ``ceph config generate-minimal-conf``, e.g., ::
 
-    [client]
-            mon host = 192.168.1.7:6789, 192.168.1.8:6789, 192.168.1.9:6789
+    [global]
+            mon host = [v2:192.168.1.7:3300,v1:192.168.1.7:6789], [v2:192.168.1.8:3300,v1:192.168.1.8:6789], [v2:192.168.1.9:3300,v1:192.168.1.9:6789]
 
 Mount using NFSv4 clients
 =========================
@@ -70,12 +80,8 @@ to get the benefit of sessions.
 Conventions for mounting NFS resources are platform-specific. The
 following conventions work on Linux and some Unix platforms:
 
-From the command line::
+.. code:: bash
 
-  mount -t nfs -o nfsvers=4.1,proto=tcp <ganesha-host-name>:<ganesha-pseudo-path> <mount-point>
+    mount -t nfs -o nfsvers=4.1,proto=tcp <ganesha-host-name>:<ganesha-pseudo-path> <mount-point>
 
-Current limitations
-===================
 
-- Per running ganesha daemon, FSAL_CEPH can only export one Ceph filesystem
-  although multiple directories in a Ceph filesystem may be exported.

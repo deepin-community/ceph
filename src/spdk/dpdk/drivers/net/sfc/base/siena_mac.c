@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2009-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2009-2019 Solarflare Communications Inc.
  */
 
 #include "efx.h"
@@ -68,14 +68,13 @@ siena_mac_reconfigure(
 	efx_port_t *epp = &(enp->en_port);
 	efx_oword_t multicast_hash[2];
 	efx_mcdi_req_t req;
-	uint8_t payload[MAX(MAX(MC_CMD_SET_MAC_IN_LEN,
-				MC_CMD_SET_MAC_OUT_LEN),
-			    MAX(MC_CMD_SET_MCAST_HASH_IN_LEN,
-				MC_CMD_SET_MCAST_HASH_OUT_LEN))];
+	EFX_MCDI_DECLARE_BUF(payload,
+		MAX(MC_CMD_SET_MAC_IN_LEN, MC_CMD_SET_MCAST_HASH_IN_LEN),
+		MAX(MC_CMD_SET_MAC_OUT_LEN, MC_CMD_SET_MCAST_HASH_OUT_LEN));
+
 	unsigned int fcntl;
 	efx_rc_t rc;
 
-	(void) memset(payload, 0, sizeof (payload));
 	req.emr_cmd = MC_CMD_SET_MAC;
 	req.emr_in_buf = payload;
 	req.emr_in_length = MC_CMD_SET_MAC_IN_LEN;
@@ -108,6 +107,7 @@ siena_mac_reconfigure(
 		rc = req.emr_rc;
 		goto fail1;
 	}
+	epp->ep_all_unicst_inserted = epp->ep_all_unicst;
 
 	/* Push multicast hash */
 
@@ -159,6 +159,7 @@ siena_mac_reconfigure(
 		rc = req.emr_rc;
 		goto fail2;
 	}
+	epp->ep_all_mulcst_inserted = epp->ep_all_mulcst;
 
 	return (0);
 

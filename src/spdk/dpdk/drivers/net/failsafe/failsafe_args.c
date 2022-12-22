@@ -22,10 +22,10 @@
 typedef int (parse_cb)(struct rte_eth_dev *dev, const char *params,
 		uint8_t head);
 
-uint64_t hotplug_poll = FAILSAFE_HOTPLUG_DEFAULT_TIMEOUT_MS;
-int mac_from_arg = 0;
+uint64_t failsafe_hotplug_poll = FAILSAFE_HOTPLUG_DEFAULT_TIMEOUT_MS;
+int failsafe_mac_from_arg;
 
-const char *pmd_failsafe_init_parameters[] = {
+static const char * const pmd_failsafe_init_parameters[] = {
 	PMD_FAILSAFE_HOTPLUG_POLL_KVARG,
 	PMD_FAILSAFE_MAC_KVARG,
 	NULL,
@@ -102,7 +102,7 @@ fs_execute_cmd(struct sub_device *sdev, char *cmdline)
 			ERROR("Command line allocation failed");
 			return -ENOMEM;
 		}
-		snprintf(sdev->cmdline, len, "%s", cmdline);
+		strlcpy(sdev->cmdline, cmdline, len);
 		/* Replace all commas in the command line by spaces */
 		for (i = 0; i < len; i++)
 			if (sdev->cmdline[i] == ',')
@@ -367,16 +367,12 @@ static int
 fs_get_mac_addr_arg(const char *key __rte_unused,
 		const char *value, void *out)
 {
-	struct ether_addr *ea = out;
-	int ret;
+	struct rte_ether_addr *ea = out;
 
 	if ((value == NULL) || (out == NULL))
 		return -EINVAL;
-	ret = sscanf(value, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
-		&ea->addr_bytes[0], &ea->addr_bytes[1],
-		&ea->addr_bytes[2], &ea->addr_bytes[3],
-		&ea->addr_bytes[4], &ea->addr_bytes[5]);
-	return ret != ETHER_ADDR_LEN;
+
+	return rte_ether_unformat_addr(value, ea);
 }
 
 int
@@ -420,7 +416,7 @@ failsafe_args_parse(struct rte_eth_dev *dev, const char *params)
 		if (arg_count == 1) {
 			ret = rte_kvargs_process(kvlist,
 					PMD_FAILSAFE_HOTPLUG_POLL_KVARG,
-					&fs_get_u64_arg, &hotplug_poll);
+					&fs_get_u64_arg, &failsafe_hotplug_poll);
 			if (ret < 0)
 				goto free_kvlist;
 		}
@@ -435,7 +431,7 @@ failsafe_args_parse(struct rte_eth_dev *dev, const char *params)
 			if (ret < 0)
 				goto free_kvlist;
 
-			mac_from_arg = 1;
+			failsafe_mac_from_arg = 1;
 		}
 	}
 	PRIV(dev)->state = DEV_PARSED;

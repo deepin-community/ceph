@@ -74,7 +74,7 @@ parse_uint(uint64_t *value, const char *str)
 }
 
 static int
-parse_dscp_table_entries(char *str, enum rte_mtr_color *dscp_table)
+parse_dscp_table_entries(char *str, enum rte_color **dscp_table)
 {
 	char *token;
 	int i = 0;
@@ -84,23 +84,23 @@ parse_dscp_table_entries(char *str, enum rte_mtr_color *dscp_table)
 		return 0;
 
 	/* Allocate memory for dscp table */
-	dscp_table = (enum rte_mtr_color *)malloc(MAX_DSCP_TABLE_ENTRIES *
-		sizeof(enum rte_mtr_color));
-	if (dscp_table == NULL)
+	*dscp_table = (enum rte_color *)malloc(MAX_DSCP_TABLE_ENTRIES *
+		sizeof(enum rte_color));
+	if (*dscp_table == NULL)
 		return -1;
 
 	while (1) {
 		if (strcmp(token, "G") == 0 ||
 			strcmp(token, "g") == 0)
-			dscp_table[i++] = RTE_MTR_GREEN;
+			*dscp_table[i++] = RTE_COLOR_GREEN;
 		else if (strcmp(token, "Y") == 0 ||
 			strcmp(token, "y") == 0)
-			dscp_table[i++] = RTE_MTR_YELLOW;
+			*dscp_table[i++] = RTE_COLOR_YELLOW;
 		else if (strcmp(token, "R") == 0 ||
 			strcmp(token, "r") == 0)
-			dscp_table[i++] = RTE_MTR_RED;
+			*dscp_table[i++] = RTE_COLOR_RED;
 		else {
-			free(dscp_table);
+			free(*dscp_table);
 			return -1;
 		}
 		if (i == MAX_DSCP_TABLE_ENTRIES)
@@ -108,7 +108,7 @@ parse_dscp_table_entries(char *str, enum rte_mtr_color *dscp_table)
 
 		token = strtok_r(str, PARSE_DELIMITER, &str);
 		if (token == NULL) {
-			free(dscp_table);
+			free(*dscp_table);
 			return -1;
 		}
 	}
@@ -117,7 +117,7 @@ parse_dscp_table_entries(char *str, enum rte_mtr_color *dscp_table)
 
 static int
 parse_meter_color_str(char *c_str, uint32_t *use_prev_meter_color,
-	enum rte_mtr_color *dscp_table)
+	enum rte_color **dscp_table)
 {
 	char *token;
 	uint64_t previous_mtr_color = 0;
@@ -182,20 +182,20 @@ parse_policer_action_string(char *p_str, uint32_t action_mask,
 			return -1;
 
 		if (g_color == 0 && (action_mask & 0x1)) {
-			actions[RTE_MTR_GREEN] = action;
+			actions[RTE_COLOR_GREEN] = action;
 			g_color = 1;
 		} else if (y_color == 0 && (action_mask & 0x2)) {
-			actions[RTE_MTR_YELLOW] = action;
+			actions[RTE_COLOR_YELLOW] = action;
 			y_color = 1;
 		} else
-			actions[RTE_MTR_RED] = action;
+			actions[RTE_COLOR_RED] = action;
 	}
 	return 0;
 }
 
 static int
 parse_multi_token_string(char *t_str, uint16_t *port_id,
-	uint32_t *mtr_id, enum rte_mtr_color *dscp_table)
+	uint32_t *mtr_id, enum rte_color **dscp_table)
 {
 	char *token;
 	uint64_t val;
@@ -256,8 +256,8 @@ cmdline_parse_token_num_t cmd_show_port_meter_cap_port_id =
 		struct cmd_show_port_meter_cap_result, port_id, UINT16);
 
 static void cmd_show_port_meter_cap_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_show_port_meter_cap_result *res = parsed_result;
 	struct rte_mtr_capabilities cap;
@@ -378,8 +378,8 @@ cmdline_parse_token_num_t cmd_add_port_meter_profile_srtcm_ebs =
 			ebs, UINT64);
 
 static void cmd_add_port_meter_profile_srtcm_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_add_port_meter_profile_srtcm_result *res = parsed_result;
 	struct rte_mtr_meter_profile mp;
@@ -414,9 +414,9 @@ cmdline_parse_inst_t cmd_add_port_meter_profile_srtcm = {
 		(void *)&cmd_add_port_meter_profile_srtcm_port,
 		(void *)&cmd_add_port_meter_profile_srtcm_meter,
 		(void *)&cmd_add_port_meter_profile_srtcm_profile,
+		(void *)&cmd_add_port_meter_profile_srtcm_srtcm_rfc2697,
 		(void *)&cmd_add_port_meter_profile_srtcm_port_id,
 		(void *)&cmd_add_port_meter_profile_srtcm_profile_id,
-		(void *)&cmd_add_port_meter_profile_srtcm_srtcm_rfc2697,
 		(void *)&cmd_add_port_meter_profile_srtcm_cir,
 		(void *)&cmd_add_port_meter_profile_srtcm_cbs,
 		(void *)&cmd_add_port_meter_profile_srtcm_ebs,
@@ -484,8 +484,8 @@ cmdline_parse_token_num_t cmd_add_port_meter_profile_trtcm_pbs =
 			pbs, UINT64);
 
 static void cmd_add_port_meter_profile_trtcm_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_add_port_meter_profile_trtcm_result *res = parsed_result;
 	struct rte_mtr_meter_profile mp;
@@ -521,9 +521,9 @@ cmdline_parse_inst_t cmd_add_port_meter_profile_trtcm = {
 		(void *)&cmd_add_port_meter_profile_trtcm_port,
 		(void *)&cmd_add_port_meter_profile_trtcm_meter,
 		(void *)&cmd_add_port_meter_profile_trtcm_profile,
+		(void *)&cmd_add_port_meter_profile_trtcm_trtcm_rfc2698,
 		(void *)&cmd_add_port_meter_profile_trtcm_port_id,
 		(void *)&cmd_add_port_meter_profile_trtcm_profile_id,
-		(void *)&cmd_add_port_meter_profile_trtcm_trtcm_rfc2698,
 		(void *)&cmd_add_port_meter_profile_trtcm_cir,
 		(void *)&cmd_add_port_meter_profile_trtcm_pir,
 		(void *)&cmd_add_port_meter_profile_trtcm_cbs,
@@ -595,8 +595,8 @@ cmdline_parse_token_num_t cmd_add_port_meter_profile_trtcm_rfc4115_ebs =
 
 static void cmd_add_port_meter_profile_trtcm_rfc4115_parsed(
 	void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_add_port_meter_profile_trtcm_rfc4115_result *res =
 		parsed_result;
@@ -633,9 +633,9 @@ cmdline_parse_inst_t cmd_add_port_meter_profile_trtcm_rfc4115 = {
 		(void *)&cmd_add_port_meter_profile_trtcm_rfc4115_port,
 		(void *)&cmd_add_port_meter_profile_trtcm_rfc4115_meter,
 		(void *)&cmd_add_port_meter_profile_trtcm_rfc4115_profile,
+		(void *)&cmd_add_port_meter_profile_trtcm_rfc4115_trtcm_rfc4115,
 		(void *)&cmd_add_port_meter_profile_trtcm_rfc4115_port_id,
 		(void *)&cmd_add_port_meter_profile_trtcm_rfc4115_profile_id,
-		(void *)&cmd_add_port_meter_profile_trtcm_rfc4115_trtcm_rfc4115,
 		(void *)&cmd_add_port_meter_profile_trtcm_rfc4115_cir,
 		(void *)&cmd_add_port_meter_profile_trtcm_rfc4115_eir,
 		(void *)&cmd_add_port_meter_profile_trtcm_rfc4115_cbs,
@@ -679,8 +679,8 @@ cmdline_parse_token_num_t cmd_del_port_meter_profile_profile_id =
 			profile_id, UINT32);
 
 static void cmd_del_port_meter_profile_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_del_port_meter_profile_result *res = parsed_result;
 	struct rte_mtr_error error;
@@ -772,8 +772,8 @@ cmdline_parse_token_string_t cmd_create_port_meter_input_color =
 		meter_input_color, TOKEN_STRING_MULTI);
 
 static void cmd_create_port_meter_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_create_port_meter_result *res = parsed_result;
 	struct rte_mtr_error error;
@@ -782,7 +782,7 @@ static void cmd_create_port_meter_parsed(void *parsed_result,
 	uint32_t shared = res->shared;
 	uint32_t use_prev_meter_color = 0;
 	uint16_t port_id = res->port_id;
-	enum rte_mtr_color *dscp_table = NULL;
+	enum rte_color *dscp_table = NULL;
 	char *c_str = res->meter_input_color;
 	int ret;
 
@@ -794,7 +794,7 @@ static void cmd_create_port_meter_parsed(void *parsed_result,
 	params.meter_profile_id = res->profile_id;
 
 	/* Parse meter input color string params */
-	ret = parse_meter_color_str(c_str, &use_prev_meter_color, dscp_table);
+	ret = parse_meter_color_str(c_str, &use_prev_meter_color, &dscp_table);
 	if (ret) {
 		printf(" Meter input color params string parse error\n");
 		return;
@@ -808,11 +808,11 @@ static void cmd_create_port_meter_parsed(void *parsed_result,
 	else
 		params.meter_enable = 0;
 
-	params.action[RTE_MTR_GREEN] =
+	params.action[RTE_COLOR_GREEN] =
 		string_to_policer_action(res->g_action);
-	params.action[RTE_MTR_YELLOW] =
+	params.action[RTE_COLOR_YELLOW] =
 		string_to_policer_action(res->y_action);
-	params.action[RTE_MTR_RED] =
+	params.action[RTE_COLOR_RED] =
 		string_to_policer_action(res->r_action);
 	params.stats_mask = res->statistics_mask;
 
@@ -872,8 +872,8 @@ cmdline_parse_token_num_t cmd_enable_port_meter_mtr_id =
 		struct cmd_enable_port_meter_result, mtr_id, UINT32);
 
 static void cmd_enable_port_meter_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_enable_port_meter_result *res = parsed_result;
 	struct rte_mtr_error error;
@@ -933,8 +933,8 @@ cmdline_parse_token_num_t cmd_disable_port_meter_mtr_id =
 		struct cmd_disable_port_meter_result, mtr_id, UINT32);
 
 static void cmd_disable_port_meter_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_disable_port_meter_result *res = parsed_result;
 	struct rte_mtr_error error;
@@ -994,8 +994,8 @@ cmdline_parse_token_num_t cmd_del_port_meter_mtr_id =
 		struct cmd_del_port_meter_result, mtr_id, UINT32);
 
 static void cmd_del_port_meter_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_del_port_meter_result *res = parsed_result;
 	struct rte_mtr_error error;
@@ -1063,8 +1063,8 @@ cmdline_parse_token_num_t cmd_set_port_meter_profile_profile_id =
 		struct cmd_set_port_meter_profile_result, profile_id, UINT32);
 
 static void cmd_set_port_meter_profile_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_set_port_meter_profile_result *res = parsed_result;
 	struct rte_mtr_error error;
@@ -1129,34 +1129,34 @@ cmdline_parse_token_string_t cmd_set_port_meter_dscp_table_token_string =
 		token_string, TOKEN_STRING_MULTI);
 
 static void cmd_set_port_meter_dscp_table_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_set_port_meter_dscp_table_result *res = parsed_result;
 	struct rte_mtr_error error;
-	enum rte_mtr_color *dscp_table = NULL;
+	enum rte_color *dscp_table = NULL;
 	char *t_str = res->token_string;
 	uint32_t mtr_id = 0;
 	uint16_t port_id;
 	int ret;
 
 	/* Parse string */
-	ret = parse_multi_token_string(t_str, &port_id, &mtr_id, dscp_table);
+	ret = parse_multi_token_string(t_str, &port_id, &mtr_id, &dscp_table);
 	if (ret) {
 		printf(" Multi token string parse error\n");
 		return;
 	}
 
 	if (port_id_is_invalid(port_id, ENABLED_WARN))
-		return;
+		goto free_table;
 
 	/* Update Meter DSCP Table*/
 	ret = rte_mtr_meter_dscp_table_update(port_id, mtr_id,
 		dscp_table, &error);
-	if (ret != 0) {
+	if (ret != 0)
 		print_err_msg(&error);
-		return;
-	}
+
+free_table:
 	free(dscp_table);
 }
 
@@ -1223,8 +1223,8 @@ cmdline_parse_token_string_t cmd_set_port_meter_policer_action_policer_action =
 		policer_action, TOKEN_STRING_MULTI);
 
 static void cmd_set_port_meter_policer_action_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_set_port_meter_policer_action_result *res = parsed_result;
 	enum rte_mtr_policer_action *actions;
@@ -1245,7 +1245,7 @@ static void cmd_set_port_meter_policer_action_parsed(void *parsed_result,
 	}
 
 	/* Allocate memory for policer actions */
-	actions = (enum rte_mtr_policer_action *)malloc(RTE_MTR_COLORS *
+	actions = (enum rte_mtr_policer_action *)malloc(RTE_COLORS *
 		sizeof(enum rte_mtr_policer_action));
 	if (actions == NULL) {
 		printf("Memory for policer actions not allocated (error)\n");
@@ -1326,8 +1326,8 @@ cmdline_parse_token_num_t cmd_set_port_meter_stats_mask_stats_mask =
 		UINT64);
 
 static void cmd_set_port_meter_stats_mask_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_set_port_meter_stats_mask_result *res = parsed_result;
 	struct rte_mtr_error error;
@@ -1397,8 +1397,8 @@ cmdline_parse_token_string_t cmd_show_port_meter_stats_clear =
 		struct cmd_show_port_meter_stats_result, clear, "yes#no");
 
 static void cmd_show_port_meter_stats_parsed(void *parsed_result,
-	__attribute__((unused)) struct cmdline *cl,
-	__attribute__((unused)) void *data)
+	__rte_unused struct cmdline *cl,
+	__rte_unused void *data)
 {
 	struct cmd_show_port_meter_stats_result *res = parsed_result;
 	struct rte_mtr_stats stats;
@@ -1426,22 +1426,22 @@ static void cmd_show_port_meter_stats_parsed(void *parsed_result,
 	/* Display stats */
 	if (stats_mask & RTE_MTR_STATS_N_PKTS_GREEN)
 		printf("\tPkts G: %" PRIu64 "\n",
-			stats.n_pkts[RTE_MTR_GREEN]);
+			stats.n_pkts[RTE_COLOR_GREEN]);
 	if (stats_mask & RTE_MTR_STATS_N_BYTES_GREEN)
 		printf("\tBytes G: %" PRIu64 "\n",
-			stats.n_bytes[RTE_MTR_GREEN]);
+			stats.n_bytes[RTE_COLOR_GREEN]);
 	if (stats_mask & RTE_MTR_STATS_N_PKTS_YELLOW)
 		printf("\tPkts Y: %" PRIu64 "\n",
-			stats.n_pkts[RTE_MTR_YELLOW]);
+			stats.n_pkts[RTE_COLOR_YELLOW]);
 	if (stats_mask & RTE_MTR_STATS_N_BYTES_YELLOW)
 		printf("\tBytes Y: %" PRIu64 "\n",
-			stats.n_bytes[RTE_MTR_YELLOW]);
+			stats.n_bytes[RTE_COLOR_YELLOW]);
 	if (stats_mask & RTE_MTR_STATS_N_PKTS_RED)
 		printf("\tPkts R: %" PRIu64 "\n",
-			stats.n_pkts[RTE_MTR_RED]);
+			stats.n_pkts[RTE_COLOR_RED]);
 	if (stats_mask & RTE_MTR_STATS_N_BYTES_RED)
-		printf("\tBytes Y: %" PRIu64 "\n",
-			stats.n_bytes[RTE_MTR_RED]);
+		printf("\tBytes R: %" PRIu64 "\n",
+			stats.n_bytes[RTE_COLOR_RED]);
 	if (stats_mask & RTE_MTR_STATS_N_PKTS_DROPPED)
 		printf("\tPkts DROPPED: %" PRIu64 "\n",
 			stats.n_pkts_dropped);

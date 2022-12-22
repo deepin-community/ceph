@@ -57,10 +57,10 @@ class data_source {
 protected:
     data_source_impl* impl() const { return _dsi.get(); }
 public:
-    data_source() = default;
-    explicit data_source(std::unique_ptr<data_source_impl> dsi) : _dsi(std::move(dsi)) {}
-    data_source(data_source&& x) = default;
-    data_source& operator=(data_source&& x) = default;
+    data_source() noexcept = default;
+    explicit data_source(std::unique_ptr<data_source_impl> dsi) noexcept : _dsi(std::move(dsi)) {}
+    data_source(data_source&& x) noexcept = default;
+    data_source& operator=(data_source&& x) noexcept = default;
     future<temporary_buffer<char>> get() { return _dsi->get(); }
     future<temporary_buffer<char>> skip(uint64_t n) { return _dsi->skip(n); }
     future<> close() { return _dsi->close(); }
@@ -93,10 +93,10 @@ public:
 class data_sink {
     std::unique_ptr<data_sink_impl> _dsi;
 public:
-    data_sink() = default;
-    explicit data_sink(std::unique_ptr<data_sink_impl> dsi) : _dsi(std::move(dsi)) {}
-    data_sink(data_sink&& x) = default;
-    data_sink& operator=(data_sink&& x) = default;
+    data_sink() noexcept = default;
+    explicit data_sink(std::unique_ptr<data_sink_impl> dsi) noexcept : _dsi(std::move(dsi)) {}
+    data_sink(data_sink&& x) noexcept = default;
+    data_sink& operator=(data_sink&& x) noexcept = default;
     temporary_buffer<char> allocate_buffer(size_t size) {
         return _dsi->allocate_buffer(size);
     }
@@ -141,10 +141,10 @@ template <typename CharType>
 class consumption_result {
 public:
     using stop_consuming_type = stop_consuming<CharType>;
-    using consumption_variant = compat::variant<continue_consuming, stop_consuming_type, skip_bytes>;
+    using consumption_variant = std::variant<continue_consuming, stop_consuming_type, skip_bytes>;
     using tmp_buf = typename stop_consuming_type::tmp_buf;
 
-    /*[[deprecated]]*/ consumption_result(compat::optional<tmp_buf> opt_buf) {
+    /*[[deprecated]]*/ consumption_result(std::optional<tmp_buf> opt_buf) {
         if (opt_buf) {
             _result = stop_consuming_type{std::move(opt_buf.value())};
         }
@@ -162,7 +162,7 @@ private:
 };
 
 // Consumer concept, for consume() method
-GCC6_CONCEPT(
+SEASTAR_CONCEPT(
 // The consumer should operate on the data given to it, and
 // return a future "consumption result", which can be
 //  - continue_consuming, if the consumer has consumed all the input given
@@ -182,16 +182,20 @@ GCC6_CONCEPT(
 // can also happen to be empty).
 
 template <typename Consumer, typename CharType>
-concept bool InputStreamConsumer = requires (Consumer c) {
-    { c(temporary_buffer<CharType>{}) } -> future<consumption_result<CharType>>;
+concept InputStreamConsumer = requires (Consumer c) {
+    { c(temporary_buffer<CharType>{}) } -> std::same_as<future<consumption_result<CharType>>>;
 };
 
 template <typename Consumer, typename CharType>
-concept bool ObsoleteInputStreamConsumer = requires (Consumer c) {
-    { c(temporary_buffer<CharType>{}) } -> future<compat::optional<temporary_buffer<CharType>>>;
+concept ObsoleteInputStreamConsumer = requires (Consumer c) {
+    { c(temporary_buffer<CharType>{}) } -> std::same_as<future<std::optional<temporary_buffer<CharType>>>>;
 };
 )
 
+/// Buffers data from a data_source and provides a stream interface to the user.
+///
+/// \note All methods must be called sequentially.  That is, no method may be
+/// invoked before the previous method's returned future is resolved.
 template <typename CharType>
 class input_stream final {
     static_assert(sizeof(CharType) == 1, "must buffer stream of bytes");
@@ -207,20 +211,30 @@ protected:
 public:
     using consumption_result_type = consumption_result<CharType>;
     // unconsumed_remainder is mapped for compatibility only; new code should use consumption_result_type
-    using unconsumed_remainder = compat::optional<tmp_buf>;
+    using unconsumed_remainder = std::optional<tmp_buf>;
     using char_type = CharType;
-    input_stream() = default;
-    explicit input_stream(data_source fd) : _fd(std::move(fd)), _buf(0) {}
+    input_stream() noexcept = default;
+    explicit input_stream(data_source fd) noexcept : _fd(std::move(fd)), _buf() {}
     input_stream(input_stream&&) = default;
     input_stream& operator=(input_stream&&) = default;
+    /// Reads n bytes from the stream, or fewer if reached the end of stream.
+    ///
+    /// \returns a future that waits until n bytes are available in the
+    /// stream and returns them. If the end of stream is reached before n
+    /// bytes were read, fewer than n bytes will be returned - so despite
+    /// the method's name, the caller must not assume the returned buffer
+    /// will always contain exactly n bytes.
+    ///
+    /// \throws if an I/O error occurs during the read. As explained above,
+    /// prematurely reaching the end of stream is *not* an I/O error.
     future<temporary_buffer<CharType>> read_exactly(size_t n);
     template <typename Consumer>
-    GCC6_CONCEPT(requires InputStreamConsumer<Consumer, CharType> || ObsoleteInputStreamConsumer<Consumer, CharType>)
+    SEASTAR_CONCEPT(requires InputStreamConsumer<Consumer, CharType> || ObsoleteInputStreamConsumer<Consumer, CharType>)
     future<> consume(Consumer&& c);
     template <typename Consumer>
-    GCC6_CONCEPT(requires InputStreamConsumer<Consumer, CharType> || ObsoleteInputStreamConsumer<Consumer, CharType>)
+    SEASTAR_CONCEPT(requires InputStreamConsumer<Consumer, CharType> || ObsoleteInputStreamConsumer<Consumer, CharType>)
     future<> consume(Consumer& c);
-    bool eof() { return _eof; }
+    bool eof() const { return _eof; }
     /// Returns some data from the stream, or an empty buffer on end of
     /// stream.
     future<tmp_buf> read();
@@ -258,14 +272,17 @@ private:
     future<temporary_buffer<CharType>> read_exactly_part(size_t n, tmp_buf buf, size_t completed);
 };
 
-// Facilitates data buffering before it's handed over to data_sink.
-//
-// When trim_to_size is true it's guaranteed that data sink will not receive
-// chunks larger than the configured size, which could be the case when a
-// single write call is made with data larger than the configured size.
-//
-// The data sink will not receive empty chunks.
-//
+/// Facilitates data buffering before it's handed over to data_sink.
+///
+/// When trim_to_size is true it's guaranteed that data sink will not receive
+/// chunks larger than the configured size, which could be the case when a
+/// single write call is made with data larger than the configured size.
+///
+/// The data sink will not receive empty chunks.
+///
+/// \note All methods must be called sequentially.  That is, no method
+/// may be invoked before the previous method's returned future is
+/// resolved.
 template <typename CharType>
 class output_stream final {
     static_assert(sizeof(CharType) == 1, "must buffer stream of bytes");
@@ -277,7 +294,7 @@ class output_stream final {
     size_t _end = 0;
     bool _trim_to_size = false;
     bool _batch_flushes = false;
-    compat::optional<promise<>> _in_batch;
+    std::optional<promise<>> _in_batch;
     bool _flush = false;
     bool _flushing = false;
     std::exception_ptr _ex;
@@ -289,14 +306,16 @@ private:
     void poll_flush();
     future<> zero_copy_put(net::packet p);
     future<> zero_copy_split_and_put(net::packet p);
+    [[gnu::noinline]]
+    future<> slow_write(const CharType* buf, size_t n);
 public:
     using char_type = CharType;
-    output_stream() = default;
-    output_stream(data_sink fd, size_t size, bool trim_to_size = false, bool batch_flushes = false)
+    output_stream() noexcept = default;
+    output_stream(data_sink fd, size_t size, bool trim_to_size = false, bool batch_flushes = false) noexcept
         : _fd(std::move(fd)), _size(size), _trim_to_size(trim_to_size), _batch_flushes(batch_flushes) {}
-    output_stream(output_stream&&) = default;
-    output_stream& operator=(output_stream&&) = default;
-    ~output_stream() { assert(!_in_batch); }
+    output_stream(output_stream&&) noexcept = default;
+    output_stream& operator=(output_stream&&) noexcept = default;
+    ~output_stream() { assert(!_in_batch && "Was this stream properly closed?"); }
     future<> write(const char_type* buf, size_t n);
     future<> write(const char_type* buf);
 
@@ -308,6 +327,10 @@ public:
     future<> write(scattered_message<char_type> msg);
     future<> write(temporary_buffer<char_type>);
     future<> flush();
+
+    /// Flushes the stream before closing it (and the underlying data sink) to
+    /// any further writes.  The resulting future must be waited on before
+    /// destroying this object.
     future<> close();
 
     /// Detaches the underlying \c data_sink from the \c output_stream.

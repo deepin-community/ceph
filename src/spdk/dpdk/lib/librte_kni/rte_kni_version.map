@@ -1,4 +1,4 @@
-DPDK_2.0 {
+DPDK_20.0 {
 	global:
 
 	rte_kni_alloc;
@@ -14,4 +14,10 @@ DPDK_2.0 {
 	rte_kni_unregister_handlers;
 
 	local: *;
+};
+
+EXPERIMENTAL {
+	global:
+
+	rte_kni_update_link;
 };

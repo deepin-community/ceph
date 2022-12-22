@@ -49,7 +49,7 @@ std::ostream& operator<<(std::ostream& os,
 int AuthServiceHandler::start_session(const EntityName& entity_name,
 				      uint64_t global_id,
 				      bool is_new_global_id,
-				      bufferlist *result,
+				      ceph::buffer::list *result,
 				      AuthCapsInfo *caps)
 {
   ceph_assert(!this->entity_name.get_type() && !this->global_id &&

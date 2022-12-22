@@ -21,35 +21,45 @@
 
 #include "osd/OSDMap.h"
 #include "mon/MonMap.h"
-
+#include "osd/osd_types.h"
 #include "mgr/MgrContext.h"
+#include "mgr/TTLCache.h"
+#include "mgr/mgr_perf_counters.h"
 
-// For ::config_prefix
+// For ::mgr_store_prefix
 #include "PyModule.h"
 #include "PyModuleRegistry.h"
+#include "PyUtil.h"
 
 #include "ActivePyModules.h"
+#include "DaemonKey.h"
 #include "DaemonServer.h"
 
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_mgr
 #undef dout_prefix
-#define dout_prefix *_dout << "mgr " << __func__ << " "    
+#define dout_prefix *_dout << "mgr " << __func__ << " "
 
-ActivePyModules::ActivePyModules(PyModuleConfig &module_config_,
-          std::map<std::string, std::string> store_data,
-          DaemonStateIndex &ds, ClusterState &cs,
-          MonClient &mc, LogChannelRef clog_,
-          LogChannelRef audit_clog_, Objecter &objecter_,
-          Client &client_, Finisher &f, DaemonServer &server,
-          PyModuleRegistry &pmr)
-  : module_config(module_config_), daemon_state(ds), cluster_state(cs),
-    monc(mc), clog(clog_), audit_clog(audit_clog_), objecter(objecter_),
-    client(client_), finisher(f),
-    cmd_finisher(g_ceph_context, "cmd_finisher", "cmdfin"),
-    server(server), py_module_registry(pmr), lock("ActivePyModules")
+ActivePyModules::ActivePyModules(
+  PyModuleConfig &module_config_,
+  std::map<std::string, std::string> store_data,
+  bool mon_provides_kv_sub,
+  DaemonStateIndex &ds, ClusterState &cs,
+  MonClient &mc, LogChannelRef clog_,
+  LogChannelRef audit_clog_, Objecter &objecter_,
+  Client &client_, Finisher &f, DaemonServer &server,
+  PyModuleRegistry &pmr)
+: module_config(module_config_), daemon_state(ds), cluster_state(cs),
+  monc(mc), clog(clog_), audit_clog(audit_clog_), objecter(objecter_),
+  client(client_), finisher(f),
+  cmd_finisher(g_ceph_context, "cmd_finisher", "cmdfin"),
+  server(server), py_module_registry(pmr)
 {
   store_cache = std::move(store_data);
+  // we can only trust our ConfigMap if the mon cluster has provided
+  // kv sub since our startup.
+  have_local_config_map = mon_provides_kv_sub;
+  _refresh_config_map();
   cmd_finisher.start();
 }
 
@@ -63,23 +73,27 @@ void ActivePyModules::dump_server(const std::string &hostname,
   f->open_array_section("services");
   std::string ceph_version;
 
-  for (const auto &i : dmc) {
-    std::lock_guard l(i.second->lock);
-    const auto &key = i.first;
-    const std::string &str_type = key.first;
-    const std::string &svc_name = key.second;
-
-    // TODO: pick the highest version, and make sure that
-    // somewhere else (during health reporting?) we are
-    // indicating to the user if we see mixed versions
-    auto ver_iter = i.second->metadata.find("ceph_version");
-    if (ver_iter != i.second->metadata.end()) {
-      ceph_version = i.second->metadata.at("ceph_version");
-    }
-
+  for (const auto &[key, state] : dmc) {
+    std::string id;
+    without_gil([&ceph_version, &id, state=state] {
+      std::lock_guard l(state->lock);
+      // TODO: pick the highest version, and make sure that
+      // somewhere else (during health reporting?) we are
+      // indicating to the user if we see mixed versions
+      auto ver_iter = state->metadata.find("ceph_version");
+      if (ver_iter != state->metadata.end()) {
+        ceph_version = state->metadata.at("ceph_version");
+      }
+      if (state->metadata.find("id") != state->metadata.end()) {
+        id = state->metadata.at("id");
+      }
+    });
     f->open_object_section("service");
-    f->dump_string("type", str_type);
-    f->dump_string("id", svc_name);
+    f->dump_string("type", key.type);
+    f->dump_string("id", key.name);
+    if (!id.empty()) {
+      f->dump_string("name", id);
+    }
     f->close_section();
   }
   f->close_section();
@@ -87,17 +101,13 @@ void ActivePyModules::dump_server(const std::string &hostname,
   f->dump_string("ceph_version", ceph_version);
 }
 
-
-
 PyObject *ActivePyModules::get_server_python(const std::string &hostname)
 {
-  PyThreadState *tstate = PyEval_SaveThread();
-  std::lock_guard l(lock);
-  PyEval_RestoreThread(tstate);
-  dout(10) << " (" << hostname << ")" << dendl;
-
-  auto dmc = daemon_state.get_by_server(hostname);
-
+  const auto dmc = without_gil([&]{
+    std::lock_guard l(lock);
+    dout(10) << " (" << hostname << ")" << dendl;
+    return daemon_state.get_by_server(hostname);
+  });
   PyFormatter f;
   dump_server(hostname, dmc, &f);
   return f.get();
@@ -106,41 +116,38 @@ PyObject *ActivePyModules::get_server_python(const std::string &hostname)
 
 PyObject *ActivePyModules::list_servers_python()
 {
-  PyFormatter f(false, true);
-  PyThreadState *tstate = PyEval_SaveThread();
   dout(10) << " >" << dendl;
 
-  daemon_state.with_daemons_by_server([this, &f, &tstate]
+  without_gil_t no_gil;
+  return daemon_state.with_daemons_by_server([this, &no_gil]
       (const std::map<std::string, DaemonStateCollection> &all) {
-    PyEval_RestoreThread(tstate);
-
-    for (const auto &i : all) {
-      const auto &hostname = i.first;
-
+    with_gil_t with_gil{no_gil};
+    PyFormatter f(false, true);
+    for (const auto &[hostname, daemon_state] : all) {
       f.open_object_section("server");
-      dump_server(hostname, i.second, &f);
+      dump_server(hostname, daemon_state, &f);
       f.close_section();
     }
+    return f.get();
   });
-
-  return f.get();
 }
 
 PyObject *ActivePyModules::get_metadata_python(
   const std::string &svc_type,
   const std::string &svc_id)
 {
-  auto metadata = daemon_state.get(DaemonKey(svc_type, svc_id));
+  auto metadata = daemon_state.get(DaemonKey{svc_type, svc_id});
   if (metadata == nullptr) {
     derr << "Requested missing service " << svc_type << "." << svc_id << dendl;
     Py_RETURN_NONE;
   }
-
-  std::lock_guard l(metadata->lock);
+  auto l = without_gil([&] {
+    return std::lock_guard(lock);
+  });
   PyFormatter f;
   f.dump_string("hostname", metadata->hostname);
-  for (const auto &i : metadata->metadata) {
-    f.dump_string(i.first.c_str(), i.second);
+  for (const auto &[key, val] : metadata->metadata) {
+    f.dump_string(key, val);
   }
 
   return f.get();
@@ -150,46 +157,76 @@ PyObject *ActivePyModules::get_daemon_status_python(
   const std::string &svc_type,
   const std::string &svc_id)
 {
-  auto metadata = daemon_state.get(DaemonKey(svc_type, svc_id));
+  auto metadata = daemon_state.get(DaemonKey{svc_type, svc_id});
   if (metadata == nullptr) {
     derr << "Requested missing service " << svc_type << "." << svc_id << dendl;
     Py_RETURN_NONE;
   }
-
-  std::lock_guard l(metadata->lock);
+  auto l = without_gil([&] {
+    return std::lock_guard(lock);
+  });
   PyFormatter f;
-  for (const auto &i : metadata->service_status) {
-    f.dump_string(i.first.c_str(), i.second);
+  for (const auto &[daemon, status] : metadata->service_status) {
+    f.dump_string(daemon, status);
   }
   return f.get();
 }
 
+void ActivePyModules::update_cache_metrics() {
+    auto hit_miss_ratio = ttl_cache.get_hit_miss_ratio();
+    perfcounter->set(l_mgr_cache_hit, hit_miss_ratio.first);
+    perfcounter->set(l_mgr_cache_miss, hit_miss_ratio.second);
+}
+
+PyObject *ActivePyModules::cacheable_get_python(const std::string &what)
+{
+  uint64_t ttl_seconds = g_conf().get_val<uint64_t>("mgr_ttl_cache_expire_seconds");
+  if(ttl_seconds > 0) {
+    ttl_cache.set_ttl(ttl_seconds);
+    try{
+      PyObject* cached = ttl_cache.get(what);
+      update_cache_metrics();
+      return cached;
+    } catch (std::out_of_range& e) {}
+  }
+
+  PyObject *obj = get_python(what);
+  if(ttl_seconds && ttl_cache.is_cacheable(what)) {
+    ttl_cache.insert(what, obj);
+    Py_INCREF(obj);
+  }
+  update_cache_metrics();
+  return obj;
+}
+
 PyObject *ActivePyModules::get_python(const std::string &what)
 {
-  PyFormatter f;
+  uint64_t ttl_seconds = g_conf().get_val<uint64_t>("mgr_ttl_cache_expire_seconds");
 
-  // Drop the GIL, as most of the following blocks will block on
-  // a mutex -- they are all responsible for re-taking the GIL before
-  // touching the PyFormatter instance or returning from the function.
-  PyThreadState *tstate = PyEval_SaveThread();
+  PyFormatter pf;
+  PyJSONFormatter jf;
+  // Use PyJSONFormatter if TTL cache is enabled.
+  Formatter &f = ttl_seconds ? (Formatter&)jf : (Formatter&)pf;
 
   if (what == "fs_map") {
-    cluster_state.with_fsmap([&f, &tstate](const FSMap &fsmap) {
-      PyEval_RestoreThread(tstate);
+    without_gil_t no_gil;
+    cluster_state.with_fsmap([&](const FSMap &fsmap) {
+      no_gil.acquire_gil();
       fsmap.dump(&f);
     });
-    return f.get();
   } else if (what == "osdmap_crush_map_text") {
+    without_gil_t no_gil;
     bufferlist rdata;
-    cluster_state.with_osdmap([&rdata, &tstate](const OSDMap &osd_map){
-      PyEval_RestoreThread(tstate);
+    cluster_state.with_osdmap([&](const OSDMap &osd_map){
       osd_map.crush->encode(rdata, CEPH_FEATURES_SUPPORTED_DEFAULT);
     });
     std::string crush_text = rdata.to_str();
-    return PyString_FromString(crush_text.c_str());
+    with_gil_t with_gil{no_gil};
+    return PyUnicode_FromString(crush_text.c_str());
   } else if (what.substr(0, 7) == "osd_map") {
-    cluster_state.with_osdmap([&f, &what, &tstate](const OSDMap &osd_map){
-      PyEval_RestoreThread(tstate);
+    without_gil_t no_gil;
+    cluster_state.with_osdmap([&](const OSDMap &osd_map){
+      no_gil.acquire_gil();
       if (what == "osd_map") {
         osd_map.dump(&f);
       } else if (what == "osd_map_tree") {
@@ -198,9 +235,8 @@ PyObject *ActivePyModules::get_python(const std::string &what)
         osd_map.crush->dump(&f);
       }
     });
-    return f.get();
   } else if (what == "modified_config_options") {
-    PyEval_RestoreThread(tstate);
+    without_gil_t no_gil;
     auto all_daemons = daemon_state.get_all();
     set<string> names;
     for (auto& [key, daemon] : all_daemons) {
@@ -209,55 +245,62 @@ PyObject *ActivePyModules::get_python(const std::string &what)
 	names.insert(name);
       }
     }
+    with_gil_t with_gil{no_gil};
     f.open_array_section("options");
     for (auto& name : names) {
       f.dump_string("name", name);
     }
     f.close_section();
-    return f.get();
   } else if (what.substr(0, 6) == "config") {
-    PyEval_RestoreThread(tstate);
     if (what == "config_options") {
       g_conf().config_options(&f);
     } else if (what == "config") {
       g_conf().show_config(&f);
     }
-    return f.get();
   } else if (what == "mon_map") {
-    cluster_state.with_monmap(
-      [&f, &tstate](const MonMap &monmap) {
-        PyEval_RestoreThread(tstate);
-        monmap.dump(&f);
-      }
-    );
-    return f.get();
+    without_gil_t no_gil;
+    cluster_state.with_monmap([&](const MonMap &monmap) {
+      no_gil.acquire_gil();
+      monmap.dump(&f);
+    });
   } else if (what == "service_map") {
-    cluster_state.with_servicemap(
-      [&f, &tstate](const ServiceMap &service_map) {
-        PyEval_RestoreThread(tstate);
-        service_map.dump(&f);
-      }
-    );
-    return f.get();
+    without_gil_t no_gil;
+    cluster_state.with_servicemap([&](const ServiceMap &service_map) {
+      no_gil.acquire_gil();
+      service_map.dump(&f);
+    });
   } else if (what == "osd_metadata") {
+    without_gil_t no_gil;
     auto dmc = daemon_state.get_by_service("osd");
-    PyEval_RestoreThread(tstate);
-
-    for (const auto &i : dmc) {
-      std::lock_guard l(i.second->lock);
-      f.open_object_section(i.first.second.c_str());
-      f.dump_string("hostname", i.second->hostname);
-      for (const auto &j : i.second->metadata) {
-        f.dump_string(j.first.c_str(), j.second);
-      }
-      f.close_section();
+    for (const auto &[key, state] : dmc) {
+      std::lock_guard l(state->lock);
+      with_gil(no_gil, [&f, &name=key.name, state=state] {
+        f.open_object_section(name.c_str());
+        f.dump_string("hostname", state->hostname);
+        for (const auto &[name, val] : state->metadata) {
+          f.dump_string(name.c_str(), val);
+        }
+        f.close_section();
+      });
     }
-    return f.get();
+  } else if (what == "mds_metadata") {
+    without_gil_t no_gil;
+    auto dmc = daemon_state.get_by_service("mds");
+    for (const auto &[key, state] : dmc) {
+      std::lock_guard l(state->lock);
+      with_gil(no_gil, [&f, &name=key.name, state=state] {
+        f.open_object_section(name.c_str());
+        f.dump_string("hostname", state->hostname);
+        for (const auto &[name, val] : state->metadata) {
+          f.dump_string(name.c_str(), val);
+        }
+        f.close_section();
+      });
+    }
   } else if (what == "pg_summary") {
+    without_gil_t no_gil;
     cluster_state.with_pgmap(
-        [&f, &tstate](const PGMap &pg_map) {
-          PyEval_RestoreThread(tstate);
-
+        [&f, &no_gil](const PGMap &pg_map) {
           std::map<std::string, std::map<std::string, uint32_t> > osds;
           std::map<std::string, std::map<std::string, uint32_t> > pools;
           std::map<std::string, uint32_t> all;
@@ -271,6 +314,7 @@ PyObject *ActivePyModules::get_python(const std::string &what)
             }
             all[state]++;
           }
+          with_gil_t with_gil{no_gil};
           f.open_object_section("by_osd");
           for (const auto &i : osds) {
             f.open_object_section(i.first.c_str());
@@ -299,135 +343,172 @@ PyObject *ActivePyModules::get_python(const std::string &what)
           f.close_section();
         }
     );
-    return f.get();
   } else if (what == "pg_status") {
+    without_gil_t no_gil;
     cluster_state.with_pgmap(
-        [&f, &tstate](const PGMap &pg_map) {
-          PyEval_RestoreThread(tstate);
+        [&](const PGMap &pg_map) {
+	  with_gil_t with_gil{no_gil};
 	  pg_map.print_summary(&f, nullptr);
         }
     );
-    return f.get();
   } else if (what == "pg_dump") {
+    without_gil_t no_gil;
     cluster_state.with_pgmap(
-      [&f, &tstate](const PGMap &pg_map) {
-        PyEval_RestoreThread(tstate);
+      [&](const PGMap &pg_map) {
+	with_gil_t with_gil{no_gil};
 	pg_map.dump(&f, false);
       }
     );
-    return f.get();
   } else if (what == "devices") {
+    without_gil_t no_gil;
     daemon_state.with_devices2(
-      [&tstate, &f]() {
-	PyEval_RestoreThread(tstate);
-	f.open_array_section("devices");
+      [&] {
+        with_gil(no_gil, [&] { f.open_array_section("devices"); });
       },
-      [&f] (const DeviceState& dev) {
-	f.dump_object("device", dev);
+      [&](const DeviceState &dev) {
+        with_gil(no_gil, [&] { f.dump_object("device", dev); });
       });
-    f.close_section();
-    return f.get();
+    with_gil(no_gil, [&] {
+      f.close_section();
+    });
   } else if (what.size() > 7 &&
 	     what.substr(0, 7) == "device ") {
+    without_gil_t no_gil;
     string devid = what.substr(7);
-    if (!daemon_state.with_device(
-	  devid,
-	  [&f, &tstate] (const DeviceState& dev) {
-	    PyEval_RestoreThread(tstate);
-	    f.dump_object("device", dev);
-	  })) {
+    if (!daemon_state.with_device(devid,
+      [&] (const DeviceState& dev) {
+        with_gil_t with_gil{no_gil};
+        f.dump_object("device", dev);
+      })) {
       // device not found
-      PyEval_RestoreThread(tstate);
     }
-    return f.get();
   } else if (what == "io_rate") {
+    without_gil_t no_gil;
     cluster_state.with_pgmap(
-      [&f, &tstate](const PGMap &pg_map) {
-        PyEval_RestoreThread(tstate);
+      [&](const PGMap &pg_map) {
+        with_gil_t with_gil{no_gil};
         pg_map.dump_delta(&f);
       }
     );
-    return f.get();
   } else if (what == "df") {
+    without_gil_t no_gil;
     cluster_state.with_osdmap_and_pgmap(
-      [this, &f, &tstate](
+      [&](
 	const OSDMap& osd_map,
 	const PGMap &pg_map) {
-	PyEval_RestoreThread(tstate);
+        with_gil_t with_gil{no_gil};
         pg_map.dump_cluster_stats(nullptr, &f, true);
         pg_map.dump_pool_stats_full(osd_map, nullptr, &f, true);
       });
-    return f.get();
   } else if (what == "pg_stats") {
-    cluster_state.with_pgmap(
-        [&f, &tstate](const PGMap &pg_map) {
-      PyEval_RestoreThread(tstate);
+    without_gil_t no_gil;
+    cluster_state.with_pgmap([&](const PGMap &pg_map) {
+      no_gil.acquire_gil();
       pg_map.dump_pg_stats(&f, false);
     });
-    return f.get();
   } else if (what == "pool_stats") {
-    cluster_state.with_pgmap(
-        [&f, &tstate](const PGMap &pg_map) {
-      PyEval_RestoreThread(tstate);
+    without_gil_t no_gil;
+    cluster_state.with_pgmap([&](const PGMap &pg_map) {
+      no_gil.acquire_gil();
       pg_map.dump_pool_stats(&f);
     });
-    return f.get();
   } else if (what == "pg_ready") {
-    PyEval_RestoreThread(tstate);
     server.dump_pg_ready(&f);
-    return f.get();
+  } else if (what == "pg_progress") {
+    without_gil_t no_gil;
+    cluster_state.with_pgmap([&](const PGMap &pg_map) {
+      no_gil.acquire_gil();
+      pg_map.dump_pg_progress(&f);
+      server.dump_pg_ready(&f);
+    });
   } else if (what == "osd_stats") {
-    cluster_state.with_pgmap(
-        [&f, &tstate](const PGMap &pg_map) {
-      PyEval_RestoreThread(tstate);
+    without_gil_t no_gil;
+    cluster_state.with_pgmap([&](const PGMap &pg_map) {
+      no_gil.acquire_gil();
       pg_map.dump_osd_stats(&f, false);
     });
-    return f.get();
   } else if (what == "osd_ping_times") {
-    cluster_state.with_pgmap(
-        [&f, &tstate](const PGMap &pg_map) {
-      PyEval_RestoreThread(tstate);
+    without_gil_t no_gil;
+    cluster_state.with_pgmap([&](const PGMap &pg_map) {
+      no_gil.acquire_gil();
       pg_map.dump_osd_ping_times(&f);
     });
-    return f.get();
   } else if (what == "osd_pool_stats") {
     int64_t poolid = -ENOENT;
-    string pool_name;
+    without_gil_t no_gil;
     cluster_state.with_osdmap_and_pgmap([&](const OSDMap& osdmap,
 					    const PGMap& pg_map) {
-        PyEval_RestoreThread(tstate);
-        f.open_array_section("pool_stats");
-        for (auto &p : osdmap.get_pools()) {
-          poolid = p.first;
-          pg_map.dump_pool_stats_and_io_rate(poolid, osdmap, &f, nullptr);
-        }
-        f.close_section();
+      with_gil_t with_gil{no_gil};
+      f.open_array_section("pool_stats");
+      for (auto &p : osdmap.get_pools()) {
+        poolid = p.first;
+        pg_map.dump_pool_stats_and_io_rate(poolid, osdmap, &f, nullptr);
+      }
+      f.close_section();
     });
-    return f.get();
   } else if (what == "health") {
-    cluster_state.with_health(
-        [&f, &tstate](const ceph::bufferlist &health_json) {
-      PyEval_RestoreThread(tstate);
+    without_gil_t no_gil;
+    cluster_state.with_health([&](const ceph::bufferlist &health_json) {
+      no_gil.acquire_gil();
       f.dump_string("json", health_json.to_str());
     });
-    return f.get();
   } else if (what == "mon_status") {
+    without_gil_t no_gil;
     cluster_state.with_mon_status(
-        [&f, &tstate](const ceph::bufferlist &mon_status_json) {
-      PyEval_RestoreThread(tstate);
+        [&](const ceph::bufferlist &mon_status_json) {
+      with_gil_t with_gil{no_gil};
       f.dump_string("json", mon_status_json.to_str());
     });
-    return f.get();
   } else if (what == "mgr_map") {
-    cluster_state.with_mgrmap([&f, &tstate](const MgrMap &mgr_map) {
-      PyEval_RestoreThread(tstate);
+    without_gil_t no_gil;
+    cluster_state.with_mgrmap([&](const MgrMap &mgr_map) {
+      no_gil.acquire_gil();
       mgr_map.dump(&f);
     });
-    return f.get();
+  } else if (what == "mgr_ips") {
+    entity_addrvec_t myaddrs = server.get_myaddrs();
+    f.open_array_section("ips");
+    std::set<std::string> did;
+    for (auto& i : myaddrs.v) {
+      std::string ip = i.ip_only_to_str();
+      if (auto [where, inserted] = did.insert(ip); inserted) {
+	f.dump_string("ip", ip);
+      }
+    }
+    f.close_section();
+  } else if (what == "have_local_config_map") {
+    f.dump_bool("have_local_config_map", have_local_config_map);
+  } else if (what == "active_clean_pgs"){
+    without_gil_t no_gil;
+    cluster_state.with_pgmap(
+        [&](const PGMap &pg_map) {
+      with_gil_t with_gil{no_gil};
+      f.open_array_section("pg_stats");
+      for (auto &i : pg_map.pg_stat) {
+        const auto state = i.second.state;
+	const auto pgid_raw = i.first;
+	const auto pgid = stringify(pgid_raw.m_pool) + "." + stringify(pgid_raw.m_seed);
+	const auto reported_epoch = i.second.reported_epoch;
+	if (state & PG_STATE_ACTIVE && state & PG_STATE_CLEAN) {
+	  f.open_object_section("pg_stat");
+	  f.dump_string("pgid", pgid);
+	  f.dump_string("state", pg_state_string(state));
+	  f.dump_unsigned("reported_epoch", reported_epoch);
+	  f.close_section();
+	}
+      }
+      f.close_section();
+      const auto num_pg = pg_map.num_pg;
+      f.dump_unsigned("total_num_pgs", num_pg);
+    });
   } else {
     derr << "Python module requested unknown data '" << what << "'" << dendl;
-    PyEval_RestoreThread(tstate);
     Py_RETURN_NONE;
+  }
+  if(ttl_seconds) {
+    return jf.get();
+  } else {
+    return pf.get();
   }
 }
 
@@ -441,7 +522,7 @@ void ActivePyModules::start_one(PyModuleRef py_module)
   pending_modules.insert(name);
   // Send all python calls down a Finisher to avoid blocking
   // C++ code, and avoid any potential lock cycles.
-  finisher.queue(new FunctionContext([this, active_module, name](int) {
+  finisher.queue(new LambdaContext([this, active_module, name](int) {
     int r = active_module->load(this);
     std::lock_guard l(lock);
     pending_modules.erase(name);
@@ -464,21 +545,21 @@ void ActivePyModules::shutdown()
 
   // Signal modules to drop out of serve() and/or tear down resources
   for (auto& [name, module] : modules) {
-    lock.Unlock();
+    lock.unlock();
     dout(10) << "calling module " << name << " shutdown()" << dendl;
     module->shutdown();
     dout(10) << "module " << name << " shutdown() returned" << dendl;
-    lock.Lock();
+    lock.lock();
   }
 
   // For modules implementing serve(), finish the threads where we
   // were running that.
   for (auto& [name, module] : modules) {
-    lock.Unlock();
+    lock.unlock();
     dout(10) << "joining module " << name << dendl;
     module->thread.join();
     dout(10) << "joined module " << name << dendl;
-    lock.Lock();
+    lock.lock();
   }
 
   cmd_finisher.wait_for_empty();
@@ -494,11 +575,16 @@ void ActivePyModules::notify_all(const std::string &notify_type,
 
   dout(10) << __func__ << ": notify_all " << notify_type << dendl;
   for (auto& [name, module] : modules) {
+    if (!py_module_registry.should_notify(name, notify_type)) {
+      continue;
+    }
     // Send all python calls down a Finisher to avoid blocking
     // C++ code, and avoid any potential lock cycles.
-    dout(15) << "queuing notify to " << name << dendl;
-    finisher.queue(new FunctionContext([module, notify_type, notify_id](int r){
-      module->notify(notify_type, notify_id);
+    dout(15) << "queuing notify (" << notify_type << ") to " << name << dendl;
+    // workaround for https://bugs.llvm.org/show_bug.cgi?id=35984
+    finisher.queue(new LambdaContext([module=module, notify_type, notify_id]
+      (int r){
+        module->notify(notify_type, notify_id);
     }));
   }
 }
@@ -509,6 +595,9 @@ void ActivePyModules::notify_all(const LogEntry &log_entry)
 
   dout(10) << __func__ << ": notify_all (clog)" << dendl;
   for (auto& [name, module] : modules) {
+    if (!py_module_registry.should_notify(name, "clog")) {
+      continue;
+    }
     // Send all python calls down a Finisher to avoid blocking
     // C++ code, and avoid any potential lock cycles.
     //
@@ -516,7 +605,8 @@ void ActivePyModules::notify_all(const LogEntry &log_entry)
     // log_entry: we take a copy because caller's instance is
     // probably ephemeral.
     dout(15) << "queuing notify (clog) to " << name << dendl;
-    finisher.queue(new FunctionContext([module, log_entry](int r){
+    // workaround for https://bugs.llvm.org/show_bug.cgi?id=35984
+    finisher.queue(new LambdaContext([module=module, log_entry](int r){
       module->notify_clog(log_entry);
     }));
   }
@@ -525,11 +615,10 @@ void ActivePyModules::notify_all(const LogEntry &log_entry)
 bool ActivePyModules::get_store(const std::string &module_name,
     const std::string &key, std::string *val) const
 {
-  PyThreadState *tstate = PyEval_SaveThread();
+  without_gil_t no_gil;
   std::lock_guard l(lock);
-  PyEval_RestoreThread(tstate);
 
-  const std::string global_key = PyModule::config_prefix
+  const std::string global_key = PyModule::mgr_store_prefix
     + module_name + "/" + key;
 
   dout(4) << __func__ << " key: " << global_key << dendl;
@@ -559,13 +648,12 @@ PyObject *ActivePyModules::dispatch_remote(
 bool ActivePyModules::get_config(const std::string &module_name,
     const std::string &key, std::string *val) const
 {
-  const std::string global_key = PyModule::config_prefix
-    + module_name + "/" + key;
+  const std::string global_key = "mgr/" + module_name + "/" + key;
 
-  dout(4) << __func__ << " key: " << global_key << dendl;
+  dout(20) << " key: " << global_key << dendl;
 
   std::lock_guard lock(module_config.lock);
-  
+
   auto i = module_config.config.find(global_key);
   if (i != module_config.config.end()) {
     *val = i->second;
@@ -580,7 +668,7 @@ PyObject *ActivePyModules::get_typed_config(
   const std::string &key,
   const std::string &prefix) const
 {
-  PyThreadState *tstate = PyEval_SaveThread();
+  without_gil_t no_gil;
   std::string value;
   std::string final_key;
   bool found = false;
@@ -594,7 +682,7 @@ PyObject *ActivePyModules::get_typed_config(
   }
   if (found) {
     PyModuleRef module = py_module_registry.get_module(module_name);
-    PyEval_RestoreThread(tstate);
+    with_gil_t with_gil{no_gil};
     if (!module) {
         derr << "Module '" << module_name << "' is not available" << dendl;
         Py_RETURN_NONE;
@@ -605,48 +693,50 @@ PyObject *ActivePyModules::get_typed_config(
     dout(10) << __func__ << " " << final_key << " found" << dendl;
     return module->get_typed_option_value(key, value);
   }
-  PyEval_RestoreThread(tstate);
   if (prefix.size()) {
-    dout(4) << __func__ << " [" << prefix << "/]" << key << " not found "
+    dout(10) << " [" << prefix << "/]" << key << " not found "
 	    << dendl;
   } else {
-    dout(4) << __func__ << " " << key << " not found " << dendl;
+    dout(10) << " " << key << " not found " << dendl;
   }
+  with_gil_t with_gil{no_gil};
   Py_RETURN_NONE;
 }
 
 PyObject *ActivePyModules::get_store_prefix(const std::string &module_name,
     const std::string &prefix) const
 {
-  PyThreadState *tstate = PyEval_SaveThread();
+  without_gil_t no_gil;
   std::lock_guard l(lock);
   std::lock_guard lock(module_config.lock);
-  PyEval_RestoreThread(tstate);
 
-  const std::string base_prefix = PyModule::config_prefix
+  const std::string base_prefix = PyModule::mgr_store_prefix
                                     + module_name + "/";
   const std::string global_prefix = base_prefix + prefix;
   dout(4) << __func__ << " prefix: " << global_prefix << dendl;
 
-  PyFormatter f;
-  
-  for (auto p = store_cache.lower_bound(global_prefix);
-       p != store_cache.end() && p->first.find(global_prefix) == 0;
-       ++p) {
-    f.dump_string(p->first.c_str() + base_prefix.size(), p->second);
-  }
-  return f.get();
+  return with_gil(no_gil, [&] {
+    PyFormatter f;
+    for (auto p = store_cache.lower_bound(global_prefix);
+         p != store_cache.end() && p->first.find(global_prefix) == 0; ++p) {
+      f.dump_string(p->first.c_str() + base_prefix.size(), p->second);
+    }
+    return f.get();
+  });
 }
 
 void ActivePyModules::set_store(const std::string &module_name,
     const std::string &key, const boost::optional<std::string>& val)
 {
-  const std::string global_key = PyModule::config_prefix
+  const std::string global_key = PyModule::mgr_store_prefix
                                    + module_name + "/" + key;
-  
+
   Command set_cmd;
   {
     std::lock_guard l(lock);
+
+    // NOTE: this isn't strictly necessary since we'll also get an MKVData
+    // update from the mon due to our subscription *before* our command is acked.
     if (val) {
       store_cache[global_key] = *val;
     } else {
@@ -700,37 +790,128 @@ std::map<std::string, std::string> ActivePyModules::get_services() const
   return result;
 }
 
+void ActivePyModules::update_kv_data(
+  const std::string prefix,
+  bool incremental,
+  const map<std::string, boost::optional<bufferlist>, std::less<>>& data)
+{
+  std::lock_guard l(lock);
+  bool do_config = false;
+  if (!incremental) {
+    dout(10) << "full update on " << prefix << dendl;
+    auto p = store_cache.lower_bound(prefix);
+    while (p != store_cache.end() && p->first.find(prefix) == 0) {
+      dout(20) << " rm prior " << p->first << dendl;
+      p = store_cache.erase(p);
+    }
+  } else {
+    dout(10) << "incremental update on " << prefix << dendl;
+  }
+  for (auto& i : data) {
+    if (i.second) {
+      dout(20) << " set " << i.first << " = " << i.second->to_str() << dendl;
+      store_cache[i.first] = i.second->to_str();
+    } else {
+      dout(20) << " rm " << i.first << dendl;
+      store_cache.erase(i.first);
+    }
+    if (i.first.find("config/") == 0) {
+      do_config = true;
+    }
+  }
+  if (do_config) {
+    _refresh_config_map();
+  }
+}
+
+void ActivePyModules::_refresh_config_map()
+{
+  dout(10) << dendl;
+  config_map.clear();
+  for (auto p = store_cache.lower_bound("config/");
+       p != store_cache.end() && p->first.find("config/") == 0;
+       ++p) {
+    string key = p->first.substr(7);
+    if (key.find("mgr/") == 0) {
+      // NOTE: for now, we ignore module options.  see also ceph_foreign_option_get().
+      continue;
+    }
+    string value = p->second;
+    string name;
+    string who;
+    config_map.parse_key(key, &name, &who);
+
+    const Option *opt = g_conf().find_option(name);
+    if (!opt) {
+      config_map.stray_options.push_back(
+	std::unique_ptr<Option>(
+	  new Option(name, Option::TYPE_STR, Option::LEVEL_UNKNOWN)));
+      opt = config_map.stray_options.back().get();
+    }
+
+    string err;
+    int r = opt->pre_validate(&value, &err);
+    if (r < 0) {
+      dout(10) << __func__ << " pre-validate failed on '" << name << "' = '"
+	       << value << "' for " << name << dendl;
+    }
+
+    MaskedOption mopt(opt);
+    mopt.raw_value = value;
+    string section_name;
+    if (who.size() &&
+	!ConfigMap::parse_mask(who, &section_name, &mopt.mask)) {
+      derr << __func__ << " invalid mask for key " << key << dendl;
+    } else if (opt->has_flag(Option::FLAG_NO_MON_UPDATE)) {
+      dout(10) << __func__ << " NO_MON_UPDATE option '"
+	       << name << "' = '" << value << "' for " << name
+	       << dendl;
+    } else {
+      Section *section = &config_map.global;;
+      if (section_name.size() && section_name != "global") {
+	if (section_name.find('.') != std::string::npos) {
+	  section = &config_map.by_id[section_name];
+	} else {
+	  section = &config_map.by_type[section_name];
+	}
+      }
+      section->options.insert(make_pair(name, std::move(mopt)));
+    }
+  }
+}
+
 PyObject* ActivePyModules::with_perf_counters(
     std::function<void(PerfCounterInstance& counter_instance, PerfCounterType& counter_type, PyFormatter& f)> fct,
     const std::string &svc_name,
     const std::string &svc_id,
     const std::string &path) const
 {
-  PyThreadState *tstate = PyEval_SaveThread();
-  std::lock_guard l(lock);
-  PyEval_RestoreThread(tstate);
-
   PyFormatter f;
-  f.open_array_section(path.c_str());
-
-  auto metadata = daemon_state.get(DaemonKey(svc_name, svc_id));
-  if (metadata) {
-    std::lock_guard l2(metadata->lock);
-    if (metadata->perf_counters.instances.count(path)) {
-      auto counter_instance = metadata->perf_counters.instances.at(path);
-      auto counter_type = metadata->perf_counters.types.at(path);
-      fct(counter_instance, counter_type, f);
-    } else {
-      dout(4) << "Missing counter: '" << path << "' ("
-        << svc_name << "." << svc_id << ")" << dendl;
-      dout(20) << "Paths are:" << dendl;
-      for (const auto &i : metadata->perf_counters.instances) {
-        dout(20) << i.first << dendl;
+  f.open_array_section(path);
+  {
+    without_gil_t no_gil;
+    std::lock_guard l(lock);
+    auto metadata = daemon_state.get(DaemonKey{svc_name, svc_id});
+    if (metadata) {
+      std::lock_guard l2(metadata->lock);
+      if (metadata->perf_counters.instances.count(path)) {
+        auto counter_instance = metadata->perf_counters.instances.at(path);
+        auto counter_type = metadata->perf_counters.types.at(path);
+        with_gil(no_gil, [&] {
+          fct(counter_instance, counter_type, f);
+        });
+      } else {
+        dout(4) << "Missing counter: '" << path << "' ("
+		<< svc_name << "." << svc_id << ")" << dendl;
+        dout(20) << "Paths are:" << dendl;
+        for (const auto &i : metadata->perf_counters.instances) {
+          dout(20) << i.first << dendl;
+        }
       }
+    } else {
+      dout(4) << "No daemon state for " << svc_name << "." << svc_id << ")"
+              << dendl;
     }
-  } else {
-    dout(4) << "No daemon state for "
-      << svc_name << "." << svc_id << ")" << dendl;
   }
   f.close_section();
   return f.get();
@@ -750,7 +931,7 @@ PyObject* ActivePyModules::get_counter_python(
       const auto &avg_data = counter_instance.get_data_avg();
       for (const auto &datapoint : avg_data) {
         f.open_array_section("datapoint");
-        f.dump_unsigned("t", datapoint.t.sec());
+        f.dump_float("t", datapoint.t);
         f.dump_unsigned("s", datapoint.s);
         f.dump_unsigned("c", datapoint.c);
         f.close_section();
@@ -759,7 +940,7 @@ PyObject* ActivePyModules::get_counter_python(
       const auto &data = counter_instance.get_data();
       for (const auto &datapoint : data) {
         f.open_array_section("datapoint");
-        f.dump_unsigned("t", datapoint.t.sec());
+        f.dump_float("t", datapoint.t);
         f.dump_unsigned("v", datapoint.v);
         f.close_section();
       }
@@ -780,12 +961,12 @@ PyObject* ActivePyModules::get_latest_counter_python(
   {
     if (counter_type.type & PERFCOUNTER_LONGRUNAVG) {
       const auto &datapoint = counter_instance.get_latest_data_avg();
-      f.dump_unsigned("t", datapoint.t.sec());
+      f.dump_float("t", datapoint.t);
       f.dump_unsigned("s", datapoint.s);
       f.dump_unsigned("c", datapoint.c);
     } else {
       const auto &datapoint = counter_instance.get_latest_data();
-      f.dump_unsigned("t", datapoint.t.sec());
+      f.dump_float("t", datapoint.t);
       f.dump_unsigned("v", datapoint.v);
     }
   };
@@ -796,9 +977,8 @@ PyObject* ActivePyModules::get_perf_schema_python(
     const std::string &svc_type,
     const std::string &svc_id)
 {
-  PyThreadState *tstate = PyEval_SaveThread();
+  without_gil_t no_gil;
   std::lock_guard l(lock);
-  PyEval_RestoreThread(tstate);
 
   DaemonStateCollection daemons;
 
@@ -807,7 +987,7 @@ PyObject* ActivePyModules::get_perf_schema_python(
   } else if (svc_id.empty()) {
     daemons = daemon_state.get_by_service(svc_type);
   } else {
-    auto key = DaemonKey(svc_type, svc_id);
+    auto key = DaemonKey{svc_type, svc_id};
     // so that the below can be a loop in all cases
     auto got = daemon_state.get(key);
     if (got != nullptr) {
@@ -815,31 +995,29 @@ PyObject* ActivePyModules::get_perf_schema_python(
     }
   }
 
-  PyFormatter f;
+  auto f = with_gil(no_gil, [&] {
+    return PyFormatter();
+  });
   if (!daemons.empty()) {
-    for (auto statepair : daemons) {
-      auto key = statepair.first;
-      auto state = statepair.second;
-
-      std::ostringstream daemon_name;
-      daemon_name << key.first << "." << key.second;
-      f.open_object_section(daemon_name.str().c_str());
-
+    for (auto& [key, state] : daemons) {
       std::lock_guard l(state->lock);
-      for (auto ctr_inst_iter : state->perf_counters.instances) {
-        const auto &counter_name = ctr_inst_iter.first;
-	f.open_object_section(counter_name.c_str());
-	auto type = state->perf_counters.types[counter_name];
-	f.dump_string("description", type.description);
-	if (!type.nick.empty()) {
-	  f.dump_string("nick", type.nick);
-	}
-	f.dump_unsigned("type", type.type);
-	f.dump_unsigned("priority", type.priority);
-	f.dump_unsigned("units", type.unit);
-	f.close_section();
-      }
-      f.close_section();
+      with_gil(no_gil, [&, key=ceph::to_string(key), state=state] {
+        f.open_object_section(key.c_str());
+        for (auto ctr_inst_iter : state->perf_counters.instances) {
+          const auto &counter_name = ctr_inst_iter.first;
+          f.open_object_section(counter_name.c_str());
+          auto type = state->perf_counters.types[counter_name];
+          f.dump_string("description", type.description);
+          if (!type.nick.empty()) {
+            f.dump_string("nick", type.nick);
+          }
+          f.dump_unsigned("type", type.type);
+          f.dump_unsigned("priority", type.priority);
+          f.dump_unsigned("units", type.unit);
+          f.close_section();
+        }
+        f.close_section();
+      });
     }
   } else {
     dout(4) << __func__ << ": No daemon state found for "
@@ -850,10 +1028,9 @@ PyObject* ActivePyModules::get_perf_schema_python(
 
 PyObject *ActivePyModules::get_context()
 {
-  PyThreadState *tstate = PyEval_SaveThread();
-  std::lock_guard l(lock);
-  PyEval_RestoreThread(tstate);
-
+  auto l = without_gil([&] {
+    return std::lock_guard(lock);
+  });
   // Construct a capsule containing ceph context.
   // Not incrementing/decrementing ref count on the context because
   // it's the global one and it has process lifetime.
@@ -908,17 +1085,110 @@ PyObject *construct_with_capsule(
 
 PyObject *ActivePyModules::get_osdmap()
 {
-  OSDMap *newmap = new OSDMap;
-
-  PyThreadState *tstate = PyEval_SaveThread();
-  {
+  auto newmap = without_gil([&] {
+    OSDMap *newmap = new OSDMap;
     cluster_state.with_osdmap([&](const OSDMap& o) {
-        newmap->deepish_copy_from(o);
-      });
-  }
-  PyEval_RestoreThread(tstate);
-
+      newmap->deepish_copy_from(o);
+    });
+    return newmap;
+  });
   return construct_with_capsule("mgr_module", "OSDMap", (void*)newmap);
+}
+
+PyObject *ActivePyModules::get_foreign_config(
+  const std::string& who,
+  const std::string& name)
+{
+  dout(10) << "ceph_foreign_option_get " << who << " " << name << dendl;
+
+  // NOTE: for now this will only work with build-in options, not module options.
+  const Option *opt = g_conf().find_option(name);
+  if (!opt) {
+    dout(4) << "ceph_foreign_option_get " << name << " not found " << dendl;
+    PyErr_Format(PyExc_KeyError, "option not found: %s", name.c_str());
+    return nullptr;
+  }
+
+  // If the monitors are not yet running pacific, we cannot rely on our local
+  // ConfigMap
+  if (!have_local_config_map) {
+    dout(20) << "mon cluster wasn't pacific when we started: falling back to 'config get'"
+	     << dendl;
+    without_gil_t no_gil;
+    Command cmd;
+    {
+      std::lock_guard l(lock);
+      cmd.run(
+	&monc,
+	"{\"prefix\": \"config get\","s +
+	"\"who\": \""s + who + "\","s +
+	"\"key\": \""s + name + "\"}");
+    }
+    cmd.wait();
+    dout(10) << "ceph_foreign_option_get (mon command) " << who << " " << name << " = "
+	     << cmd.outbl.to_str() << dendl;
+    with_gil_t gil(no_gil);
+    return get_python_typed_option_value(opt->type, cmd.outbl.to_str());
+  }
+
+  // mimic the behavor of mon/ConfigMonitor's 'config get' command
+  EntityName entity;
+  if (!entity.from_str(who) &&
+      !entity.from_str(who + ".")) {
+    dout(5) << "unrecognized entity '" << who << "'" << dendl;
+    PyErr_Format(PyExc_KeyError, "invalid entity: %s", who.c_str());
+    return nullptr;
+  }
+
+  without_gil_t no_gil;
+  lock.lock();
+
+  // FIXME: this is super inefficient, since we generate the entire daemon
+  // config just to extract one value from it!
+
+  std::map<std::string,std::string,std::less<>> config;
+  cluster_state.with_osdmap([&](const OSDMap &osdmap) {
+      map<string,string> crush_location;
+      string device_class;
+      if (entity.is_osd()) {
+	osdmap.crush->get_full_location(who, &crush_location);
+	int id = atoi(entity.get_id().c_str());
+	const char *c = osdmap.crush->get_item_class(id);
+	if (c) {
+	  device_class = c;
+	}
+	dout(10) << __func__ << " crush_location " << crush_location
+		 << " class " << device_class << dendl;
+      }
+
+      std::map<std::string,pair<std::string,const MaskedOption*>> src;
+      config = config_map.generate_entity_map(
+	entity,
+	crush_location,
+	osdmap.crush.get(),
+	device_class,
+	&src);
+    });
+
+  // get a single value
+  string value;
+  auto p = config.find(name);
+  if (p != config.end()) {
+    value = p->second;
+  } else {
+    if (!entity.is_client() &&
+	!boost::get<boost::blank>(&opt->daemon_value)) {
+      value = Option::to_str(opt->daemon_value);
+    } else {
+      value = Option::to_str(opt->value);
+    }
+  }
+
+  dout(10) << "ceph_foreign_option_get (configmap) " << who << " " << name << " = "
+	   << value << dendl;
+  lock.unlock();
+  with_gil_t with_gil(no_gil);
+  return get_python_typed_option_value(opt->type, value);
 }
 
 void ActivePyModules::set_health_checks(const std::string& module_name,
@@ -926,12 +1196,12 @@ void ActivePyModules::set_health_checks(const std::string& module_name,
 {
   bool changed = false;
 
-  lock.Lock();
+  lock.lock();
   auto p = modules.find(module_name);
   if (p != modules.end()) {
     changed = p->second->set_health_checks(std::move(checks));
   }
-  lock.Unlock();
+  lock.unlock();
 
   // immediately schedule a report to be sent to the monitors with the new
   // health checks that have changed. This is done asynchronusly to avoid
@@ -974,7 +1244,7 @@ void ActivePyModules::get_health_checks(health_check_map_t *checks)
 {
   std::lock_guard l(lock);
   for (auto& [name, module] : modules) {
-    dout(15) << "getting health checks for" << name << dendl;
+    dout(15) << "getting health checks for " << name << dendl;
     module->get_health_checks(checks);
   }
 }
@@ -982,12 +1252,14 @@ void ActivePyModules::get_health_checks(health_check_map_t *checks)
 void ActivePyModules::update_progress_event(
   const std::string& evid,
   const std::string& desc,
-  float progress)
+  float progress,
+  bool add_to_ceph_s)
 {
   std::lock_guard l(lock);
   auto& pe = progress_events[evid];
   pe.message = desc;
   pe.progress = progress;
+  pe.add_to_ceph_s = add_to_ceph_s;
 }
 
 void ActivePyModules::complete_progress_event(const std::string& evid)
@@ -1015,9 +1287,10 @@ void ActivePyModules::config_notify()
     // Send all python calls down a Finisher to avoid blocking
     // C++ code, and avoid any potential lock cycles.
     dout(15) << "notify (config) " << name << dendl;
-    finisher.queue(new FunctionContext([module](int r){
-					 module->config_notify();
-				       }));
+    // workaround for https://bugs.llvm.org/show_bug.cgi?id=35984
+    finisher.queue(new LambdaContext([module=module](int r){
+      module->config_notify();
+    }));
   }
 }
 
@@ -1031,14 +1304,44 @@ void ActivePyModules::set_uri(const std::string& module_name,
   modules.at(module_name)->set_uri(uri);
 }
 
-OSDPerfMetricQueryID ActivePyModules::add_osd_perf_query(
+void ActivePyModules::set_device_wear_level(const std::string& devid,
+					    float wear_level)
+{
+  // update mgr state
+  map<string,string> meta;
+  daemon_state.with_device(
+    devid,
+    [wear_level, &meta] (DeviceState& dev) {
+      dev.set_wear_level(wear_level);
+      meta = dev.metadata;
+    });
+
+  // tell mon
+  json_spirit::Object json_object;
+  for (auto& i : meta) {
+    json_spirit::Config::add(json_object, i.first, i.second);
+  }
+  bufferlist json;
+  json.append(json_spirit::write(json_object));
+  const string cmd =
+    "{"
+    "\"prefix\": \"config-key set\", "
+    "\"key\": \"device/" + devid + "\""
+    "}";
+
+  Command set_cmd;
+  set_cmd.run(&monc, cmd, json);
+  set_cmd.wait();
+}
+
+MetricQueryID ActivePyModules::add_osd_perf_query(
     const OSDPerfMetricQuery &query,
     const std::optional<OSDPerfMetricLimit> &limit)
 {
   return server.add_osd_perf_query(query, limit);
 }
 
-void ActivePyModules::remove_osd_perf_query(OSDPerfMetricQueryID query_id)
+void ActivePyModules::remove_osd_perf_query(MetricQueryID query_id)
 {
   int r = server.remove_osd_perf_query(query_id);
   if (r < 0) {
@@ -1047,11 +1350,10 @@ void ActivePyModules::remove_osd_perf_query(OSDPerfMetricQueryID query_id)
   }
 }
 
-PyObject *ActivePyModules::get_osd_perf_counters(OSDPerfMetricQueryID query_id)
+PyObject *ActivePyModules::get_osd_perf_counters(MetricQueryID query_id)
 {
-  std::map<OSDPerfMetricKey, PerformanceCounters> counters;
-
-  int r = server.get_osd_perf_counters(query_id, &counters);
+  OSDPerfCollector collector(query_id);
+  int r = server.get_osd_perf_counters(&collector);
   if (r < 0) {
     dout(0) << "get_osd_perf_counters for query_id=" << query_id << " failed: "
             << cpp_strerror(r) << dendl;
@@ -1059,11 +1361,10 @@ PyObject *ActivePyModules::get_osd_perf_counters(OSDPerfMetricQueryID query_id)
   }
 
   PyFormatter f;
+  const std::map<OSDPerfMetricKey, PerformanceCounters> &counters = collector.counters;
 
   f.open_array_section("counters");
-  for (auto &it : counters) {
-    auto &key = it.first;
-    auto  &instance_counters = it.second;
+  for (auto &[key, instance_counters] : counters) {
     f.open_object_section("i");
     f.open_array_section("k");
     for (auto &sub_key : key) {
@@ -1089,14 +1390,113 @@ PyObject *ActivePyModules::get_osd_perf_counters(OSDPerfMetricQueryID query_id)
   return f.get();
 }
 
+MetricQueryID ActivePyModules::add_mds_perf_query(
+    const MDSPerfMetricQuery &query,
+    const std::optional<MDSPerfMetricLimit> &limit)
+{
+  return server.add_mds_perf_query(query, limit);
+}
+
+void ActivePyModules::remove_mds_perf_query(MetricQueryID query_id)
+{
+  int r = server.remove_mds_perf_query(query_id);
+  if (r < 0) {
+    dout(0) << "remove_mds_perf_query for query_id=" << query_id << " failed: "
+            << cpp_strerror(r) << dendl;
+  }
+}
+
+PyObject *ActivePyModules::get_mds_perf_counters(MetricQueryID query_id)
+{
+  MDSPerfCollector collector(query_id);
+  int r = server.get_mds_perf_counters(&collector);
+  if (r < 0) {
+    dout(0) << "get_mds_perf_counters for query_id=" << query_id << " failed: "
+            << cpp_strerror(r) << dendl;
+    Py_RETURN_NONE;
+  }
+
+  PyFormatter f;
+  const std::map<MDSPerfMetricKey, PerformanceCounters> &counters = collector.counters;
+
+  f.open_array_section("metrics");
+
+  f.open_array_section("delayed_ranks");
+  f.dump_string("ranks", stringify(collector.delayed_ranks).c_str());
+  f.close_section(); // delayed_ranks
+
+  f.open_array_section("counters");
+  for (auto &[key, instance_counters] : counters) {
+    f.open_object_section("i");
+    f.open_array_section("k");
+    for (auto &sub_key : key) {
+      f.open_array_section("s");
+      for (size_t i = 0; i < sub_key.size(); i++) {
+        f.dump_string(stringify(i).c_str(), sub_key[i]);
+      }
+      f.close_section(); // s
+    }
+    f.close_section(); // k
+    f.open_array_section("c");
+    for (auto &c : instance_counters) {
+      f.open_array_section("p");
+      f.dump_unsigned("0", c.first);
+      f.dump_unsigned("1", c.second);
+      f.close_section(); // p
+    }
+    f.close_section(); // c
+    f.close_section(); // i
+  }
+  f.close_section(); // counters
+  f.close_section(); // metrics
+
+  return f.get();
+}
+
 void ActivePyModules::cluster_log(const std::string &channel, clog_type prio,
   const std::string &message)
 {
   std::lock_guard l(lock);
 
-  if (channel == "audit") {
-    audit_clog->do_log(prio, message);
-  } else {
-    clog->do_log(prio, message);
-  }
+  auto cl = monc.get_log_client()->create_channel(channel);
+  map<string,string> log_to_monitors;
+  map<string,string> log_to_syslog;
+  map<string,string> log_channel;
+  map<string,string> log_prio;
+  map<string,string> log_to_graylog;
+  map<string,string> log_to_graylog_host;
+  map<string,string> log_to_graylog_port;
+  uuid_d fsid;
+  string host;
+  if (parse_log_client_options(g_ceph_context, log_to_monitors, log_to_syslog,
+			       log_channel, log_prio, log_to_graylog,
+			       log_to_graylog_host, log_to_graylog_port,
+			       fsid, host) == 0)
+    cl->update_config(log_to_monitors, log_to_syslog,
+		      log_channel, log_prio, log_to_graylog,
+		      log_to_graylog_host, log_to_graylog_port,
+		      fsid, host);
+  cl->do_log(prio, message);
+}
+
+void ActivePyModules::register_client(std::string_view name, std::string addrs)
+{
+  std::lock_guard l(lock);
+
+  entity_addrvec_t addrv;
+  addrv.parse(addrs.data());
+
+  dout(7) << "registering msgr client handle " << addrv << dendl;
+  py_module_registry.register_client(name, std::move(addrv));
+}
+
+void ActivePyModules::unregister_client(std::string_view name, std::string addrs)
+{
+  std::lock_guard l(lock);
+
+  entity_addrvec_t addrv;
+  addrv.parse(addrs.data());
+
+  dout(7) << "unregistering msgr client handle " << addrv << dendl;
+  py_module_registry.unregister_client(name, addrv);
 }

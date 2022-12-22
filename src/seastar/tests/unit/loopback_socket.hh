@@ -26,10 +26,9 @@
 #include <seastar/core/circular_buffer.hh>
 #include <seastar/core/shared_ptr.hh>
 #include <seastar/core/queue.hh>
-#include <seastar/core/future-util.hh>
+#include <seastar/core/loop.hh>
 #include <seastar/core/do_with.hh>
 #include <seastar/net/stack.hh>
-#include <seastar/core/reactor.hh>
 #include <seastar/core/sharded.hh>
 
 namespace seastar {
@@ -106,7 +105,11 @@ public:
     }
     future<> close() override {
         return smp::submit_to(_buffer.get_owner_shard(), [this] {
-            return _buffer->push({});
+            return _buffer->push({}).handle_exception_type([] (std::system_error& err) {
+                if (err.code().value() != EPIPE) {
+                    throw err;
+                }
+            });
         });
     }
 };
@@ -157,7 +160,7 @@ public:
         _rx->shutdown();
     }
     void shutdown_output() override {
-        smp::submit_to(_tx.get_owner_shard(), [this] {
+        (void)smp::submit_to(_tx.get_owner_shard(), [this] {
             // FIXME: who holds to _tx?
             _tx->shutdown();
         });
@@ -175,6 +178,12 @@ public:
     net::keepalive_params get_keepalive_parameters() const override {
         return net::tcp_keepalive_params {std::chrono::seconds(0), std::chrono::seconds(0), 0};
     }
+    void set_sockopt(int level, int optname, const void* data, size_t len) override {
+        throw std::runtime_error("Setting custom socket options is not supported for loopback");
+    }
+    int get_sockopt(int level, int optname, void* data, size_t len) const override {
+        throw std::runtime_error("Getting custom socket options is not supported for loopback");
+    }
 };
 
 class loopback_server_socket_impl : public net::server_socket_impl {
@@ -183,13 +192,17 @@ public:
     explicit loopback_server_socket_impl(lw_shared_ptr<queue<connected_socket>> q)
             : _pending(std::move(q)) {
     }
-    future<connected_socket, socket_address> accept() override {
+    future<accept_result> accept() override {
         return _pending->pop_eventually().then([] (connected_socket&& cs) {
-            return make_ready_future<connected_socket, socket_address>(std::move(cs), socket_address());
+            return make_ready_future<accept_result>(accept_result{std::move(cs), socket_address()});
         });
     }
     void abort_accept() override {
         _pending->abort(std::make_exception_ptr(std::system_error(ECONNABORTED, std::system_category())));
+    }
+    socket_address local_address() const override {
+        // CMH dummy
+        return {};
     }
 };
 
@@ -202,16 +215,16 @@ public:
         _pending.resize(smp::count);
     }
     server_socket get_server_socket() {
-       if (!_pending[engine().cpu_id()]) {
-           _pending[engine().cpu_id()] = make_lw_shared<queue<connected_socket>>(10);
+       if (!_pending[this_shard_id()]) {
+           _pending[this_shard_id()] = make_lw_shared<queue<connected_socket>>(10);
        }
-       return server_socket(std::make_unique<loopback_server_socket_impl>(_pending[engine().cpu_id()]));
+       return server_socket(std::make_unique<loopback_server_socket_impl>(_pending[this_shard_id()]));
     }
     future<> make_new_server_connection(foreign_ptr<lw_shared_ptr<loopback_buffer>> b1, lw_shared_ptr<loopback_buffer> b2) {
-        if (!_pending[engine().cpu_id()]) {
-            _pending[engine().cpu_id()] = make_lw_shared<queue<connected_socket>>(10);
+        if (!_pending[this_shard_id()]) {
+            _pending[this_shard_id()] = make_lw_shared<queue<connected_socket>>(10);
         }
-        return _pending[engine().cpu_id()]->push_eventually(connected_socket(std::make_unique<loopback_connected_socket_impl>(std::move(b1), b2)));
+        return _pending[this_shard_id()]->push_eventually(connected_socket(std::make_unique<loopback_connected_socket_impl>(std::move(b1), b2)));
     }
     connected_socket make_new_client_connection(lw_shared_ptr<loopback_buffer> b1, foreign_ptr<lw_shared_ptr<loopback_buffer>> b2) {
         return connected_socket(std::make_unique<loopback_connected_socket_impl>(std::move(b2), b1));
@@ -221,6 +234,11 @@ public:
     }
     void destroy_shard(unsigned shard) {
         _pending[shard] = nullptr;
+    }
+    future<> destroy_all_shards() {
+        return smp::invoke_on_all([this] () {
+            destroy_shard(this_shard_id());
+        });
     }
 };
 
@@ -233,7 +251,7 @@ public:
     loopback_socket_impl(loopback_connection_factory& factory, loopback_error_injector* error_injector = nullptr)
             : _factory(factory), _error_injector(error_injector)
     { }
-    future<connected_socket> connect(socket_address sa, socket_address local, seastar::transport proto = seastar::transport::TCP) {
+    future<connected_socket> connect(socket_address sa, socket_address local, seastar::transport proto = seastar::transport::TCP) override {
         auto shard = _factory.next_shard();
         _b1 = make_lw_shared<loopback_buffer>(_error_injector, loopback_buffer::type::SERVER_TX);
         return smp::submit_to(shard, [this, b1 = make_foreign(_b1)] () mutable {
@@ -242,14 +260,16 @@ public:
             return _factory.make_new_server_connection(std::move(b1), b2).then([b2] {
                 return make_foreign(b2);
             });
-        }).then([this, shard] (foreign_ptr<lw_shared_ptr<loopback_buffer>> b2) {
+        }).then([this] (foreign_ptr<lw_shared_ptr<loopback_buffer>> b2) {
             return _factory.make_new_client_connection(_b1, std::move(b2));
         });
     }
+    virtual void set_reuseaddr(bool reuseaddr) override {}
+    virtual bool get_reuseaddr() const override { return false; };
 
-    void shutdown() {
+    void shutdown() override {
         _b1->shutdown();
-        smp::submit_to(_b2.get_owner_shard(), [this, b2 = std::move(_b2)] {
+        (void)smp::submit_to(_b2.get_owner_shard(), [b2 = std::move(_b2)] {
             b2->shutdown();
         });
     }

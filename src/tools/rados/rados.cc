@@ -116,7 +116,7 @@ void usage(ostream& out)
 "   listomapvals <obj-name>          list the keys and vals in the object map \n"
 "   getomapval <obj-name> <key> [file] show the value for the specified key\n"
 "                                    in the object's object map\n"
-"   setomapval <obj-name> <key> <val>\n"
+"   setomapval <obj-name> <key> <val | --input-file file>\n"
 "   rmomapkey <obj-name> <key>\n"
 "   clearomap <obj-name> [obj-name2 obj-name3...] clear all the omap keys for the specified objects\n"
 "   getomapheader <obj-name> [file]\n"
@@ -132,6 +132,8 @@ void usage(ostream& out)
 "                                    convert an object to chunked object\n"
 "   tier-promote <obj-name>	     promote the object to the base tier\n"
 "   unset-manifest <obj-name>	     unset redirect or chunked object\n"
+"   tier-flush <obj-name>	     flush the chunked object\n"
+"   tier-evict <obj-name>	     evict the chunked object\n"
 "\n"
 "IMPORT AND EXPORT\n"
 "   export [filename]\n"
@@ -142,9 +144,9 @@ void usage(ostream& out)
 "ADVISORY LOCKS\n"
 "   lock list <obj-name>\n"
 "       List all advisory locks on an object\n"
-"   lock get <obj-name> <lock-name>\n"
+"   lock get <obj-name> <lock-name> [--lock-cookie locker-cookie] [--lock-tag locker-tag] [--lock-description locker-desc] [--lock-duration locker-dur] [--lock-type locker-type]\n"
 "       Try to acquire a lock\n"
-"   lock break <obj-name> <lock-name> <locker-name>\n"
+"   lock break <obj-name> <lock-name> <locker-name> [--lock-cookie locker-cookie]\n"
 "       Try to break a lock acquired by another client\n"
 "   lock info <obj-name> <lock-name>\n"
 "       Show lock information\n"
@@ -169,7 +171,7 @@ void usage(ostream& out)
 "   cache-try-flush-evict-all        try-flush+evict all objects\n"
 "\n"
 "GLOBAL OPTIONS:\n"
-"   --object_locator object_locator\n"
+"   --object-locator object_locator\n"
 "        set object_locator for operation\n"
 "   -p pool\n"
 "   --pool=pool\n"
@@ -191,6 +193,8 @@ void usage(ostream& out)
 "   -s name\n"
 "   --snap name\n"
 "        select given snap name for (read) IO\n"
+"   --input-file file\n"
+"        use the content of the specified file in place of <val>\n"
 "   --create\n"
 "        create the pool or directory that was specified\n"
 "   -N namespace\n"
@@ -239,11 +243,16 @@ void usage(ostream& out)
 "   --read-percent                   percent of operations that are read\n"
 "   --target-throughput              target throughput (in bytes)\n"
 "   --run-length                     total time (in seconds)\n"
-"   --offset-align                   at what boundary to align random op offsets"
+"   --offset-align                   at what boundary to align random op offsets\n"
+"\n"
 "CACHE POOLS OPTIONS:\n"
 "   --with-clones                    include clones when doing flush or evict\n"
+"\n"
 "OMAP OPTIONS:\n"
-"    --omap-key-file file            read the omap key from a file\n";
+"    --omap-key-file file            read the omap key from a file\n"
+"\n"
+"GENERIC OPTIONS:\n";
+  generic_client_usage();
 }
 
 namespace detail {
@@ -411,6 +420,7 @@ void dump_name(Formatter *formatter, const librados::NObjectIterator& i, [[maybe
 } // namespace detail
 
 unsigned default_op_size = 1 << 22;
+static const unsigned MAX_OMAP_BYTES_PER_REQUEST = 1 << 10;
 
 [[noreturn]] static void usage_exit()
 {
@@ -438,7 +448,7 @@ static int dump_data(std::string const &filename, bufferlist const &data)
   if (filename == "-") {
     fd = STDOUT_FILENO;
   } else {
-    fd = TEMP_FAILURE_RETRY(::open(filename.c_str(), O_WRONLY|O_CREAT|O_TRUNC, 0644));
+    fd = TEMP_FAILURE_RETRY(::open(filename.c_str(), O_WRONLY|O_CREAT|O_TRUNC|O_BINARY, 0644));
     if (fd < 0) {
       int err = errno;
       cerr << "failed to open file: " << cpp_strerror(err) << std::endl;
@@ -462,7 +472,7 @@ static int do_get(IoCtx& io_ctx, const std::string& oid, const char *outfile, un
   if (strcmp(outfile, "-") == 0) {
     fd = STDOUT_FILENO;
   } else {
-    fd = TEMP_FAILURE_RETRY(::open(outfile, O_WRONLY|O_CREAT|O_TRUNC, 0644));
+    fd = TEMP_FAILURE_RETRY(::open(outfile, O_WRONLY|O_CREAT|O_TRUNC|O_BINARY, 0644));
     if (fd < 0) {
       int err = errno;
       cerr << "failed to open file: " << cpp_strerror(err) << std::endl;
@@ -499,8 +509,8 @@ static int do_get(IoCtx& io_ctx, const std::string& oid, const char *outfile, un
 static int do_copy(IoCtx& io_ctx, const char *objname,
 		   IoCtx& target_ctx, const char *target_obj)
 {
-  __le32 src_fadvise_flags = LIBRADOS_OP_FLAG_FADVISE_SEQUENTIAL | LIBRADOS_OP_FLAG_FADVISE_NOCACHE;
-  __le32 dest_fadvise_flags = LIBRADOS_OP_FLAG_FADVISE_SEQUENTIAL | LIBRADOS_OP_FLAG_FADVISE_DONTNEED;
+  uint32_t src_fadvise_flags = LIBRADOS_OP_FLAG_FADVISE_SEQUENTIAL | LIBRADOS_OP_FLAG_FADVISE_NOCACHE;
+  uint32_t dest_fadvise_flags = LIBRADOS_OP_FLAG_FADVISE_SEQUENTIAL | LIBRADOS_OP_FLAG_FADVISE_DONTNEED;
   ObjectWriteOperation op;
   op.copy_from(objname, io_ctx, 0, src_fadvise_flags);
   op.set_op_flags2(dest_fadvise_flags);
@@ -551,14 +561,14 @@ static int do_copy_pool(Rados& rados, const char *src_pool, const char *target_p
 
 static int do_put(IoCtx& io_ctx, 
             const std::string& oid, const char *infile, int op_size,
-            uint64_t obj_offset,
+            uint64_t obj_offset, bool create_object,
             const bool use_striper)
 {
   bool stdio = (strcmp(infile, "-") == 0);
   int ret = 0;
   int fd = STDIN_FILENO;
   if (!stdio)
-    fd = open(infile, O_RDONLY);
+    fd = open(infile, O_RDONLY|O_BINARY);
   if (fd < 0) {
     cerr << "error reading input file " << infile << ": " << cpp_strerror(errno) << std::endl;
     return 1;
@@ -593,7 +603,7 @@ static int do_put(IoCtx& io_ctx,
      continue;
     }
 
-    if (0 == offset)
+    if (0 == offset && create_object)
       ret = detail::write_full(io_ctx, oid, indata, use_striper);
     else
       ret = detail::write(io_ctx, oid, indata, count, offset, use_striper);
@@ -618,7 +628,7 @@ static int do_append(IoCtx& io_ctx,
   int ret = 0;
   int fd = STDIN_FILENO;
   if (!stdio)
-    fd = open(infile, O_RDONLY);
+    fd = open(infile, O_RDONLY|O_BINARY);
   if (fd < 0) {
     cerr << "error reading input file " << infile << ": " << cpp_strerror(errno) << std::endl;
     return 1;
@@ -764,10 +774,10 @@ public:
     return total;
   }
 
-  Mutex lock;
-  Cond cond;
+  ceph::mutex lock = ceph::make_mutex("LoadGen");
+  ceph::condition_variable cond;
 
-  explicit LoadGen(Rados *_rados) : rados(_rados), going_down(false), lock("LoadGen") {
+  explicit LoadGen(Rados *_rados) : rados(_rados), going_down(false) {
     read_percent = 80;
     min_obj_len = 1024;
     max_obj_len = 5ull * 1024ull * 1024ull * 1024ull;
@@ -788,7 +798,7 @@ public:
   void cleanup();
 
   void io_cb(completion_t c, LoadGenOp *op) {
-    Mutex::Locker l(lock);
+    std::lock_guard l{lock};
 
     total_completed += op->len;
 
@@ -807,7 +817,7 @@ public:
 
     delete op;
 
-    cond.Signal();
+    cond.notify_all();
   }
 };
 
@@ -860,7 +870,7 @@ int LoadGen::bootstrap(const char *pool)
       }
     }
 
-    librados::AioCompletion *c = rados->aio_create_completion(NULL, NULL, NULL);
+    librados::AioCompletion *c = rados->aio_create_completion(nullptr, nullptr);
     completions.push_back(c);
     // generate object
     ret = io_ctx.aio_write(info.name, c, bl, buf_len, info.len - buf_len);
@@ -887,7 +897,7 @@ int LoadGen::bootstrap(const char *pool)
 
 void LoadGen::run_op(LoadGenOp *op)
 {
-  op->completion = rados->aio_create_completion(op, _load_gen_cb, NULL);
+  op->completion = rados->aio_create_completion(op, _load_gen_cb);
 
   switch (op->type) {
   case OP_READ:
@@ -936,14 +946,14 @@ void LoadGen::gen_op(LoadGenOp *op)
 
 uint64_t LoadGen::gen_next_op()
 {
-  lock.Lock();
+  lock.lock();
 
   LoadGenOp *op = new LoadGenOp(this);
   gen_op(op);
   op->id = max_op++;
   pending_ops[op->id] = op;
 
-  lock.Unlock();
+  lock.unlock();
 
   run_op(op);
 
@@ -959,20 +969,20 @@ int LoadGen::run()
   uint32_t total_sec = 0;
 
   while (1) {
-    lock.Lock();
-    utime_t one_second(1, 0);
-    cond.WaitInterval(lock, one_second);
-    lock.Unlock();
+    {
+      std::unique_lock l{lock};
+      cond.wait_for(l, 1s);
+    }
     utime_t now = ceph_clock_now();
 
     if (now > end_time)
       break;
 
     uint64_t expected = total_expected();
-    lock.Lock();
+    lock.lock();
     uint64_t sent = total_sent;
     uint64_t completed = total_completed;
-    lock.Unlock();
+    lock.unlock();
 
     if (now - stamp_time >= utime_t(1, 0)) {
       double rate = (double)cur_completed_rate() / (1024 * 1024);
@@ -993,14 +1003,14 @@ int LoadGen::run()
 
   // get a reference to all pending requests
   vector<librados::AioCompletion *> completions;
-  lock.Lock();
+  lock.lock();
   going_down = true;
   map<int, LoadGenOp *>::iterator iter;
   for (iter = pending_ops.begin(); iter != pending_ops.end(); ++iter) {
     LoadGenOp *op = iter->second;
     completions.push_back(op->completion);
   }
-  lock.Unlock();
+  lock.unlock();
 
   cout << "waiting for all operations to complete" << std::endl;
 
@@ -1050,7 +1060,7 @@ protected:
     completions = NULL;
   }
   int create_completion(int slot, void (*cb)(void *, void*), void *arg) override {
-    completions[slot] = rados.aio_create_completion((void *) arg, 0, cb);
+    completions[slot] = rados.aio_create_completion((void *) arg, cb);
 
     if (!completions[slot])
       return -EINVAL;
@@ -1112,11 +1122,11 @@ protected:
   }
 
   bool completion_is_done(int slot) override {
-    return completions[slot]->is_safe();
+    return completions[slot] && completions[slot]->is_complete();
   }
 
   int completion_wait(int slot) override {
-    return completions[slot]->wait_for_safe_and_cb();
+    return completions[slot]->wait_for_complete_and_cb();
   }
   int completion_ret(int slot) override {
     return completions[slot]->get_return_value();
@@ -1176,7 +1186,7 @@ static int do_lock_cmd(std::vector<const char*> &nargs,
   string lock_cookie;
   string lock_description;
   int lock_duration = 0;
-  ClsLockType lock_type = LOCK_EXCLUSIVE;
+  ClsLockType lock_type = ClsLockType::EXCLUSIVE;
 
   map<string, string>::const_iterator i;
   i = opts.find("lock-tag");
@@ -1201,9 +1211,9 @@ static int do_lock_cmd(std::vector<const char*> &nargs,
   if (i != opts.end()) {
     const string& type_str = i->second;
     if (type_str.compare("exclusive") == 0) {
-      lock_type = LOCK_EXCLUSIVE;
+      lock_type = ClsLockType::EXCLUSIVE;
     } else if (type_str.compare("shared") == 0) {
-      lock_type = LOCK_SHARED;
+      lock_type = ClsLockType::SHARED;
     } else {
       cerr << "unknown lock type was specified, aborting" << std::endl;
       return -EINVAL;
@@ -1240,7 +1250,7 @@ static int do_lock_cmd(std::vector<const char*> &nargs,
 
   if (cmd.compare("info") == 0) {
     map<rados::cls::lock::locker_id_t, rados::cls::lock::locker_info_t> lockers;
-    ClsLockType type = LOCK_NONE;
+    ClsLockType type = ClsLockType::NONE;
     string tag;
     int ret = rados::cls::lock::get_lock_info(ioctx, oid, lock_name, &lockers, &type, &tag);
     if (ret < 0) {
@@ -1278,7 +1288,7 @@ static int do_lock_cmd(std::vector<const char*> &nargs,
     l.set_description(lock_description);
     int ret;
     switch (lock_type) {
-    case LOCK_SHARED:
+    case ClsLockType::SHARED:
       ret = l.lock_shared(ioctx, oid);
       break;
     default:
@@ -1327,7 +1337,7 @@ static int do_cache_flush(IoCtx& io_ctx, string oid)
 		     librados::OPERATION_IGNORE_CACHE |
 		     librados::OPERATION_IGNORE_OVERLAY,
 		     NULL);
-  completion->wait_for_safe();
+  completion->wait_for_complete();
   int r = completion->get_return_value();
   completion->release();
   return r;
@@ -1344,7 +1354,7 @@ static int do_cache_try_flush(IoCtx& io_ctx, string oid)
 		     librados::OPERATION_IGNORE_OVERLAY |
 		     librados::OPERATION_SKIPRWLOCKS,
 		     NULL);
-  completion->wait_for_safe();
+  completion->wait_for_complete();
   int r = completion->get_return_value();
   completion->release();
   return r;
@@ -1361,7 +1371,7 @@ static int do_cache_evict(IoCtx& io_ctx, string oid)
 		     librados::OPERATION_IGNORE_OVERLAY |
 		     librados::OPERATION_SKIPRWLOCKS,
 		     NULL);
-  completion->wait_for_safe();
+  completion->wait_for_complete();
   int r = completion->get_return_value();
   completion->release();
   return r;
@@ -1786,7 +1796,7 @@ static int do_get_inconsistent_cmd(const std::vector<const char*> &nargs,
     auto completion = librados::Rados::aio_create_completion();
     ret = do_get_inconsistent(rados, pg, start, max_item_num, completion,
 			      &items, &interval);
-    completion->wait_for_safe();
+    completion->wait_for_complete();
     ret = completion->get_return_value();
     completion->release();
     if (ret < 0) {
@@ -1853,6 +1863,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
   unsigned object_size = 0;
   unsigned max_objects = 0;
   uint64_t obj_offset = 0;
+  bool obj_offset_specified = false;
   bool block_size_specified = false;
   int bench_write_dest = 0;
   bool cleanup = true;
@@ -1888,6 +1899,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
   const char *output = NULL;
   std::optional<std::string> omap_key;
   std::optional<std::string> obj_name;
+  std::string input_file;
   bool with_reference = false;
 
   Rados rados;
@@ -1961,6 +1973,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     if (rados_sistrtoll(i, &obj_offset)) {
       return -EINVAL;
     }
+    obj_offset_specified = true;
   }
   i = opts.find("snap");
   if (i != opts.end()) {
@@ -2121,6 +2134,10 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
   if (i != opts.end()) {
     with_reference = true;
   }
+  i = opts.find("input_file");
+  if (i != opts.end()) {
+    input_file = i->second;
+  }
 
   // open rados
   ret = rados.init_with_context(g_ceph_context);
@@ -2224,7 +2241,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
   }
   if (oloc.size()) {
     if (!pool_name) {
-      cerr << "pool name must be specified with --object_locator" << std::endl;
+      cerr << "pool name must be specified with --object-locator" << std::endl;
       return 1;
     }
     io_ctx.locator_set_key(oloc);
@@ -2608,7 +2625,8 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       obj_name = nargs[1];
       in_filename = nargs[2];
     }
-    ret = do_put(io_ctx, *obj_name, in_filename, op_size, obj_offset, use_striper);
+    bool create_object = !obj_offset_specified;
+    ret = do_put(io_ctx, *obj_name, in_filename, op_size, obj_offset, create_object, use_striper);
     if (ret < 0) {
       cerr << "error putting " << pool_name << "/" << prettify(*obj_name) << ": " << cpp_strerror(ret) << std::endl;
       return 1;
@@ -2819,7 +2837,14 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     }
 
     bufferlist bl;
-    if (nargs.size() > min_args) {
+    if (!input_file.empty()) {
+      string err;
+      ret = bl.read_file(input_file.c_str(), &err);
+      if (ret < 0) {
+        cerr << "error reading file " << input_file.c_str() << ": " << err << std::endl;
+        return 1;
+      }
+    } else if (nargs.size() > min_args) {
       string val(nargs[min_args]);
       bl.append(val);
     } else {
@@ -2945,10 +2970,9 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       obj_name = nargs[1];
     }
     string last_read = "";
-    int MAX_READ = 512;
     do {
       map<string, bufferlist> values;
-      ret = io_ctx.omap_get_vals(*obj_name, last_read, MAX_READ, &values);
+      ret = io_ctx.omap_get_vals(*obj_name, last_read, MAX_OMAP_BYTES_PER_REQUEST, &values);
       if (ret < 0) {
 	cerr << "error getting omap keys " << pool_name << "/" << prettify(*obj_name) << ": "
 	     << cpp_strerror(ret) << std::endl;
@@ -2973,7 +2997,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
 	it->second.hexdump(cout);
 	cout << std::endl;
       }
-    } while (ret == MAX_READ);
+    } while (ret == MAX_OMAP_BYTES_PER_REQUEST);
     ret = 0;
   }
   else if (strcmp(nargs[0], "cp") == 0) {
@@ -3119,7 +3143,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
       return 1;
     }
     io_ctx.set_namespace(all_nspaces);
-    io_ctx.set_osdmap_full_try();
+    io_ctx.set_pool_full_try();
     RadosBencher bencher(g_ceph_context, rados, io_ctx);
     ret = bencher.clean_up_slow("", concurrent_ios);
     if (ret >= 0) {
@@ -3427,18 +3451,22 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     if (!obj_name) {
       obj_name = nargs[1];
     }
-    set<string> out_keys;
-    ret = io_ctx.omap_get_keys(*obj_name, "", LONG_MAX, &out_keys);
-    if (ret < 0) {
-      cerr << "error getting omap key set " << pool_name << "/"
-	   << prettify(*obj_name) << ": "  << cpp_strerror(ret) << std::endl;
-      return 1;
-    }
+    string last_read;
+    bool more = true;
+    do {
+      set<string> out_keys;
+      ret = io_ctx.omap_get_keys2(*obj_name, last_read, MAX_OMAP_BYTES_PER_REQUEST, &out_keys, &more);
+      if (ret < 0) {
+        cerr << "error getting omap key set " << pool_name << "/"
+             << prettify(*obj_name) << ": "  << cpp_strerror(ret) << std::endl;
+        return 1;
+      }
 
-    for (set<string>::iterator iter = out_keys.begin();
-	 iter != out_keys.end(); ++iter) {
-      cout << *iter << std::endl;
-    }
+      for (auto &key : out_keys) {
+        cout << key << std::endl;
+        last_read = std::move(key);
+      }
+    } while (more);
   } else if (strcmp(nargs[0], "lock") == 0) {
     if (!pool_name) {
       usage(cerr);
@@ -3822,13 +3850,9 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
 
     IoCtx target_ctx;
     ret = rados.ioctx_create(target, target_ctx);
-    ObjectWriteOperation op;
-    if (with_reference) {
-      op.set_chunk(offset, length, target_ctx, tgt_oid, tgt_offset, CEPH_OSD_OP_FLAG_WITH_REFERENCE);
-    } else {
-      op.set_chunk(offset, length, target_ctx, tgt_oid, tgt_offset);
-    }
-    ret = io_ctx.operate(nargs[1], &op);
+    ObjectReadOperation op;
+    op.set_chunk(offset, length, target_ctx, tgt_oid, tgt_offset, CEPH_OSD_OP_FLAG_WITH_REFERENCE);
+    ret = io_ctx.operate(nargs[1], &op, NULL);
     if (ret < 0) {
       cerr << "error set-chunk " << pool_name << "/" << nargs[1] << " " << " offset " << offset
 	    << " length " << length << " target_pool " << target 
@@ -3867,6 +3891,54 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
 	   << cpp_strerror(ret) << std::endl;
       return 1;
     }
+  } else if (strcmp(nargs[0], "tier-flush") == 0) {
+    if (!pool_name || (nargs.size() < 2 && !obj_name)) {
+      usage(cerr);
+      return 1;
+    }
+    if (!obj_name) {
+      obj_name = nargs[1];
+    }
+    ObjectReadOperation op;
+    op.tier_flush();
+    librados::AioCompletion *completion =
+      librados::Rados::aio_create_completion();
+    io_ctx.aio_operate(*obj_name, completion, &op,
+		       librados::OPERATION_IGNORE_CACHE |
+		       librados::OPERATION_IGNORE_OVERLAY,
+		       NULL);
+    completion->wait_for_complete();
+    ret = completion->get_return_value();
+    completion->release();
+    if (ret < 0) {
+      cerr << "error tier-flush " << pool_name << "/" << prettify(*obj_name) << " : "
+	   << cpp_strerror(ret) << std::endl;
+      return 1;
+    }
+  } else if (strcmp(nargs[0], "tier-evict") == 0) {
+    if (!pool_name || (nargs.size() < 2 && !obj_name)) {
+      usage(cerr);
+      return 1;
+    }
+    if (!obj_name) {
+      obj_name = nargs[1];
+    }
+    ObjectReadOperation op;
+    op.tier_evict();
+    librados::AioCompletion *completion =
+      librados::Rados::aio_create_completion();
+    io_ctx.aio_operate(*obj_name, completion, &op,
+		       librados::OPERATION_IGNORE_CACHE |
+		       librados::OPERATION_IGNORE_OVERLAY,
+		       NULL);
+    completion->wait_for_complete();
+    ret = completion->get_return_value();
+    completion->release();
+    if (ret < 0) {
+      cerr << "error tier-evict " << pool_name << "/" << prettify(*obj_name) << " : "
+	   << cpp_strerror(ret) << std::endl;
+      return 1;
+    }
   } else if (strcmp(nargs[0], "export") == 0) {
     // export [filename]
     if (!pool_name || nargs.size() > 2) {
@@ -3878,7 +3950,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     if (nargs.size() < 2 || std::string(nargs[1]) == "-") {
       file_fd = STDOUT_FILENO;
     } else {
-      file_fd = open(nargs[1], O_WRONLY|O_CREAT|O_TRUNC, 0666);
+      file_fd = open(nargs[1], O_WRONLY|O_CREAT|O_TRUNC|O_BINARY, 0666);
       if (file_fd < 0) {
         cerr << "Error opening '" << nargs[1] << "': "
           << cpp_strerror(file_fd) << std::endl;
@@ -3927,7 +3999,7 @@ static int rados_tool_common(const std::map < std::string, std::string > &opts,
     if (filename == "-") {
       file_fd = STDIN_FILENO;
     } else {
-      file_fd = open(filename.c_str(), O_RDONLY);
+      file_fd = open(filename.c_str(), O_RDONLY|O_BINARY);
       if (file_fd < 0) {
         cerr << "Error opening '" << filename << "': "
           << cpp_strerror(file_fd) << std::endl;
@@ -4119,6 +4191,8 @@ int main(int argc, const char **argv)
       opts["with-reference"] = "true";
     } else if (ceph_argparse_witharg(args, i, &val, "--pgid", (char*)NULL)) {
       opts["pgid"] = val;
+    } else if (ceph_argparse_witharg(args, i, &val, "--input-file", (char*)NULL)) {
+      opts["input_file"] = val;
     } else {
       if (val[0] == '-')
         usage_exit();

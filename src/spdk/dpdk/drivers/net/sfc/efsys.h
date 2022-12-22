@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
@@ -48,10 +48,6 @@ extern "C" {
 #include "efx_types.h"
 
 
-#ifndef _NOTE
-#define _NOTE(s)
-#endif
-
 typedef bool boolean_t;
 
 #ifndef B_FALSE
@@ -73,22 +69,7 @@ typedef bool boolean_t;
 #define MIN(v1, v2)	((v1) < (v2) ? (v1) : (v2))
 #endif
 
-/* There are macros for alignment in DPDK, but we need to make a proper
- * correspondence here, if we want to re-use them at all
- */
-#ifndef IS_P2ALIGNED
-#define IS_P2ALIGNED(v, a)	((((uintptr_t)(v)) & ((uintptr_t)(a) - 1)) == 0)
-#endif
-
-#ifndef P2ROUNDUP
-#define P2ROUNDUP(x, align)	(-(-(x) & -(align)))
-#endif
-
-#ifndef P2ALIGN
-#define P2ALIGN(_x, _a)		((_x) & -(_a))
-#endif
-
-#ifndef IS2P
+#ifndef ISP2
 #define ISP2(x)			rte_is_power_of_2(x)
 #endif
 
@@ -105,40 +86,6 @@ prefetch_read_once(const volatile void *addr)
 {
 	rte_prefetch_non_temporal(addr);
 }
-
-/* Modifiers used for Windows builds */
-#define __in
-#define __in_opt
-#define __in_ecount(_n)
-#define __in_ecount_opt(_n)
-#define __in_bcount(_n)
-#define __in_bcount_opt(_n)
-
-#define __out
-#define __out_opt
-#define __out_ecount(_n)
-#define __out_ecount_opt(_n)
-#define __out_bcount(_n)
-#define __out_bcount_opt(_n)
-#define __out_bcount_part(_n, _l)
-#define __out_bcount_part_opt(_n, _l)
-
-#define __deref_out
-
-#define __inout
-#define __inout_opt
-#define __inout_ecount(_n)
-#define __inout_ecount_opt(_n)
-#define __inout_bcount(_n)
-#define __inout_bcount_opt(_n)
-#define __inout_bcount_full_opt(_n)
-
-#define __deref_out_bcount_opt(n)
-
-#define __checkReturn
-#define __success(_x)
-
-#define __drv_when(_p, _c)
 
 /* Code inclusion options */
 
@@ -203,6 +150,10 @@ prefetch_read_once(const volatile void *addr)
 #define EFSYS_OPT_TUNNEL 1
 
 #define EFSYS_OPT_FW_SUBVARIANT_AWARE 1
+
+#define EFSYS_OPT_EVB 0
+
+#define EFSYS_OPT_MCDI_PROXY_AUTH_SERVER 0
 
 /* ID */
 
@@ -273,7 +224,8 @@ typedef struct efsys_mem_s {
 		volatile uint32_t *_addr;				\
 									\
 		_NOTE(CONSTANTCONDITION);				\
-		SFC_ASSERT(IS_P2ALIGNED(_offset, sizeof(efx_dword_t)));	\
+		SFC_ASSERT(EFX_IS_P2ALIGNED(size_t, _offset,		\
+					    sizeof(efx_dword_t)));	\
 									\
 		_addr = (volatile uint32_t *)(_base + (_offset));	\
 		(_edp)->ed_u32[0] = _addr[0];				\
@@ -290,7 +242,8 @@ typedef struct efsys_mem_s {
 		volatile uint64_t *_addr;				\
 									\
 		_NOTE(CONSTANTCONDITION);				\
-		SFC_ASSERT(IS_P2ALIGNED(_offset, sizeof(efx_qword_t)));	\
+		SFC_ASSERT(EFX_IS_P2ALIGNED(size_t, _offset,		\
+					    sizeof(efx_qword_t)));	\
 									\
 		_addr = (volatile uint64_t *)(_base + (_offset));	\
 		(_eqp)->eq_u64[0] = _addr[0];				\
@@ -308,7 +261,8 @@ typedef struct efsys_mem_s {
 		volatile __m128i *_addr;				\
 									\
 		_NOTE(CONSTANTCONDITION);				\
-		SFC_ASSERT(IS_P2ALIGNED(_offset, sizeof(efx_oword_t)));	\
+		SFC_ASSERT(EFX_IS_P2ALIGNED(size_t, _offset,		\
+					    sizeof(efx_oword_t)));	\
 									\
 		_addr = (volatile __m128i *)(_base + (_offset));	\
 		(_eop)->eo_u128[0] = _addr[0];				\
@@ -329,7 +283,8 @@ typedef struct efsys_mem_s {
 		volatile uint32_t *_addr;				\
 									\
 		_NOTE(CONSTANTCONDITION);				\
-		SFC_ASSERT(IS_P2ALIGNED(_offset, sizeof(efx_dword_t)));	\
+		SFC_ASSERT(EFX_IS_P2ALIGNED(size_t, _offset,		\
+					    sizeof(efx_dword_t)));	\
 									\
 		EFSYS_PROBE2(mem_writed, unsigned int, (_offset),	\
 					 uint32_t, (_edp)->ed_u32[0]);	\
@@ -346,7 +301,8 @@ typedef struct efsys_mem_s {
 		volatile uint64_t *_addr;				\
 									\
 		_NOTE(CONSTANTCONDITION);				\
-		SFC_ASSERT(IS_P2ALIGNED(_offset, sizeof(efx_qword_t)));	\
+		SFC_ASSERT(EFX_IS_P2ALIGNED(size_t, _offset,		\
+					    sizeof(efx_qword_t)));	\
 									\
 		EFSYS_PROBE3(mem_writeq, unsigned int, (_offset),	\
 					 uint32_t, (_eqp)->eq_u32[1],	\
@@ -364,7 +320,8 @@ typedef struct efsys_mem_s {
 		volatile __m128i *_addr;				\
 									\
 		_NOTE(CONSTANTCONDITION);				\
-		SFC_ASSERT(IS_P2ALIGNED(_offset, sizeof(efx_oword_t)));	\
+		SFC_ASSERT(EFX_IS_P2ALIGNED(size_t, _offset,		\
+					    sizeof(efx_oword_t)));	\
 									\
 									\
 		EFSYS_PROBE5(mem_writeo, unsigned int, (_offset),	\
@@ -429,7 +386,8 @@ typedef struct efsys_bar_s {
 		volatile uint32_t *_addr;				\
 									\
 		_NOTE(CONSTANTCONDITION);				\
-		SFC_ASSERT(IS_P2ALIGNED(_offset, sizeof(efx_dword_t)));	\
+		SFC_ASSERT(EFX_IS_P2ALIGNED(size_t, _offset,		\
+					    sizeof(efx_dword_t)));	\
 		_NOTE(CONSTANTCONDITION);				\
 		if (_lock)						\
 			SFC_BAR_LOCK(_esbp);				\
@@ -453,7 +411,8 @@ typedef struct efsys_bar_s {
 		volatile uint64_t *_addr;				\
 									\
 		_NOTE(CONSTANTCONDITION);				\
-		SFC_ASSERT(IS_P2ALIGNED(_offset, sizeof(efx_qword_t)));	\
+		SFC_ASSERT(EFX_IS_P2ALIGNED(size_t, _offset,		\
+					    sizeof(efx_qword_t)));	\
 									\
 		SFC_BAR_LOCK(_esbp);					\
 									\
@@ -475,7 +434,8 @@ typedef struct efsys_bar_s {
 		volatile __m128i *_addr;				\
 									\
 		_NOTE(CONSTANTCONDITION);				\
-		SFC_ASSERT(IS_P2ALIGNED(_offset, sizeof(efx_oword_t)));	\
+		SFC_ASSERT(EFX_IS_P2ALIGNED(size_t, _offset,		\
+					    sizeof(efx_oword_t)));	\
 									\
 		_NOTE(CONSTANTCONDITION);				\
 		if (_lock)						\
@@ -505,7 +465,8 @@ typedef struct efsys_bar_s {
 		volatile uint32_t *_addr;				\
 									\
 		_NOTE(CONSTANTCONDITION);				\
-		SFC_ASSERT(IS_P2ALIGNED(_offset, sizeof(efx_dword_t)));	\
+		SFC_ASSERT(EFX_IS_P2ALIGNED(size_t, _offset,		\
+					    sizeof(efx_dword_t)));	\
 									\
 		_NOTE(CONSTANTCONDITION);				\
 		if (_lock)						\
@@ -530,7 +491,8 @@ typedef struct efsys_bar_s {
 		volatile uint64_t *_addr;				\
 									\
 		_NOTE(CONSTANTCONDITION);				\
-		SFC_ASSERT(IS_P2ALIGNED(_offset, sizeof(efx_qword_t)));	\
+		SFC_ASSERT(EFX_IS_P2ALIGNED(size_t, _offset,		\
+					    sizeof(efx_qword_t)));	\
 									\
 		SFC_BAR_LOCK(_esbp);					\
 									\
@@ -564,7 +526,8 @@ typedef struct efsys_bar_s {
 		volatile __m128i *_addr;				\
 									\
 		_NOTE(CONSTANTCONDITION);				\
-		SFC_ASSERT(IS_P2ALIGNED(_offset, sizeof(efx_oword_t)));	\
+		SFC_ASSERT(EFX_IS_P2ALIGNED(size_t, _offset,		\
+					    sizeof(efx_oword_t)));	\
 									\
 		_NOTE(CONSTANTCONDITION);				\
 		if (_lock)						\

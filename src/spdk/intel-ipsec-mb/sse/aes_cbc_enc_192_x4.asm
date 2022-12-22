@@ -29,7 +29,7 @@
 ;;; process 4 buffers at a time, single data structure as input
 ;;; Updates In and Out pointers at end
 
-%include "os.asm"
+%include "include/os.asm"
 %include "mb_mgr_datastruct.asm"
 
 %define	MOVDQ movdqu ;; assume buffers not aligned
@@ -39,15 +39,15 @@
 %endm
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; struct AES_ARGS_x8 {
+;; struct AES_ARGS {
 ;;     void*    in[8];
 ;;     void*    out[8];
 ;;     UINT128* keys[8];
 ;;     UINT128  IV[8];
 ;; }
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; void aes_cbc_enc_192_x4(AES_ARGS_x8 *args, UINT64 len);
-;; arg 1: ARG : addr of AES_ARGS_x8 structure
+;; void aes_cbc_enc_192_x4(AES_ARGS *args, UINT64 len);
+;; arg 1: ARG : addr of AES_ARGS structure
 ;; arg 2: LEN : len (in units of bytes)
 
 %ifdef LINUX
@@ -103,10 +103,14 @@
 %define XKEY3_6		xmm14
 %define XKEY3_9		xmm15
 
+%ifndef AES_CBC_ENC_X4
+%define AES_CBC_ENC_X4 aes_cbc_enc_192_x4
+%endif
+
 section .text
 
-MKGLOBAL(aes_cbc_enc_192_x4,function,internal)
-aes_cbc_enc_192_x4:
+MKGLOBAL(AES_CBC_ENC_X4,function,internal)
+AES_CBC_ENC_X4:
 
 	push	rbp
 

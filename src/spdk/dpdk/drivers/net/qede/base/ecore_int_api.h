@@ -24,7 +24,12 @@ enum ecore_int_mode {
 #endif
 
 struct ecore_sb_info {
-	struct status_block_e4 *sb_virt;
+	void *sb_virt; /* ptr to "struct status_block_e{4,5}" */
+	u32 sb_size; /* size of "struct status_block_e{4,5}" */
+	__le16 *sb_pi_array; /* ptr to "sb_virt->pi_array" */
+	__le32 *sb_prod_index; /* ptr to "sb_virt->prod_index" */
+#define STATUS_BLOCK_PROD_INDEX_MASK	0xFFFFFF
+
 	dma_addr_t sb_phys;
 	u32 sb_ack;		/* Last given ack */
 	u16 igu_sb_id;
@@ -42,7 +47,7 @@ struct ecore_sb_info {
 struct ecore_sb_info_dbg {
 	u32 igu_prod;
 	u32 igu_cons;
-	u16 pi[PIS_PER_SB_E4];
+	u16 pi[PIS_PER_SB];
 };
 
 struct ecore_sb_cnt_info {
@@ -64,8 +69,8 @@ static OSAL_INLINE u16 ecore_sb_update_sb_idx(struct ecore_sb_info *sb_info)
 
 	/* barrier(); status block is written to by the chip */
 	/* FIXME: need some sort of barrier. */
-	prod = OSAL_LE32_TO_CPU(sb_info->sb_virt->prod_index) &
-	    STATUS_BLOCK_E4_PROD_INDEX_MASK;
+	prod = OSAL_LE32_TO_CPU(*sb_info->sb_prod_index) &
+	       STATUS_BLOCK_PROD_INDEX_MASK;
 	if (sb_info->sb_ack != prod) {
 		sb_info->sb_ack = prod;
 		rc |= ECORE_SB_IDX;
@@ -92,8 +97,9 @@ static OSAL_INLINE u16 ecore_sb_update_sb_idx(struct ecore_sb_info *sb_info)
 static OSAL_INLINE void ecore_sb_ack(struct ecore_sb_info *sb_info,
 				     enum igu_int_cmd int_cmd, u8 upd_flg)
 {
-	struct igu_prod_cons_update igu_ack = { 0 };
+	struct igu_prod_cons_update igu_ack;
 
+	OSAL_MEMSET(&igu_ack, 0, sizeof(struct igu_prod_cons_update));
 	igu_ack.sb_id_and_flags =
 	    ((sb_info->sb_ack << IGU_PROD_CONS_UPDATE_SB_INDEX_SHIFT) |
 	     (upd_flg << IGU_PROD_CONS_UPDATE_UPDATE_FLAG_SHIFT) |
@@ -343,4 +349,15 @@ enum _ecore_status_t ecore_int_get_sb_dbg(struct ecore_hwfn *p_hwfn,
 enum _ecore_status_t
 ecore_int_igu_relocate_sb(struct ecore_hwfn *p_hwfn, struct ecore_ptt *p_ptt,
 			  u16 sb_id, bool b_to_vf);
+
+/**
+ * @brief - Doorbell Recovery handler.
+ *          Run DB_REAL_DEAL doorbell recovery in case of PF overflow
+ *          (and flush DORQ if needed), otherwise run DB_REC_ONCE.
+ *
+ * @param p_hwfn
+ * @param p_ptt
+ */
+enum _ecore_status_t ecore_db_rec_handler(struct ecore_hwfn *p_hwfn,
+					  struct ecore_ptt *p_ptt);
 #endif

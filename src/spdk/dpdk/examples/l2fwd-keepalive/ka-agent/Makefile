@@ -5,8 +5,8 @@ ifeq ($(RTE_SDK),)
 $(error "Please define RTE_SDK environment variable")
 endif
 
-# Default target, can be overridden by command line or environment
-RTE_TARGET ?= x86_64-native-linuxapp-gcc
+# Default target, detect a build directory, by looking for a path with a .config
+RTE_TARGET ?= $(notdir $(abspath $(dir $(firstword $(wildcard $(RTE_SDK)/*/.config)))))
 
 include $(RTE_SDK)/mk/rte.vars.mk
 
@@ -17,5 +17,6 @@ APP = ka-agent
 SRCS-y := main.c
 
 CFLAGS += $(WERROR_FLAGS) -I$(SRCDIR)/../
+CFLAGS += -DALLOW_EXPERIMENTAL_API
 LDFLAGS += -lrt
 include $(RTE_SDK)/mk/rte.extapp.mk

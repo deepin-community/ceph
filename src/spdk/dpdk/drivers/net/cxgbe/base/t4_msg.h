@@ -11,9 +11,13 @@ enum {
 	CPL_SET_TCB_FIELD     = 0x5,
 	CPL_ABORT_REQ         = 0xA,
 	CPL_ABORT_RPL         = 0xB,
+	CPL_L2T_WRITE_REQ     = 0x12,
+	CPL_SMT_WRITE_REQ     = 0x14,
 	CPL_TID_RELEASE       = 0x1A,
+	CPL_L2T_WRITE_RPL     = 0x23,
 	CPL_ACT_OPEN_RPL      = 0x25,
 	CPL_ABORT_RPL_RSS     = 0x2D,
+	CPL_SMT_WRITE_RPL     = 0x2E,
 	CPL_SET_TCB_RPL       = 0x3A,
 	CPL_ACT_OPEN_REQ6     = 0x83,
 	CPL_SGE_EGR_UPDATE    = 0xA5,
@@ -30,6 +34,7 @@ enum CPL_error {
 
 enum {
 	ULP_MODE_NONE          = 0,
+	ULP_MODE_TCPDDP        = 5,
 };
 
 enum {
@@ -65,6 +70,9 @@ union opcode_tid {
 #define S_TID_TID    0
 #define M_TID_TID    0x3fff
 #define G_TID_TID(x) (((x) >> S_TID_TID) & M_TID_TID)
+
+#define S_TID_QID    14
+#define V_TID_QID(x) ((x) << S_TID_QID)
 
 struct rss_header {
 	__u8 opcode;
@@ -133,6 +141,12 @@ struct work_request_hdr {
 #define V_TCAM_BYPASS(x) ((__u64)(x) << S_TCAM_BYPASS)
 #define F_TCAM_BYPASS    V_TCAM_BYPASS(1ULL)
 
+#define S_L2T_IDX    36
+#define V_L2T_IDX(x) ((__u64)(x) << S_L2T_IDX)
+
+#define S_NAGLE    49
+#define V_NAGLE(x) ((__u64)(x) << S_NAGLE)
+
 /* option 2 fields */
 #define S_RSS_QUEUE    0
 #define V_RSS_QUEUE(x) ((x) << S_RSS_QUEUE)
@@ -150,6 +164,9 @@ struct work_request_hdr {
 
 #define S_CCTRL_ECN    27
 #define V_CCTRL_ECN(x) ((x) << S_CCTRL_ECN)
+
+#define S_SACK_EN    30
+#define V_SACK_EN(x) ((x) << S_SACK_EN)
 
 #define S_T5_OPT_2_VALID    31
 #define V_T5_OPT_2_VALID(x) ((x) << S_T5_OPT_2_VALID)
@@ -420,6 +437,73 @@ struct cpl_rx_pkt {
 	__be16 hdr_len;
 	__be16 err_vec;
 };
+
+struct cpl_l2t_write_req {
+	WR_HDR;
+	union opcode_tid ot;
+	__be16 params;
+	__be16 l2t_idx;
+	__be16 vlan;
+	__u8   dst_mac[6];
+};
+
+/* cpl_l2t_write_req.params fields */
+#define S_L2T_W_PORT    8
+#define V_L2T_W_PORT(x) ((x) << S_L2T_W_PORT)
+
+#define S_L2T_W_LPBK    10
+#define V_L2T_W_LPBK(x) ((x) << S_L2T_W_LPBK)
+
+#define S_L2T_W_ARPMISS         11
+#define V_L2T_W_ARPMISS(x)      ((x) << S_L2T_W_ARPMISS)
+
+#define S_L2T_W_NOREPLY    15
+#define V_L2T_W_NOREPLY(x) ((x) << S_L2T_W_NOREPLY)
+
+struct cpl_l2t_write_rpl {
+	RSS_HDR
+	union opcode_tid ot;
+	__u8 status;
+	__u8 rsvd[3];
+};
+
+struct cpl_smt_write_req {
+	WR_HDR;
+	union opcode_tid ot;
+	__be32 params;
+	__be16 pfvf1;
+	__u8   src_mac1[6];
+	__be16 pfvf0;
+	__u8   src_mac0[6];
+};
+
+struct cpl_t6_smt_write_req {
+	WR_HDR;
+	union opcode_tid ot;
+	__be32 params;
+	__be64 tag;
+	__be16 pfvf0;
+	__u8   src_mac0[6];
+	__be32 local_ip;
+	__be32 rsvd;
+};
+
+struct cpl_smt_write_rpl {
+	RSS_HDR
+	union opcode_tid ot;
+	u8 status;
+	u8 rsvd[3];
+};
+
+/* cpl_smt_{read,write}_req.params fields */
+#define S_SMTW_OVLAN_IDX    16
+#define V_SMTW_OVLAN_IDX(x) ((x) << S_SMTW_OVLAN_IDX)
+
+#define S_SMTW_IDX    20
+#define V_SMTW_IDX(x) ((x) << S_SMTW_IDX)
+
+#define S_SMTW_NORPL    31
+#define V_SMTW_NORPL(x) ((x) << S_SMTW_NORPL)
 
 /* rx_pkt.l2info fields */
 #define S_RXF_UDP    22

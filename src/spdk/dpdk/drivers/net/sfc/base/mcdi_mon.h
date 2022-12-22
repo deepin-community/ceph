@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2009-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2009-2019 Solarflare Communications Inc.
  */
 
 #ifndef _SYS_MCDI_MON_H
@@ -38,6 +38,11 @@ mcdi_mon_stats_update(
 	__in				efx_nic_t *enp,
 	__in				efsys_mem_t *esmp,
 	__inout_ecount(EFX_MON_NSTATS)	efx_mon_stat_value_t *values);
+
+extern	__checkReturn			efx_rc_t
+mcdi_mon_limits_update(
+	__in				efx_nic_t *enp,
+	__inout_ecount(EFX_MON_NSTATS)	efx_mon_stat_limits_t *values);
 
 #endif	/* EFSYS_OPT_MON_STATS */
 

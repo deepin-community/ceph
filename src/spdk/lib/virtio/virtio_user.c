@@ -35,14 +35,9 @@
 
 #include <sys/eventfd.h>
 
-#include <linux/virtio_scsi.h>
-
-#include <rte_config.h>
-#include <rte_malloc.h>
-#include <rte_alarm.h>
-
-#include "virtio_user/vhost.h"
+#include "vhost_user.h"
 #include "spdk/string.h"
+#include "spdk/config.h"
 
 #include "spdk_internal/virtio.h"
 
@@ -67,11 +62,9 @@ virtio_user_create_queue(struct virtio_dev *vdev, uint32_t queue_sel)
 }
 
 static int
-virtio_user_kick_queue(struct virtio_dev *vdev, uint32_t queue_sel)
+virtio_user_set_vring_addr(struct virtio_dev *vdev, uint32_t queue_sel)
 {
 	struct virtio_user_dev *dev = vdev->ctx;
-	struct vhost_vring_file file;
-	struct vhost_vring_state state;
 	struct vring *vring = &dev->vrings[queue_sel];
 	struct vhost_vring_addr addr = {
 		.index = queue_sel,
@@ -81,6 +74,17 @@ virtio_user_kick_queue(struct virtio_dev *vdev, uint32_t queue_sel)
 		.log_guest_addr = 0,
 		.flags = 0, /* disable log */
 	};
+
+	return dev->ops->send_request(dev, VHOST_USER_SET_VRING_ADDR, &addr);
+}
+
+static int
+virtio_user_kick_queue(struct virtio_dev *vdev, uint32_t queue_sel)
+{
+	struct virtio_user_dev *dev = vdev->ctx;
+	struct vhost_vring_file file;
+	struct vhost_vring_state state;
+	struct vring *vring = &dev->vrings[queue_sel];
 	int rc;
 
 	state.index = queue_sel;
@@ -97,10 +101,7 @@ virtio_user_kick_queue(struct virtio_dev *vdev, uint32_t queue_sel)
 		return rc;
 	}
 
-	rc = dev->ops->send_request(dev, VHOST_USER_SET_VRING_ADDR, &addr);
-	if (rc < 0) {
-		return rc;
-	}
+	virtio_user_set_vring_addr(vdev, queue_sel);
 
 	/* Of all per virtqueue MSGs, make sure VHOST_USER_SET_VRING_KICK comes
 	 * lastly because vhost depends on this msg to judge if
@@ -159,13 +160,19 @@ virtio_user_map_notify(void *cb_ctx, struct spdk_mem_map *map,
 		return ret;
 	}
 
-	/* We have to send SET_VRING_ADDR to make rte_vhost flush a pending
-	 * SET_MEM_TABLE...
+#ifdef SPDK_CONFIG_VHOST_INTERNAL_LIB
+	/* Our internal rte_vhost lib requires SET_VRING_ADDR to flush a pending
+	 * SET_MEM_TABLE. On the other hand, the upstream rte_vhost will invalidate
+	 * the entire queue upon receiving SET_VRING_ADDR message, so we mustn't
+	 * send it here. Both behaviors are strictly implementation specific, but
+	 * this message isn't needed from the point of the spec, so send it only
+	 * if vhost is compiled with our internal lib.
 	 */
-	ret = virtio_user_queue_setup(vdev, virtio_user_kick_queue);
+	ret = virtio_user_queue_setup(vdev, virtio_user_set_vring_addr);
 	if (ret < 0) {
 		return ret;
 	}
+#endif
 
 	/* Since we might want to use that mapping straight away, we have to
 	 * make sure the guest has already processed our SET_MEM_TABLE message.
@@ -243,7 +250,7 @@ virtio_user_start_device(struct virtio_dev *vdev)
 		return ret;
 	}
 
-	return 0;
+	return virtio_user_queue_setup(vdev, virtio_user_kick_queue);
 }
 
 static int
@@ -451,7 +458,8 @@ virtio_user_setup_queue(struct virtio_dev *vdev, struct virtqueue *vq)
 		return -errno;
 	}
 
-	queue_mem = spdk_dma_zmalloc(vq->vq_ring_size, VIRTIO_PCI_VRING_ALIGN, NULL);
+	queue_mem = spdk_zmalloc(vq->vq_ring_size, VIRTIO_PCI_VRING_ALIGN, NULL,
+				 SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
 	if (queue_mem == NULL) {
 		close(kickfd);
 		close(callfd);
@@ -469,7 +477,9 @@ virtio_user_setup_queue(struct virtio_dev *vdev, struct virtqueue *vq)
 		if (rc < 0) {
 			SPDK_ERRLOG("failed to send VHOST_USER_SET_VRING_ENABLE: %s\n",
 				    spdk_strerror(-rc));
-			spdk_dma_free(queue_mem);
+			close(kickfd);
+			close(callfd);
+			spdk_free(queue_mem);
 			return -rc;
 		}
 	}
@@ -479,9 +489,9 @@ virtio_user_setup_queue(struct virtio_dev *vdev, struct virtqueue *vq)
 
 	desc_addr = (uintptr_t)vq->vq_ring_virt_mem;
 	avail_addr = desc_addr + vq->vq_nentries * sizeof(struct vring_desc);
-	used_addr = RTE_ALIGN_CEIL(avail_addr + offsetof(struct vring_avail,
-				   ring[vq->vq_nentries]),
-				   VIRTIO_PCI_VRING_ALIGN);
+	used_addr = SPDK_ALIGN_CEIL(avail_addr + offsetof(struct vring_avail,
+				    ring[vq->vq_nentries]),
+				    VIRTIO_PCI_VRING_ALIGN);
 
 	dev->vrings[queue_idx].num = vq->vq_nentries;
 	dev->vrings[queue_idx].desc = (void *)(uintptr_t)desc_addr;
@@ -510,7 +520,7 @@ virtio_user_del_queue(struct virtio_dev *vdev, struct virtqueue *vq)
 	dev->callfds[vq->vq_queue_index] = -1;
 	dev->kickfds[vq->vq_queue_index] = -1;
 
-	spdk_dma_free(vq->vq_ring_virt_mem);
+	spdk_free(vq->vq_ring_virt_mem);
 }
 
 static void
@@ -538,11 +548,8 @@ virtio_user_dump_json_info(struct virtio_dev *vdev, struct spdk_json_write_ctx *
 {
 	struct virtio_user_dev *dev = vdev->ctx;
 
-	spdk_json_write_name(w, "type");
-	spdk_json_write_string(w, "user");
-
-	spdk_json_write_name(w, "socket");
-	spdk_json_write_string(w, dev->path);
+	spdk_json_write_named_string(w, "type", "user");
+	spdk_json_write_named_string(w, "socket", dev->path);
 }
 
 static void

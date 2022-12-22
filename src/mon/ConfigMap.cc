@@ -7,6 +7,35 @@
 #include "crush/CrushWrapper.h"
 #include "common/entity_name.h"
 
+using namespace std::literals;
+
+using std::cerr;
+using std::cout;
+using std::dec;
+using std::hex;
+using std::list;
+using std::map;
+using std::make_pair;
+using std::ostream;
+using std::ostringstream;
+using std::pair;
+using std::set;
+using std::setfill;
+using std::string;
+using std::stringstream;
+using std::to_string;
+using std::vector;
+using std::unique_ptr;
+
+using ceph::bufferlist;
+using ceph::decode;
+using ceph::encode;
+using ceph::Formatter;
+using ceph::JSONFormatter;
+using ceph::mono_clock;
+using ceph::mono_time;
+using ceph::timespan_str;
+
 int MaskedOption::get_precision(const CrushWrapper *crush)
 {
   // 0 = most precise
@@ -101,24 +130,36 @@ void ConfigMap::dump(Formatter *f) const
   f->close_section();
 }
 
-void ConfigMap::generate_entity_map(
+std::map<std::string,std::string,std::less<>>
+ConfigMap::generate_entity_map(
   const EntityName& name,
   const map<std::string,std::string>& crush_location,
   const CrushWrapper *crush,
   const std::string& device_class,
-  std::map<std::string,std::string> *out,
   std::map<std::string,pair<std::string,const MaskedOption*>> *src)
 {
-  // global, then by type, then by full name.
+  // global, then by type, then by name prefix component(s), then name.
+  // name prefix components are .-separated,
+  // e.g. client.a.b.c -> [global, client, client.a, client.a.b, client.a.b.c]
   vector<pair<string,Section*>> sections = { make_pair("global", &global) };
   auto p = by_type.find(name.get_type_name());
   if (p != by_type.end()) {
-    sections.push_back(make_pair(name.get_type_name(), &p->second));
+    sections.emplace_back(name.get_type_name(), &p->second);
   }
-  auto q = by_id.find(name.to_str());
-  if (q != by_id.end()) {
-    sections.push_back(make_pair(name.to_str(), &q->second));
+  vector<std::string> name_bits;
+  boost::split(name_bits, name.to_str(), [](char c){ return c == '.'; });
+  std::string tname;
+  for (unsigned p = 0; p < name_bits.size(); ++p) {
+    if (p) {
+      tname += '.';
+    }
+    tname += name_bits[p];
+    auto q = by_id.find(tname);
+    if (q != by_id.end()) {
+      sections.push_back(make_pair(tname, &q->second));
+    }
   }
+  std::map<std::string,std::string,std::less<>> out;
   MaskedOption *prev = nullptr;
   for (auto s : sections) {
     for (auto& i : s.second->options) {
@@ -142,13 +183,14 @@ void ConfigMap::generate_entity_map(
 	  prev->get_precision(crush) < o.get_precision(crush)) {
 	continue;
       }
-      (*out)[i.first] = o.raw_value;
+      out[i.first] = o.raw_value;
       if (src) {
 	(*src)[i.first] = make_pair(s.first, &o);
       }
       prev = &o;
     }
   }
+  return out;
 }
 
 bool ConfigMap::parse_mask(
@@ -189,6 +231,23 @@ bool ConfigMap::parse_mask(
     *section = i;
   }
   return true;
+}
+
+void ConfigMap::parse_key(
+  const std::string& key,
+  std::string *name,
+  std::string *who)
+{
+  auto last_slash = key.rfind('/');
+  if (last_slash == std::string::npos) {
+    *name = key;
+  } else if (auto mgrpos = key.find("/mgr/"); mgrpos != std::string::npos) {
+    *name = key.substr(mgrpos + 1);
+    *who = key.substr(0, mgrpos);
+  } else {
+    *name = key.substr(last_slash + 1);
+    *who = key.substr(0, last_slash);
+  }
 }
 
 

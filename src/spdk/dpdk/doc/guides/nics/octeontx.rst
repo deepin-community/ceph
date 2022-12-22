@@ -1,11 +1,11 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
     Copyright(c) 2017 Cavium, Inc
 
-OCTEONTX Poll Mode driver
-=========================
+OCTEON TX Poll Mode driver
+==========================
 
-The OCTEONTX ETHDEV PMD (**librte_pmd_octeontx**) provides poll mode ethdev
-driver support for the inbuilt network device found in the **Cavium OCTEONTX**
+The OCTEON TX ETHDEV PMD (**librte_pmd_octeontx**) provides poll mode ethdev
+driver support for the inbuilt network device found in the **Cavium OCTEON TX**
 SoC family as well as their virtual functions (VF) in SR-IOV context.
 
 More information can be found at `Cavium, Inc Official Website
@@ -14,20 +14,23 @@ More information can be found at `Cavium, Inc Official Website
 Features
 --------
 
-Features of the OCTEONTX Ethdev PMD are:
+Features of the OCTEON TX Ethdev PMD are:
 
 - Packet type information
 - Promiscuous mode
 - Port hardware statistics
 - Jumbo frames
+- Scatter-Gather IO support
 - Link state information
+- MAC/VLAN filtering
+- MTU update
 - SR-IOV VF
 - Multiple queues for TX
 - Lock-free Tx queue
 - HW offloaded `ethdev Rx queue` to `eventdev event queue` packet injection
 
-Supported OCTEONTX SoCs
------------------------
+Supported OCTEON TX SoCs
+------------------------
 
 - CN83xx
 
@@ -65,13 +68,13 @@ Driver compilation and testing
 Refer to the document :ref:`compiling and testing a PMD for a NIC <pmd_build_and_test>`
 for details.
 
-To compile the OCTEONTX PMD for Linux arm64 gcc target, run the
+To compile the OCTEON TX PMD for Linux arm64 gcc target, run the
 following ``make`` command:
 
 .. code-block:: console
 
    cd <DPDK-source-directory>
-   make config T=arm64-thunderx-linuxapp-gcc install
+   make config T=arm64-thunderx-linux-gcc install
 
 #. Running testpmd:
 
@@ -83,7 +86,7 @@ following ``make`` command:
 
    .. code-block:: console
 
-      ./arm64-thunderx-linuxapp-gcc/app/testpmd -c 700 \
+      ./arm64-thunderx-linux-gcc/app/testpmd -c 700 \
                 --base-virtaddr=0x100000000000 \
                 --mbuf-pool-ops-name="octeontx_fpavf" \
                 --vdev='event_octeontx' \
@@ -122,7 +125,7 @@ following ``make`` command:
 Initialization
 --------------
 
-The octeontx ethdev pmd is exposed as a vdev device which consists of a set
+The OCTEON TX ethdev pmd is exposed as a vdev device which consists of a set
 of PKI and PKO PCIe VF devices. On EAL initialization,
 PKI/PKO PCIe VF devices will be probed and then the vdev device can be created
 from the application code, or from the EAL command line based on
@@ -156,21 +159,28 @@ Limitations
 
 ``octeontx_fpavf`` external mempool handler dependency
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-The OCTEONTX SoC family NIC has inbuilt HW assisted external mempool manager.
+The OCTEON TX SoC family NIC has inbuilt HW assisted external mempool manager.
 This driver will only work with ``octeontx_fpavf`` external mempool handler
 as it is the most performance effective way for packet allocation and Tx buffer
-recycling on OCTEONTX SoC platform.
+recycling on OCTEON TX SoC platform.
 
-CRC striping
-~~~~~~~~~~~~
+CRC stripping
+~~~~~~~~~~~~~
 
-The OCTEONTX SoC family NICs strip the CRC for every packets coming into the
+The OCTEON TX SoC family NICs strip the CRC for every packets coming into the
 host interface irrespective of the offload configuration.
 
 Maximum packet length
 ~~~~~~~~~~~~~~~~~~~~~
 
-The OCTEONTX SoC family NICs support a maximum of a 32K jumbo frame. The value
+The OCTEON TX SoC family NICs support a maximum of a 32K jumbo frame. The value
 is fixed and cannot be changed. So, even when the ``rxmode.max_rx_pkt_len``
 member of ``struct rte_eth_conf`` is set to a value lower than 32k, frames
 up to 32k bytes can still reach the host interface.
+
+Maximum mempool size
+~~~~~~~~~~~~~~~~~~~~
+
+The maximum mempool size supplied to Rx queue setup should be less than 128K.
+When running testpmd on OCTEON TX the application can limit the number of mbufs
+by using the option ``--total-num-mbufs=131072``.

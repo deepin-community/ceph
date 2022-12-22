@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2015-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2015-2019 Solarflare Communications Inc.
  */
 
 #ifndef	_SYS_MEDFORD2_IMPL_H
@@ -11,6 +11,10 @@
 extern "C" {
 #endif
 
+
+#define	MEDFORD2_TXQ_MAXNDESCS	2048
+
+#define	MEDFORD2_EVQ_MAXNBUFS	(64)
 
 #ifndef	ER_EZ_TX_PIOBUF_SIZE
 #define	ER_EZ_TX_PIOBUF_SIZE	4096

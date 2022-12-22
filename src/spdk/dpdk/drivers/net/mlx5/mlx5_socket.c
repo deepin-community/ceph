@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright 2016 6WIND S.A.
- * Copyright 2016 Mellanox Technologies, Ltd
+ * Copyright 2019 Mellanox Technologies, Ltd
  */
 
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -13,8 +14,139 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
-#include "mlx5.h"
+#include "rte_eal.h"
 #include "mlx5_utils.h"
+#include "mlx5.h"
+
+/* PMD socket service for tools. */
+
+int server_socket; /* Unix socket for primary process. */
+struct rte_intr_handle server_intr_handle; /* Interrupt handler. */
+
+static void
+mlx5_pmd_make_path(struct sockaddr_un *addr, int pid)
+{
+	snprintf(addr->sun_path, sizeof(addr->sun_path), "/var/tmp/dpdk_%s_%d",
+		 MLX5_DRIVER_NAME, pid);
+}
+
+/**
+ * Handle server pmd socket interrupts.
+ */
+static void
+mlx5_pmd_socket_handle(void *cb __rte_unused)
+{
+	int conn_sock;
+	int ret = -1;
+	struct cmsghdr *cmsg = NULL;
+	int data;
+	char buf[CMSG_SPACE(sizeof(int))] = { 0 };
+	struct iovec io = {
+		.iov_base = &data,
+		.iov_len = sizeof(data),
+	};
+	struct msghdr msg = {
+		.msg_iov = &io,
+		.msg_iovlen = 1,
+		.msg_control = buf,
+		.msg_controllen = sizeof(buf),
+	};
+	uint16_t port_id;
+	int fd;
+	FILE *file = NULL;
+	struct rte_eth_dev *dev;
+
+	/* Accept the connection from the client. */
+	conn_sock = accept(server_socket, NULL, NULL);
+	if (conn_sock < 0) {
+		DRV_LOG(WARNING, "connection failed: %s", strerror(errno));
+		return;
+	}
+	ret = recvmsg(conn_sock, &msg, MSG_WAITALL);
+	if (ret < 0) {
+		DRV_LOG(WARNING, "wrong message received: %s",
+			strerror(errno));
+		goto error;
+	}
+	/* Receive file descriptor. */
+	cmsg = CMSG_FIRSTHDR(&msg);
+	if (cmsg == NULL || cmsg->cmsg_type != SCM_RIGHTS ||
+	    cmsg->cmsg_len < sizeof(int)) {
+		DRV_LOG(WARNING, "invalid file descriptor message");
+		goto error;
+	}
+	memcpy(&fd, CMSG_DATA(cmsg), sizeof(fd));
+	file = fdopen(fd, "w");
+	if (!file) {
+		DRV_LOG(WARNING, "Failed to open file");
+		goto error;
+	}
+	/* Receive port number. */
+	if (msg.msg_iovlen != 1 || msg.msg_iov->iov_len < sizeof(uint16_t)) {
+		DRV_LOG(WARNING, "wrong port number message");
+		goto error;
+	}
+	memcpy(&port_id, msg.msg_iov->iov_base, sizeof(port_id));
+	if (!rte_eth_dev_is_valid_port(port_id)) {
+		DRV_LOG(WARNING, "Invalid port %u", port_id);
+		goto error;
+	}
+	/* Dump flow. */
+	dev = &rte_eth_devices[port_id];
+	ret = mlx5_flow_dev_dump(dev, file, NULL);
+	/* Set-up the ancillary data and reply. */
+	msg.msg_controllen = 0;
+	msg.msg_control = NULL;
+	msg.msg_iovlen = 1;
+	msg.msg_iov = &io;
+	data = -ret;
+	io.iov_len = sizeof(data);
+	io.iov_base = &data;
+	do {
+		ret = sendmsg(conn_sock, &msg, 0);
+	} while (ret < 0 && errno == EINTR);
+	if (ret < 0)
+		DRV_LOG(WARNING, "failed to send response %s",
+			strerror(errno));
+error:
+	if (conn_sock > 0)
+		close(conn_sock);
+	if (file)
+		fclose(file);
+}
+
+/**
+ * Install interrupt handler.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ * @return
+ *   0 on success, a negative errno value otherwise.
+ */
+static int
+mlx5_pmd_interrupt_handler_install(void)
+{
+	MLX5_ASSERT(server_socket);
+	server_intr_handle.fd = server_socket;
+	server_intr_handle.type = RTE_INTR_HANDLE_EXT;
+	return rte_intr_callback_register(&server_intr_handle,
+					  mlx5_pmd_socket_handle, NULL);
+}
+
+/**
+ * Uninstall interrupt handler.
+ */
+static void
+mlx5_pmd_interrupt_handler_uninstall(void)
+{
+	if (server_socket) {
+		mlx5_intr_callback_unregister(&server_intr_handle,
+					      mlx5_pmd_socket_handle,
+					      NULL);
+	}
+	server_intr_handle.fd = 0;
+	server_intr_handle.type = RTE_INTR_HANDLE_UNKNOWN;
+}
 
 /**
  * Initialise the socket to communicate with the secondary process
@@ -23,286 +155,76 @@
  *   Pointer to Ethernet device.
  *
  * @return
- *   0 on success, a negative errno value otherwise and rte_errno is set.
+ *   0 on success, a negative value otherwise.
  */
 int
-mlx5_socket_init(struct rte_eth_dev *dev)
+mlx5_pmd_socket_init(void)
 {
-	struct priv *priv = dev->data->dev_private;
 	struct sockaddr_un sun = {
 		.sun_family = AF_UNIX,
 	};
-	int ret;
+	int ret = -1;
 	int flags;
 
+	MLX5_ASSERT(rte_eal_process_type() == RTE_PROC_PRIMARY);
+	if (server_socket)
+		return 0;
 	/*
-	 * Close the last socket that was used to communicate
-	 * with the secondary process
-	 */
-	if (priv->primary_socket)
-		mlx5_socket_uninit(dev);
-	/*
-	 * Initialise the socket to communicate with the secondary
+	 * Initialize the socket to communicate with the secondary
 	 * process.
 	 */
 	ret = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (ret < 0) {
-		rte_errno = errno;
-		DRV_LOG(WARNING, "port %u secondary process not supported: %s",
-			dev->data->port_id, strerror(errno));
+		DRV_LOG(WARNING, "Failed to open mlx5 socket: %s",
+			strerror(errno));
 		goto error;
 	}
-	priv->primary_socket = ret;
-	flags = fcntl(priv->primary_socket, F_GETFL, 0);
-	if (flags == -1) {
-		rte_errno = errno;
+	server_socket = ret;
+	flags = fcntl(server_socket, F_GETFL, 0);
+	if (flags == -1)
 		goto error;
-	}
-	ret = fcntl(priv->primary_socket, F_SETFL, flags | O_NONBLOCK);
-	if (ret < 0) {
-		rte_errno = errno;
+	ret = fcntl(server_socket, F_SETFL, flags | O_NONBLOCK);
+	if (ret < 0)
 		goto error;
-	}
-	snprintf(sun.sun_path, sizeof(sun.sun_path), "/var/tmp/%s_%d",
-		 MLX5_DRIVER_NAME, priv->primary_socket);
+	mlx5_pmd_make_path(&sun, getpid());
 	remove(sun.sun_path);
-	ret = bind(priv->primary_socket, (const struct sockaddr *)&sun,
-		   sizeof(sun));
+	ret = bind(server_socket, (const struct sockaddr *)&sun, sizeof(sun));
 	if (ret < 0) {
-		rte_errno = errno;
 		DRV_LOG(WARNING,
-			"port %u cannot bind socket, secondary process not"
-			" supported: %s",
-			dev->data->port_id, strerror(errno));
+			"cannot bind mlx5 socket: %s", strerror(errno));
 		goto close;
 	}
-	ret = listen(priv->primary_socket, 0);
+	ret = listen(server_socket, 0);
 	if (ret < 0) {
-		rte_errno = errno;
-		DRV_LOG(WARNING, "port %u secondary process not supported: %s",
-			dev->data->port_id, strerror(errno));
+		DRV_LOG(WARNING, "cannot listen on mlx5 socket: %s",
+			strerror(errno));
+		goto close;
+	}
+	if (mlx5_pmd_interrupt_handler_install()) {
+		DRV_LOG(WARNING, "cannot register interrupt handler for mlx5 socket: %s",
+			strerror(errno));
 		goto close;
 	}
 	return 0;
 close:
 	remove(sun.sun_path);
 error:
-	claim_zero(close(priv->primary_socket));
-	priv->primary_socket = 0;
-	return -rte_errno;
+	claim_zero(close(server_socket));
+	server_socket = 0;
+	DRV_LOG(ERR, "Cannot initialize socket: %s", strerror(errno));
+	return -errno;
 }
 
 /**
- * Un-Initialise the socket to communicate with the secondary process
- *
- * @param[in] dev
+ * Un-Initialize the pmd socket
  */
-void
-mlx5_socket_uninit(struct rte_eth_dev *dev)
+RTE_FINI(mlx5_pmd_socket_uninit)
 {
-	struct priv *priv = dev->data->dev_private;
-
-	MKSTR(path, "/var/tmp/%s_%d", MLX5_DRIVER_NAME, priv->primary_socket);
-	claim_zero(close(priv->primary_socket));
-	priv->primary_socket = 0;
-	claim_zero(remove(path));
-}
-
-/**
- * Handle socket interrupts.
- *
- * @param dev
- *   Pointer to Ethernet device.
- */
-void
-mlx5_socket_handle(struct rte_eth_dev *dev)
-{
-	struct priv *priv = dev->data->dev_private;
-	int conn_sock;
-	int ret = 0;
-	struct cmsghdr *cmsg = NULL;
-	struct ucred *cred = NULL;
-	char buf[CMSG_SPACE(sizeof(struct ucred))] = { 0 };
-	char vbuf[1024] = { 0 };
-	struct iovec io = {
-		.iov_base = vbuf,
-		.iov_len = sizeof(*vbuf),
-	};
-	struct msghdr msg = {
-		.msg_iov = &io,
-		.msg_iovlen = 1,
-		.msg_control = buf,
-		.msg_controllen = sizeof(buf),
-	};
-	int *fd;
-
-	/* Accept the connection from the client. */
-	conn_sock = accept(priv->primary_socket, NULL, NULL);
-	if (conn_sock < 0) {
-		DRV_LOG(WARNING, "port %u connection failed: %s",
-			dev->data->port_id, strerror(errno));
+	if (!server_socket)
 		return;
-	}
-	ret = setsockopt(conn_sock, SOL_SOCKET, SO_PASSCRED, &(int){1},
-					 sizeof(int));
-	if (ret < 0) {
-		ret = errno;
-		DRV_LOG(WARNING, "port %u cannot change socket options: %s",
-			dev->data->port_id, strerror(rte_errno));
-		goto error;
-	}
-	ret = recvmsg(conn_sock, &msg, MSG_WAITALL);
-	if (ret < 0) {
-		ret = errno;
-		DRV_LOG(WARNING, "port %u received an empty message: %s",
-			dev->data->port_id, strerror(rte_errno));
-		goto error;
-	}
-	/* Expect to receive credentials only. */
-	cmsg = CMSG_FIRSTHDR(&msg);
-	if (cmsg == NULL) {
-		DRV_LOG(WARNING, "port %u no message", dev->data->port_id);
-		goto error;
-	}
-	if ((cmsg->cmsg_type == SCM_CREDENTIALS) &&
-		(cmsg->cmsg_len >= sizeof(*cred))) {
-		cred = (struct ucred *)CMSG_DATA(cmsg);
-		assert(cred != NULL);
-	}
-	cmsg = CMSG_NXTHDR(&msg, cmsg);
-	if (cmsg != NULL) {
-		DRV_LOG(WARNING, "port %u message wrongly formatted",
-			dev->data->port_id);
-		goto error;
-	}
-	/* Make sure all the ancillary data was received and valid. */
-	if ((cred == NULL) || (cred->uid != getuid()) ||
-	    (cred->gid != getgid())) {
-		DRV_LOG(WARNING, "port %u wrong credentials",
-			dev->data->port_id);
-		goto error;
-	}
-	/* Set-up the ancillary data. */
-	cmsg = CMSG_FIRSTHDR(&msg);
-	assert(cmsg != NULL);
-	cmsg->cmsg_level = SOL_SOCKET;
-	cmsg->cmsg_type = SCM_RIGHTS;
-	cmsg->cmsg_len = CMSG_LEN(sizeof(priv->ctx->cmd_fd));
-	fd = (int *)CMSG_DATA(cmsg);
-	*fd = priv->ctx->cmd_fd;
-	ret = sendmsg(conn_sock, &msg, 0);
-	if (ret < 0)
-		DRV_LOG(WARNING, "port %u cannot send response",
-			dev->data->port_id);
-error:
-	close(conn_sock);
-}
-
-/**
- * Connect to the primary process.
- *
- * @param[in] dev
- *   Pointer to Ethernet structure.
- *
- * @return
- *   fd on success, negative errno value otherwise and rte_errno is set.
- */
-int
-mlx5_socket_connect(struct rte_eth_dev *dev)
-{
-	struct priv *priv = dev->data->dev_private;
-	struct sockaddr_un sun = {
-		.sun_family = AF_UNIX,
-	};
-	int socket_fd = -1;
-	int *fd = NULL;
-	int ret;
-	struct ucred *cred;
-	char buf[CMSG_SPACE(sizeof(*cred))] = { 0 };
-	char vbuf[1024] = { 0 };
-	struct iovec io = {
-		.iov_base = vbuf,
-		.iov_len = sizeof(*vbuf),
-	};
-	struct msghdr msg = {
-		.msg_control = buf,
-		.msg_controllen = sizeof(buf),
-		.msg_iov = &io,
-		.msg_iovlen = 1,
-	};
-	struct cmsghdr *cmsg;
-
-	ret = socket(AF_UNIX, SOCK_STREAM, 0);
-	if (ret < 0) {
-		rte_errno = errno;
-		DRV_LOG(WARNING, "port %u cannot connect to primary",
-			dev->data->port_id);
-		goto error;
-	}
-	socket_fd = ret;
-	snprintf(sun.sun_path, sizeof(sun.sun_path), "/var/tmp/%s_%d",
-		 MLX5_DRIVER_NAME, priv->primary_socket);
-	ret = connect(socket_fd, (const struct sockaddr *)&sun, sizeof(sun));
-	if (ret < 0) {
-		rte_errno = errno;
-		DRV_LOG(WARNING, "port %u cannot connect to primary",
-			dev->data->port_id);
-		goto error;
-	}
-	cmsg = CMSG_FIRSTHDR(&msg);
-	if (cmsg == NULL) {
-		rte_errno = EINVAL;
-		DRV_LOG(DEBUG, "port %u cannot get first message",
-			dev->data->port_id);
-		goto error;
-	}
-	cmsg->cmsg_level = SOL_SOCKET;
-	cmsg->cmsg_type = SCM_CREDENTIALS;
-	cmsg->cmsg_len = CMSG_LEN(sizeof(*cred));
-	cred = (struct ucred *)CMSG_DATA(cmsg);
-	if (cred == NULL) {
-		rte_errno = EINVAL;
-		DRV_LOG(DEBUG, "port %u no credentials received",
-			dev->data->port_id);
-		goto error;
-	}
-	cred->pid = getpid();
-	cred->uid = getuid();
-	cred->gid = getgid();
-	ret = sendmsg(socket_fd, &msg, MSG_DONTWAIT);
-	if (ret < 0) {
-		rte_errno = errno;
-		DRV_LOG(WARNING,
-			"port %u cannot send credentials to primary: %s",
-			dev->data->port_id, strerror(errno));
-		goto error;
-	}
-	ret = recvmsg(socket_fd, &msg, MSG_WAITALL);
-	if (ret <= 0) {
-		rte_errno = errno;
-		DRV_LOG(WARNING, "port %u no message from primary: %s",
-			dev->data->port_id, strerror(errno));
-		goto error;
-	}
-	cmsg = CMSG_FIRSTHDR(&msg);
-	if (cmsg == NULL) {
-		rte_errno = EINVAL;
-		DRV_LOG(WARNING, "port %u no file descriptor received",
-			dev->data->port_id);
-		goto error;
-	}
-	fd = (int *)CMSG_DATA(cmsg);
-	if (*fd < 0) {
-		DRV_LOG(WARNING, "port %u no file descriptor received: %s",
-			dev->data->port_id, strerror(errno));
-		rte_errno = *fd;
-		goto error;
-	}
-	ret = *fd;
-	close(socket_fd);
-	return ret;
-error:
-	if (socket_fd != -1)
-		close(socket_fd);
-	return -rte_errno;
+	mlx5_pmd_interrupt_handler_uninstall();
+	claim_zero(close(server_socket));
+	server_socket = 0;
+	MKSTR(path, "/var/tmp/dpdk_%s_%d", MLX5_DRIVER_NAME, getpid());
+	claim_zero(remove(path));
 }

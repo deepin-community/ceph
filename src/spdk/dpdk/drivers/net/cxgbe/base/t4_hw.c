@@ -246,7 +246,7 @@ static void get_mbox_rpl(struct adapter *adap, __be64 *rpl, int nflit,
 			 u32 mbox_addr)
 {
 	for ( ; nflit; nflit--, mbox_addr += 8)
-		*rpl++ = htobe64(t4_read_reg64(adap, mbox_addr));
+		*rpl++ = cpu_to_be64(t4_read_reg64(adap, mbox_addr));
 }
 
 /*
@@ -335,7 +335,7 @@ int t4_wr_mbox_meat_timeout(struct adapter *adap, int mbox,
 		return -EINVAL;
 	}
 
-	bzero(p, size);
+	memset(p, 0, size);
 	memcpy(p, (const __be64 *)cmd, size);
 
 	/*
@@ -4017,7 +4017,8 @@ int t4_set_params(struct adapter *adap, unsigned int mbox, unsigned int pf,
 int t4_alloc_vi_func(struct adapter *adap, unsigned int mbox,
 		     unsigned int port, unsigned int pf, unsigned int vf,
 		     unsigned int nmac, u8 *mac, unsigned int *rss_size,
-		     unsigned int portfunc, unsigned int idstype)
+		     unsigned int portfunc, unsigned int idstype,
+		     u8 *vivld, u8 *vin)
 {
 	int ret;
 	struct fw_vi_cmd c;
@@ -4055,6 +4056,10 @@ int t4_alloc_vi_func(struct adapter *adap, unsigned int mbox,
 	}
 	if (rss_size)
 		*rss_size = G_FW_VI_CMD_RSSSIZE(be16_to_cpu(c.norss_rsssize));
+	if (vivld)
+		*vivld = G_FW_VI_CMD_VFVLD(be32_to_cpu(c.alloc_to_len16));
+	if (vin)
+		*vin = G_FW_VI_CMD_VIN(be32_to_cpu(c.alloc_to_len16));
 	return G_FW_VI_CMD_VIID(cpu_to_be16(c.type_to_viid));
 }
 
@@ -4075,10 +4080,10 @@ int t4_alloc_vi_func(struct adapter *adap, unsigned int mbox,
  */
 int t4_alloc_vi(struct adapter *adap, unsigned int mbox, unsigned int port,
 		unsigned int pf, unsigned int vf, unsigned int nmac, u8 *mac,
-		unsigned int *rss_size)
+		unsigned int *rss_size, u8 *vivld, u8 *vin)
 {
 	return t4_alloc_vi_func(adap, mbox, port, pf, vf, nmac, mac, rss_size,
-				FW_VI_FUNC_ETH, 0);
+				FW_VI_FUNC_ETH, 0, vivld, vin);
 }
 
 /**
@@ -4159,6 +4164,112 @@ int t4_set_rxmode(struct adapter *adap, unsigned int mbox, unsigned int viid,
 				       sleep_ok);
 	else
 		return t4vf_wr_mbox(adap, &c, sizeof(c), NULL);
+}
+
+/**
+ *	t4_alloc_raw_mac_filt - Adds a raw mac entry in mps tcam
+ *	@adap: the adapter
+ *	@viid: the VI id
+ *	@mac: the MAC address
+ *	@mask: the mask
+ *	@idx: index at which to add this entry
+ *	@port_id: the port index
+ *	@lookup_type: MAC address for inner (1) or outer (0) header
+ *	@sleep_ok: call is allowed to sleep
+ *
+ *	Adds the mac entry at the specified index using raw mac interface.
+ *
+ *	Returns a negative error number or the allocated index for this mac.
+ */
+int t4_alloc_raw_mac_filt(struct adapter *adap, unsigned int viid,
+			  const u8 *addr, const u8 *mask, unsigned int idx,
+			  u8 lookup_type, u8 port_id, bool sleep_ok)
+{
+	int ret = 0;
+	struct fw_vi_mac_cmd c;
+	struct fw_vi_mac_raw *p = &c.u.raw;
+	u32 val;
+
+	memset(&c, 0, sizeof(c));
+	c.op_to_viid = cpu_to_be32(V_FW_CMD_OP(FW_VI_MAC_CMD) |
+				   F_FW_CMD_REQUEST | F_FW_CMD_WRITE |
+				   V_FW_VI_MAC_CMD_VIID(viid));
+	val = V_FW_CMD_LEN16(1) |
+	      V_FW_VI_MAC_CMD_ENTRY_TYPE(FW_VI_MAC_TYPE_RAW);
+	c.freemacs_to_len16 = cpu_to_be32(val);
+
+	/* Specify that this is an inner mac address */
+	p->raw_idx_pkd = cpu_to_be32(V_FW_VI_MAC_CMD_RAW_IDX(idx));
+
+	/* Lookup Type. Outer header: 0, Inner header: 1 */
+	p->data0_pkd = cpu_to_be32(V_DATALKPTYPE(lookup_type) |
+				   V_DATAPORTNUM(port_id));
+	/* Lookup mask and port mask */
+	p->data0m_pkd = cpu_to_be64(V_DATALKPTYPE(M_DATALKPTYPE) |
+				    V_DATAPORTNUM(M_DATAPORTNUM));
+
+	/* Copy the address and the mask */
+	memcpy((u8 *)&p->data1[0] + 2, addr, ETHER_ADDR_LEN);
+	memcpy((u8 *)&p->data1m[0] + 2, mask, ETHER_ADDR_LEN);
+
+	ret = t4_wr_mbox_meat(adap, adap->mbox, &c, sizeof(c), &c, sleep_ok);
+	if (ret == 0) {
+		ret = G_FW_VI_MAC_CMD_RAW_IDX(be32_to_cpu(p->raw_idx_pkd));
+		if (ret != (int)idx)
+			ret = -ENOMEM;
+	}
+
+	return ret;
+}
+
+/**
+ *	t4_free_raw_mac_filt - Frees a raw mac entry in mps tcam
+ *	@adap: the adapter
+ *	@viid: the VI id
+ *	@addr: the MAC address
+ *	@mask: the mask
+ *	@idx: index of the entry in mps tcam
+ *	@lookup_type: MAC address for inner (1) or outer (0) header
+ *	@port_id: the port index
+ *	@sleep_ok: call is allowed to sleep
+ *
+ *	Removes the mac entry at the specified index using raw mac interface.
+ *
+ *	Returns a negative error number on failure.
+ */
+int t4_free_raw_mac_filt(struct adapter *adap, unsigned int viid,
+			 const u8 *addr, const u8 *mask, unsigned int idx,
+			 u8 lookup_type, u8 port_id, bool sleep_ok)
+{
+	struct fw_vi_mac_cmd c;
+	struct fw_vi_mac_raw *p = &c.u.raw;
+	u32 raw;
+
+	memset(&c, 0, sizeof(c));
+	c.op_to_viid = cpu_to_be32(V_FW_CMD_OP(FW_VI_MAC_CMD) |
+				   F_FW_CMD_REQUEST | F_FW_CMD_WRITE |
+				   V_FW_CMD_EXEC(0) |
+				   V_FW_VI_MAC_CMD_VIID(viid));
+	raw = V_FW_VI_MAC_CMD_ENTRY_TYPE(FW_VI_MAC_TYPE_RAW);
+	c.freemacs_to_len16 = cpu_to_be32(V_FW_VI_MAC_CMD_FREEMACS(0U) |
+					  raw |
+					  V_FW_CMD_LEN16(1));
+
+	p->raw_idx_pkd = cpu_to_be32(V_FW_VI_MAC_CMD_RAW_IDX(idx) |
+				     FW_VI_MAC_ID_BASED_FREE);
+
+	/* Lookup Type. Outer header: 0, Inner header: 1 */
+	p->data0_pkd = cpu_to_be32(V_DATALKPTYPE(lookup_type) |
+				   V_DATAPORTNUM(port_id));
+	/* Lookup mask and port mask */
+	p->data0m_pkd = cpu_to_be64(V_DATALKPTYPE(M_DATALKPTYPE) |
+				    V_DATAPORTNUM(M_DATAPORTNUM));
+
+	/* Copy the address and the mask */
+	memcpy((u8 *)&p->data1[0] + 2, addr, ETHER_ADDR_LEN);
+	memcpy((u8 *)&p->data1m[0] + 2, mask, ETHER_ADDR_LEN);
+
+	return t4_wr_mbox_meat(adap, adap->mbox, &c, sizeof(c), &c, sleep_ok);
 }
 
 /**
@@ -5104,8 +5215,8 @@ int t4_init_sge_params(struct adapter *adapter)
  */
 int t4_init_tp_params(struct adapter *adap)
 {
-	int chan;
-	u32 v;
+	int chan, ret;
+	u32 param, v;
 
 	v = t4_read_reg(adap, A_TP_TIMER_RESOLUTION);
 	adap->params.tp.tre = G_TIMERRESOLUTION(v);
@@ -5116,11 +5227,47 @@ int t4_init_tp_params(struct adapter *adap)
 		adap->params.tp.tx_modq[chan] = chan;
 
 	/*
-	 * Cache the adapter's Compressed Filter Mode and global Incress
+	 * Cache the adapter's Compressed Filter Mode/Mask and global Ingress
 	 * Configuration.
 	 */
-	t4_read_indirect(adap, A_TP_PIO_ADDR, A_TP_PIO_DATA,
-			 &adap->params.tp.vlan_pri_map, 1, A_TP_VLAN_PRI_MAP);
+	param = (V_FW_PARAMS_MNEM(FW_PARAMS_MNEM_DEV) |
+		 V_FW_PARAMS_PARAM_X(FW_PARAMS_PARAM_DEV_FILTER) |
+		 V_FW_PARAMS_PARAM_Y(FW_PARAM_DEV_FILTER_MODE_MASK));
+
+	/* Read current value */
+	ret = t4_query_params(adap, adap->mbox, adap->pf, 0,
+			      1, &param, &v);
+	if (!ret) {
+		dev_info(adap, "Current filter mode/mask 0x%x:0x%x\n",
+			 G_FW_PARAMS_PARAM_FILTER_MODE(v),
+			 G_FW_PARAMS_PARAM_FILTER_MASK(v));
+		adap->params.tp.vlan_pri_map =
+			G_FW_PARAMS_PARAM_FILTER_MODE(v);
+		adap->params.tp.filter_mask =
+			G_FW_PARAMS_PARAM_FILTER_MASK(v);
+	} else {
+		dev_info(adap,
+			 "Failed to read filter mode/mask via fw api, using indirect-reg-read\n");
+
+		/* In case of older-fw (which doesn't expose the api
+		 * FW_PARAM_DEV_FILTER_MODE_MASK) and newer-driver (which uses
+		 * the fw api) combination, fall-back to older method of reading
+		 * the filter mode from indirect-register
+		 */
+		t4_read_indirect(adap, A_TP_PIO_ADDR, A_TP_PIO_DATA,
+				 &adap->params.tp.vlan_pri_map, 1,
+				 A_TP_VLAN_PRI_MAP);
+
+		/* With the older-fw and newer-driver combination we might run
+		 * into an issue when user wants to use hash filter region but
+		 * the filter_mask is zero, in this case filter_mask validation
+		 * is tough. To avoid that we set the filter_mask same as filter
+		 * mode, which will behave exactly as the older way of ignoring
+		 * the filter mask validation.
+		 */
+		adap->params.tp.filter_mask = adap->params.tp.vlan_pri_map;
+	}
+
 	t4_read_indirect(adap, A_TP_PIO_ADDR, A_TP_PIO_DATA,
 			 &adap->params.tp.ingress_config, 1,
 			 A_TP_INGRESS_CONFIG);
@@ -5145,13 +5292,9 @@ int t4_init_tp_params(struct adapter *adap)
 							       F_PROTOCOL);
 	adap->params.tp.ethertype_shift = t4_filter_field_shift(adap,
 								F_ETHERTYPE);
-
-	/*
-	 * If TP_INGRESS_CONFIG.VNID == 0, then TP_VLAN_PRI_MAP.VNIC_ID
-	 * represents the presense of an Outer VLAN instead of a VNIC ID.
-	 */
-	if ((adap->params.tp.ingress_config & F_VNIC) == 0)
-		adap->params.tp.vnic_shift = -1;
+	adap->params.tp.macmatch_shift = t4_filter_field_shift(adap,
+							       F_MACMATCH);
+	adap->params.tp.tos_shift = t4_filter_field_shift(adap, F_TOS);
 
 	v = t4_read_reg(adap, LE_3_DB_HASH_MASK_GEN_IPV4_T6_A);
 	adap->params.tp.hash_filter_mask = v;
@@ -5244,6 +5387,7 @@ int t4_port_init(struct adapter *adap, int mbox, int pf, int vf)
 	fw_port_cap32_t pcaps, acaps;
 	enum fw_port_type port_type;
 	struct fw_port_cmd cmd;
+	u8 vivld = 0, vin = 0;
 	int ret, i, j = 0;
 	int mdio_addr;
 	u32 action;
@@ -5315,7 +5459,8 @@ int t4_port_init(struct adapter *adap, int mbox, int pf, int vf)
 			acaps = be32_to_cpu(cmd.u.info32.acaps32);
 		}
 
-		ret = t4_alloc_vi(adap, mbox, j, pf, vf, 1, addr, &rss_size);
+		ret = t4_alloc_vi(adap, mbox, j, pf, vf, 1, addr, &rss_size,
+				  &vivld, &vin);
 		if (ret < 0)
 			return ret;
 
@@ -5323,6 +5468,18 @@ int t4_port_init(struct adapter *adap, int mbox, int pf, int vf)
 		pi->tx_chan = j;
 		pi->rss_size = rss_size;
 		t4_os_set_hw_addr(adap, i, addr);
+
+		/* If fw supports returning the VIN as part of FW_VI_CMD,
+		 * save the returned values.
+		 */
+		if (adap->params.viid_smt_extn_support) {
+			pi->vivld = vivld;
+			pi->vin = vin;
+		} else {
+			/* Retrieve the values from VIID */
+			pi->vivld = G_FW_VIID_VIVLD(pi->viid);
+			pi->vin =  G_FW_VIID_VIN(pi->viid);
+		}
 
 		pi->port_type = port_type;
 		pi->mdio_addr = mdio_addr;

@@ -7,6 +7,7 @@
 #include <ostream>
 #include <set>
 #include <map>
+#include <optional>
 #include <string>
 #include <boost/scoped_ptr.hpp>
 #include "include/encoding.h"
@@ -14,8 +15,6 @@
 #include "common/perf_counters.h"
 #include "common/PriorityCache.h"
 
-using std::string;
-using std::vector;
 /**
  * Defines virtual interface to be implemented by key value store
  *
@@ -23,41 +22,29 @@ using std::vector;
  */
 class KeyValueDB {
 public:
-  /*
-   *  See RocksDB's definition of a column family(CF) and how to use it.
-   *  The interfaces of KeyValueDB is extended, when a column family is created.
-   *  Prefix will be the name of column family to use.
-   */
-  struct ColumnFamily {
-    string name;      //< name of this individual column family
-    string option;    //< configure option string for this CF
-    ColumnFamily(const string &name, const string &option)
-      : name(name), option(option) {}
-  };
-
   class TransactionImpl {
   public:
     /// Set Keys
     void set(
       const std::string &prefix,                      ///< [in] Prefix for keys, or CF name
-      const std::map<std::string, bufferlist> &to_set ///< [in] keys/values to set
+      const std::map<std::string, ceph::buffer::list> &to_set ///< [in] keys/values to set
     ) {
-      std::map<std::string, bufferlist>::const_iterator it;
-      for (it = to_set.begin(); it != to_set.end(); ++it)
+      for (auto it = to_set.cbegin(); it != to_set.cend(); ++it)
 	set(prefix, it->first, it->second);
     }
 
-    /// Set Keys (via encoded bufferlist)
+    /// Set Keys (via encoded ceph::buffer::list)
     void set(
       const std::string &prefix,      ///< [in] prefix, or CF name
-      bufferlist& to_set_bl           ///< [in] encoded key/values to set
+      ceph::buffer::list& to_set_bl           ///< [in] encoded key/values to set
       ) {
+      using ceph::decode;
       auto p = std::cbegin(to_set_bl);
       uint32_t num;
       decode(num, p);
       while (num--) {
-	string key;
-	bufferlist value;
+	std::string key;
+	ceph::buffer::list value;
 	decode(key, p);
 	decode(value, p);
 	set(prefix, key, value);
@@ -68,26 +55,27 @@ public:
     virtual void set(
       const std::string &prefix,      ///< [in] Prefix or CF for the key
       const std::string &k,	      ///< [in] Key to set
-      const bufferlist &bl            ///< [in] Value to set
+      const ceph::buffer::list &bl            ///< [in] Value to set
       ) = 0;
     virtual void set(
       const std::string &prefix,
       const char *k,
       size_t keylen,
-      const bufferlist& bl) {
-      set(prefix, string(k, keylen), bl);
+      const ceph::buffer::list& bl) {
+      set(prefix, std::string(k, keylen), bl);
     }
 
-    /// Removes Keys (via encoded bufferlist)
+    /// Removes Keys (via encoded ceph::buffer::list)
     void rmkeys(
       const std::string &prefix,     ///< [in] Prefix or CF to search for
-      bufferlist &keys_bl            ///< [in] Keys to remove
+      ceph::buffer::list &keys_bl            ///< [in] Keys to remove
     ) {
+      using ceph::decode;
       auto p = std::cbegin(keys_bl);
       uint32_t num;
       decode(num, p);
       while (num--) {
-	string key;
+	std::string key;
 	decode(key, p);
 	rmkey(prefix, key);
       }
@@ -98,8 +86,7 @@ public:
       const std::string &prefix,        ///< [in] Prefix/CF to search for
       const std::set<std::string> &keys ///< [in] Keys to remove
     ) {
-      std::set<std::string>::const_iterator it;
-      for (it = keys.begin(); it != keys.end(); ++it)
+      for (auto it = keys.cbegin(); it != keys.cend(); ++it)
 	rmkey(prefix, *it);
     }
 
@@ -113,7 +100,7 @@ public:
       const char *k,	      ///< [in] Key to remove
       size_t keylen
       ) {
-      rmkey(prefix, string(k, keylen));
+      rmkey(prefix, std::string(k, keylen));
     }
 
     /// Remove Single Key which exists and was not overwritten.
@@ -132,16 +119,16 @@ public:
       ) = 0;
 
     virtual void rm_range_keys(
-      const string &prefix,    ///< [in] Prefix by which to remove keys
-      const string &start,     ///< [in] The start bound of remove keys
-      const string &end        ///< [in] The start bound of remove keys
+      const std::string &prefix,    ///< [in] Prefix by which to remove keys
+      const std::string &start,     ///< [in] The start bound of remove keys
+      const std::string &end        ///< [in] The start bound of remove keys
       ) = 0;
 
     /// Merge value into key
     virtual void merge(
       const std::string &prefix,   ///< [in] Prefix/CF ==> MUST match some established merge operator
       const std::string &key,      ///< [in] Key to be merged
-      const bufferlist  &value     ///< [in] value to be merged into key
+      const ceph::buffer::list  &value     ///< [in] value to be merged into key
     ) { ceph_abort_msg("Not implemented"); }
 
     virtual ~TransactionImpl() {}
@@ -151,18 +138,17 @@ public:
   /// create a new instance
   static KeyValueDB *create(CephContext *cct, const std::string& type,
 			    const std::string& dir,
-			    map<std::string,std::string> options = {},
+			    std::map<std::string,std::string> options = {},
 			    void *p = NULL);
 
   /// test whether we can successfully initialize; may have side effects (e.g., create)
   static int test_init(const std::string& type, const std::string& dir);
-  virtual int init(string option_str="") = 0;
-  virtual int open(std::ostream &out, const vector<ColumnFamily>& cfs = {}) = 0;
-  // vector cfs contains column families to be created when db is created.
-  virtual int create_and_open(std::ostream &out,
-			      const vector<ColumnFamily>& cfs = {}) = 0;
+  virtual int init(std::string option_str="") = 0;
+  virtual int open(std::ostream &out, const std::string& cfs="") = 0;
+  // std::vector cfs contains column families to be created when db is created.
+  virtual int create_and_open(std::ostream &out, const std::string& cfs="") = 0;
 
-  virtual int open_read_only(ostream &out, const vector<ColumnFamily>& cfs = {}) {
+  virtual int open_read_only(std::ostream &out, const std::string& cfs="") {
     return -ENOTSUP;
   }
 
@@ -181,27 +167,27 @@ public:
   virtual int get(
     const std::string &prefix,               ///< [in] Prefix/CF for key
     const std::set<std::string> &key,        ///< [in] Key to retrieve
-    std::map<std::string, bufferlist> *out   ///< [out] Key value retrieved
+    std::map<std::string, ceph::buffer::list> *out   ///< [out] Key value retrieved
     ) = 0;
   virtual int get(const std::string &prefix, ///< [in] prefix or CF name
 		  const std::string &key,    ///< [in] key
-		  bufferlist *value) {       ///< [out] value
+		  ceph::buffer::list *value) {       ///< [out] value
     std::set<std::string> ks;
     ks.insert(key);
-    std::map<std::string,bufferlist> om;
+    std::map<std::string,ceph::buffer::list> om;
     int r = get(prefix, ks, &om);
     if (om.find(key) != om.end()) {
       *value = std::move(om[key]);
     } else {
-      *value = bufferlist();
+      *value = ceph::buffer::list();
       r = -ENOENT;
     }
     return r;
   }
-  virtual int get(const string &prefix,
+  virtual int get(const std::string &prefix,
 		  const char *key, size_t keylen,
-		  bufferlist *value) {
-    return get(prefix, string(key, keylen), value);
+		  ceph::buffer::list *value) {
+    return get(prefix, std::string(key, keylen), value);
   }
 
   // This superclass is used both by kv iterators *and* by the ObjectMap
@@ -215,7 +201,10 @@ public:
     virtual bool valid() = 0;
     virtual int next() = 0;
     virtual std::string key() = 0;
-    virtual bufferlist value() = 0;
+    virtual std::string tail_key() {
+      return "";
+    }
+    virtual ceph::buffer::list value() = 0;
     virtual int status() = 0;
     virtual ~SimplestIteratorImpl() {}
   };
@@ -226,12 +215,12 @@ public:
     virtual int seek_to_last() = 0;
     virtual int prev() = 0;
     virtual std::pair<std::string, std::string> raw_key() = 0;
-    virtual bufferptr value_as_ptr() {
-      bufferlist bl = value();
+    virtual ceph::buffer::ptr value_as_ptr() {
+      ceph::buffer::list bl = value();
       if (bl.length() == 1) {
         return *bl.buffers().begin();
       } else if (bl.length() == 0) {
-        return bufferptr();
+        return ceph::buffer::ptr();
       } else {
 	ceph_abort();
       }
@@ -254,13 +243,13 @@ public:
     virtual std::string key() = 0;
     virtual std::pair<std::string,std::string> raw_key() = 0;
     virtual bool raw_key_is_prefixed(const std::string &prefix) = 0;
-    virtual bufferlist value() = 0;
-    virtual bufferptr value_as_ptr() {
-      bufferlist bl = value();
+    virtual ceph::buffer::list value() = 0;
+    virtual ceph::buffer::ptr value_as_ptr() {
+      ceph::buffer::list bl = value();
       if (bl.length()) {
         return *bl.buffers().begin();
       } else {
-        return bufferptr();
+        return ceph::buffer::ptr();
       }
     }
     virtual int status() = 0;
@@ -313,10 +302,10 @@ private:
     std::pair<std::string, std::string> raw_key() override {
       return generic_iter->raw_key();
     }
-    bufferlist value() override {
+    ceph::buffer::list value() override {
       return generic_iter->value();
     }
-    bufferptr value_as_ptr() override {
+    ceph::buffer::ptr value_as_ptr() override {
       return generic_iter->value_as_ptr();
     }
     int status() override {
@@ -324,20 +313,19 @@ private:
     }
   };
 public:
+  typedef uint32_t IteratorOpts;
+  static const uint32_t ITERATOR_NOCACHE = 1;
 
-  virtual WholeSpaceIterator get_wholespace_iterator() = 0;
-  virtual Iterator get_iterator(const std::string &prefix) {
+  struct IteratorBounds {
+    std::optional<std::string> lower_bound;
+    std::optional<std::string> upper_bound;
+  };
+
+  virtual WholeSpaceIterator get_wholespace_iterator(IteratorOpts opts = 0) = 0;
+  virtual Iterator get_iterator(const std::string &prefix, IteratorOpts opts = 0, IteratorBounds bounds = IteratorBounds()) {
     return std::make_shared<PrefixIteratorImpl>(
       prefix,
-      get_wholespace_iterator());
-  }
-
-  void add_column_family(const std::string& cf_name, void *handle) {
-    cf_handles.insert(std::make_pair(cf_name, handle));
-  }
-
-  bool is_column_family(const std::string& prefix) {
-    return cf_handles.count(prefix);
+      get_wholespace_iterator(opts));
   }
 
   virtual uint64_t get_estimated_size(std::map<std::string,uint64_t> &extra) = 0;
@@ -357,14 +345,25 @@ public:
     return -EOPNOTSUPP;
   }
 
+  virtual int64_t get_cache_usage(std::string prefix) const {
+    return -EOPNOTSUPP;
+  }
+
   virtual std::shared_ptr<PriorityCache::PriCache> get_priority_cache() const {
     return nullptr;
   }
 
+  virtual std::shared_ptr<PriorityCache::PriCache> get_priority_cache(std::string prefix) const {
+    return nullptr;
+  }
+
+
+
   virtual ~KeyValueDB() {}
 
   /// estimate space utilization for a prefix (in bytes)
-  virtual int64_t estimate_prefix_size(const string& prefix) {
+  virtual int64_t estimate_prefix_size(const std::string& prefix,
+				       const std::string& key_prefix) {
     return 0;
   }
 
@@ -408,7 +407,7 @@ public:
     return -EOPNOTSUPP;
   }
 
-  virtual void get_statistics(Formatter *f) {
+  virtual void get_statistics(ceph::Formatter *f) {
     return;
   }
 
@@ -420,13 +419,22 @@ public:
   virtual PerfCounters *get_perf_counters() {
     return nullptr;
   }
+
+  /**
+   * Access implementation specific integral property corresponding
+   * to passed property and prefic.
+   * Return value is true if property is valid for prefix, populates out.
+   */
+  virtual bool get_property(
+    const std::string &property,
+    uint64_t *out) {
+    return false;
+  }
 protected:
   /// List of matching prefixes/ColumnFamilies and merge operators
   std::vector<std::pair<std::string,
 			std::shared_ptr<MergeOperator> > > merge_ops;
 
-  /// column families in use, name->handle
-  std::unordered_map<std::string, void *> cf_handles;
 };
 
 #endif

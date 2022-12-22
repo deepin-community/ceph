@@ -25,11 +25,12 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "os.asm"
+%include "include/os.asm"
 %include "job_aes_hmac.asm"
 %include "mb_mgr_datastruct.asm"
-%include "memcpy.asm"
-%include "reg_sizes.asm"
+%include "include/memcpy.asm"
+%include "include/reg_sizes.asm"
+%include "include/const.inc"
 
 extern md5_x4x2_sse
 
@@ -129,7 +130,11 @@ submit_job_hmac_md5_sse:
 
         mov	[lane_data + _job_in_lane], job
         mov	dword [lane_data + _outer_done], 0
-        mov	[state + _lens_md5 + 2*lane], WORD(tmp)
+
+        ;; insert len into proper lane
+        movdqa  xmm0, [state + _lens_md5]
+        XPINSRW xmm0, xmm1, p, lane, tmp, scale_x16
+        movdqa  [state + _lens_md5], xmm0
 
         mov	last_len, len
         and	last_len, 63
@@ -180,7 +185,10 @@ end_fast_copy:
         jnz	ge64_bytes
 
 lt64_bytes:
-        mov	[state + _lens_md5 + 2*lane], WORD(extra_blocks)
+        movdqa  xmm0, [state + _lens_md5]
+        XPINSRW xmm0, xmm1, tmp, lane, extra_blocks, scale_x16
+        movdqa  [state + _lens_md5], xmm0
+
         lea	tmp, [lane_data + _extra_block + start_offset]
         mov	[state + _args_data_ptr_md5 + PTR_SZ*lane], tmp
         mov	dword [lane_data + _extra_blocks], 0
@@ -223,7 +231,11 @@ proc_outer:
         mov	dword [lane_data + _outer_done], 1
         mov	DWORD(size_offset), [lane_data + _size_offset]
         mov	qword [lane_data + _extra_block + size_offset], 0
-        mov	word [state + _lens_md5 + 2*idx], 1
+
+        movdqa  xmm0, [state + _lens_md5]
+        XPINSRW xmm0, xmm1, tmp, idx, 1, scale_x16
+        movdqa  [state + _lens_md5], xmm0
+
         lea	tmp, [lane_data + _outer_block]
         mov	job, [lane_data + _job_in_lane]
         mov	[state + _args_data_ptr_md5 + PTR_SZ*idx], tmp
@@ -246,7 +258,11 @@ proc_outer:
         align	16
 proc_extra_blocks:
         mov	DWORD(start_offset), [lane_data + _start_offset]
-        mov	[state + _lens_md5 + 2*idx], WORD(extra_blocks)
+
+        movdqa  xmm0, [state + _lens_md5]
+        XPINSRW xmm0, xmm1, tmp, idx, extra_blocks, scale_x16
+        movdqa  [state + _lens_md5], xmm0
+
         lea	tmp, [lane_data + _extra_block + start_offset]
         mov	[state + _args_data_ptr_md5 + PTR_SZ*idx], tmp
         mov	dword [lane_data + _extra_blocks], 0
@@ -288,6 +304,36 @@ end_loop:
         mov	[p + 0*4], DWORD(tmp)
         mov	[p + 1*4], DWORD(tmp2)
         mov	[p + 2*4], DWORD(tmp3)
+
+        cmp     DWORD [job_rax + _auth_tag_output_len_in_bytes], 12
+        je      clear_ret
+
+        ; copy 16 bytes
+        mov	DWORD(tmp3), [state + _args_digest_md5 + MD5_DIGEST_WORD_SIZE*idx + 3*MD5_DIGEST_ROW_SIZE]
+        mov	[p + 3*4], DWORD(tmp3)
+
+clear_ret:
+
+%ifdef SAFE_DATA
+        ;; Clear digest (16B), outer_block (16B) and extra_block (64B) of returned job
+        mov     dword [state + _args_digest_md5 + MD5_DIGEST_WORD_SIZE*idx + 0*MD5_DIGEST_ROW_SIZE], 0
+        mov     dword [state + _args_digest_md5 + MD5_DIGEST_WORD_SIZE*idx + 1*MD5_DIGEST_ROW_SIZE], 0
+        mov     dword [state + _args_digest_md5 + MD5_DIGEST_WORD_SIZE*idx + 2*MD5_DIGEST_ROW_SIZE], 0
+        mov     dword [state + _args_digest_md5 + MD5_DIGEST_WORD_SIZE*idx + 3*MD5_DIGEST_ROW_SIZE], 0
+
+        pxor    xmm0, xmm0
+        imul    lane_data, idx, _HMAC_SHA1_LANE_DATA_size
+        lea     lane_data, [state + _ldata_md5 + lane_data]
+        ;; Clear first 64 bytes of extra_block
+%assign offset 0
+%rep 4
+        movdqa  [lane_data + _extra_block + offset], xmm0
+%assign offset (offset + 16)
+%endrep
+
+        ;; Clear first 16 bytes of outer_block
+        movdqa  [lane_data + _outer_block], xmm0
+%endif
 
 return:
 

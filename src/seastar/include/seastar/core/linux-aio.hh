@@ -113,7 +113,11 @@ int io_getevents(linux_abi::aio_context_t io_context, long min_nr, long nr, linu
 int io_pgetevents(linux_abi::aio_context_t io_context, long min_nr, long nr, linux_abi::io_event* events, const ::timespec* timeout, const sigset_t* sigmask,
         bool force_syscall = false);
 
+void setup_aio_context(size_t nr, linux_abi::aio_context_t* io_context);
+
 }
+
+extern bool aio_nowait_supported;
 
 namespace internal {
 
@@ -176,6 +180,15 @@ make_poll_iocb(int fd, uint32_t events) {
 }
 
 inline
+linux_abi::iocb
+make_fdsync_iocb(int fd) {
+    linux_abi::iocb iocb{};
+    iocb.aio_lio_opcode = linux_abi::iocb_cmd::FDSYNC;
+    iocb.aio_fildes = fd;
+    return iocb;
+}
+
+inline
 void
 set_user_data(linux_abi::iocb& iocb, void* data) {
     iocb.aio_data = reinterpret_cast<uintptr_t>(data);
@@ -204,10 +217,12 @@ inline
 void
 set_nowait(linux_abi::iocb& iocb, bool nowait) {
 #ifdef RWF_NOWAIT
-    if (nowait) {
-        iocb.aio_rw_flags |= RWF_NOWAIT;
-    } else {
-        iocb.aio_rw_flags &= ~RWF_NOWAIT;
+    if (aio_nowait_supported) {
+        if (nowait) {
+            iocb.aio_rw_flags |= RWF_NOWAIT;
+        } else {
+            iocb.aio_rw_flags &= ~RWF_NOWAIT;
+        }
     }
 #endif
 }

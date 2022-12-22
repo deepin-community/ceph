@@ -16,14 +16,14 @@ the instrumentation of all the tracepoints group in an SPDK target application, 
 target with -e parameter set to 0xFFFF:
 
 ~~~
-app/nvmf_tgt/nvmf_tgt -e 0xFFFF
+build/bin/nvmf_tgt -e 0xFFFF
 ~~~
 
 To enable the instrumentation of just the NVMe-oF RDMA tracepoints in an SPDK target
 application, start the target with the -e parameter set to 0x10:
 
 ~~~
-app/nvmf_tgt/nvmf_tgt -e 0x10
+build/bin/nvmf_tgt -e 0x10
 ~~~
 
 When the target starts, a message is logged with the information you need to view
@@ -55,7 +55,7 @@ The spdk_trace program can be found in the app/trace directory.  To analyze the 
 system running the NVMe-oF target, simply execute the command line shown in the log:
 
 ~~~{.sh}
-app/trace/spdk_trace -s nvmf -p 24147
+build/bin/spdk_trace -s nvmf -p 24147
 ~~~
 
 To analyze the tracepoints on a different system, first prepare the tracepoint file for transfer.  The
@@ -70,7 +70,7 @@ After transferring the /tmp/trace.bz2 tracepoint file to a different system:
 
 ~~~{.sh}
 bunzip2 /tmp/trace.bz2
-app/trace/spdk_trace -f /tmp/trace
+build/bin/spdk_trace -f /tmp/trace
 ~~~
 
 The following is sample trace capture showing the cumulative time that each
@@ -122,6 +122,32 @@ the same I/O.
 28:   6032.623 ( 12668590)     RDMA_REQ_RDY_TO_COMPLETE                                  id:    r3570            time:  90.473
 28:   6032.707 ( 12668766)     RDMA_REQ_COMPLETING                                       id:    r3570            time:  90.557
 28:   6033.056 ( 12669500)     RDMA_REQ_COMPLETED                                        id:    r3564            time:  100.211
+~~~
+
+# Capturing sufficient trace events {#capture_trace_events}
+
+Since the tracepoint file generated directly by SPDK application is a circular buffer in shared memory,
+the trace events captured by it may be insufficient for further analysis.
+The spdk_trace_record program can be found in the app/trace_record directory.
+spdk_trace_record is used to poll the spdk tracepoint shared memory, record new entries from it,
+and store all entries into specified output file at its shutdown on SIGINT or SIGTERM.
+After SPDK nvmf target is launched, simply execute the command line shown in the log:
+
+~~~{.sh}
+build/bin/spdk_trace_record -q -s nvmf -p 24147 -f /tmp/spdk_nvmf_record.trace
+~~~
+
+Also send I/Os to the SPDK target application to generate events by previous perf example for 10 minutes.
+
+~~~{.sh}
+./perf -q 128 -s 4096 -w randread -t 600 -r 'trtype:RDMA adrfam:IPv4 traddr:192.168.100.2 trsvcid:4420'
+~~~
+
+After the completion of perf example, shut down spdk_trace_record by signal SIGINT (Ctrl + C).
+To analyze the tracepoints output file from spdk_trace_record, simply run spdk_trace program by:
+
+~~~{.sh}
+build/bin/spdk_trace -f /tmp/spdk_nvmf_record.trace
 ~~~
 
 # Adding New Tracepoints {#add_tracepoints}

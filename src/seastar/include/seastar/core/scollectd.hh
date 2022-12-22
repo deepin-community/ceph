@@ -37,7 +37,6 @@
 #include <seastar/net/byteorder.hh>
 #include <seastar/core/shared_ptr.hh>
 #include <seastar/core/sstring.hh>
-#include <seastar/core/print.hh>
 #include <seastar/util/log.hh>
 
 #include <seastar/core/metrics_api.hh>
@@ -57,12 +56,12 @@ namespace seastar {
  *		scollectd::add_polled_metric(typ, [<metric var> | scollectd::make_typed(<data_type>, <metric_var>) [, ...]);
  *
  * Where
- * 	<pluginname> would be the overall 'module', e.g. "cpu"
- *  <instance_name> -> optional distinguisher between plugin instances. For cpu, the built-in
+ * 	`<pluginname>` would be the overall 'module', e.g. "cpu"
+ *  `<instance_name>` -> optional distinguisher between plugin instances. For cpu, the built-in
  *  scollectd::per_cpu_plugin_instance constant is a good choice, i.e. 0->N cpu.
  *  If there are no instances (e.g. only one), empty constant is appropriate (none)
- *  <type_name> is the 'type' of metric collected, for ex. "usage" (cpu/0/usage)
- *  <type_instance> is a distinguisher for metric parts of the type, e.g. "idle", "user", "kernel"
+ *  `<type_name>` is the 'type' of metric collected, for ex. "usage" (cpu/0/usage)
+ *  `<type_instance>` is a distinguisher for metric parts of the type, e.g. "idle", "user", "kernel"
  *  -> cpu/0/usage/idle | cpu/0/usage/user | cpu/0/usage/kernel
  *
  *  Each type instance can bind an arbitrary number of values, ech representing some aspect in turn of the instance.
@@ -303,15 +302,7 @@ class type_instance_id {
     static thread_local unsigned _next_truncated_idx;
 
     /// truncate a given field to the maximum allowed length
-    void truncate(sstring& field, const char* field_desc) {
-        if (field.size() > max_collectd_field_text_len) {
-            auto suffix_len = std::ceil(std::log10(++_next_truncated_idx)) + 1;
-            sstring new_field(seastar::format("{}~{:d}", sstring(field.data(), max_collectd_field_text_len - suffix_len), _next_truncated_idx));
-
-            logger.warn("Truncating \"{}\" to {} chars: \"{}\" -> \"{}\"", field_desc, max_collectd_field_text_len, field, new_field);
-            field = std::move(new_field);
-        }
-    }
+    void truncate(sstring& field, const char* field_desc);
 public:
     type_instance_id() = default;
     type_instance_id(plugin_id p, plugin_instance_id pi, type_id t,
@@ -324,8 +315,8 @@ public:
         truncate(_type, "type");
         truncate(_type_instance, "type_instance");
     }
-    type_instance_id(const seastar::metrics::impl::metric_id &id) : _plugin(id.group_name()),
-            _plugin_instance(id.instance_id()), _type(id.inherit_type()),
+    type_instance_id(const seastar::metrics::impl::metric_id &id, const type_id& inherit_type) : _plugin(id.group_name()),
+            _plugin_instance(id.instance_id()), _type(inherit_type),
             _type_instance(id.name()) {
     }
     type_instance_id(type_instance_id &&) = default;
@@ -792,9 +783,7 @@ seastar::metrics::impl::metric_id to_metrics_id(const type_instance_id & id);
 template<typename Arg>
 [[deprecated("Use the metrics layer")]] static type_instance_id add_polled_metric(const type_instance_id & id, description d,
         Arg&& arg, bool enabled = true) {
-    namespace sm = seastar::metrics::impl;
-
-    seastar::metrics::impl::get_local_impl()->add_registration(to_metrics_id(id), arg.type, sm::make_function(arg.value, arg.type), d, enabled);
+    seastar::metrics::impl::get_local_impl()->add_registration(to_metrics_id(id), arg.type, seastar::metrics::impl::make_function(arg.value, arg.type), d, enabled);
     return id;
 }
 /*!

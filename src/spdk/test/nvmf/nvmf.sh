@@ -9,56 +9,52 @@ fi
 
 source $rootdir/test/nvmf/common.sh
 
-timing_enter nvmf_tgt
+trap "exit 1" SIGINT SIGTERM EXIT
 
-# NVMF_TEST_CORE_MASK is the biggest core mask specified by
-#  any of the nvmf_tgt tests.  Using this mask for the stub
-#  ensures that if this mask spans CPU sockets, that we will
-#  allocate memory from both sockets.  The stub will *not*
-#  run anything on the extra cores (and will sleep on master
-#  core 0) so there is no impact to the nvmf_tgt tests by
-#  specifying the bigger core mask.
-start_stub "-s 2048 -i 0 -m $NVMF_TEST_CORE_MASK"
-trap "kill_stub; exit 1" SIGINT SIGTERM EXIT
+TEST_ARGS=("$@")
 
-export NVMF_APP_SHM_ID="0"
-export NVMF_APP="./app/nvmf_tgt/nvmf_tgt -i $NVMF_APP_SHM_ID -e 0xFFFF"
-
-run_test suite test/nvmf/filesystem/filesystem.sh
-run_test suite test/nvmf/discovery/discovery.sh
+run_test "nvmf_example" test/nvmf/target/nvmf_example.sh "${TEST_ARGS[@]}"
+run_test "nvmf_filesystem" test/nvmf/target/filesystem.sh "${TEST_ARGS[@]}"
+run_test "nvmf_discovery" test/nvmf/target/discovery.sh "${TEST_ARGS[@]}"
+run_test "nvmf_connect_disconnect" test/nvmf/target/connect_disconnect.sh "${TEST_ARGS[@]}"
 if [ $SPDK_TEST_NVME_CLI -eq 1 ]; then
-	run_test suite test/nvmf/nvme_cli/nvme_cli.sh
+	run_test "nvmf_nvme_cli" test/nvmf/target/nvme_cli.sh "${TEST_ARGS[@]}"
 fi
-run_test suite test/nvmf/lvol/nvmf_lvol.sh
-run_test suite test/nvmf/shutdown/shutdown.sh
-run_test suite test/nvmf/bdev_io_wait/bdev_io_wait.sh
-run_test suite test/nvmf/create_transport/create_transport.sh
+run_test "nvmf_lvol" test/nvmf/target/nvmf_lvol.sh "${TEST_ARGS[@]}"
+#TODO: disabled due to intermittent failures. Need to triage.
+# run_test "nvmf_srq_overwhelm" test/nvmf/target/srq_overwhelm.sh $TEST_ARGS
+run_test "nvmf_vhost" test/nvmf/target/nvmf_vhost.sh "${TEST_ARGS[@]}"
+run_test "nvmf_bdev_io_wait" test/nvmf/target/bdev_io_wait.sh "${TEST_ARGS[@]}"
+run_test "nvmf_create_transport." test/nvmf/target/create_transport.sh "${TEST_ARGS[@]}"
+run_test "nvmf_multitarget" test/nvmf/target/multitarget.sh "${TEST_ARGS[@]}"
 
 if [ $RUN_NIGHTLY -eq 1 ]; then
-	run_test suite test/nvmf/multiconnection/multiconnection.sh
+	run_test "nvmf_fuzz" test/nvmf/target/fuzz.sh "${TEST_ARGS[@]}"
+	run_test "nvmf_multiconnection" test/nvmf/target/multiconnection.sh "${TEST_ARGS[@]}"
+	run_test "nvmf_initiator_timeout" test/nvmf/target/initiator_timeout.sh "${TEST_ARGS[@]}"
 fi
+
+run_test "nvmf_nmic" test/nvmf/target/nmic.sh "${TEST_ARGS[@]}"
+run_test "nvmf_rpc" test/nvmf/target/rpc.sh "${TEST_ARGS[@]}"
+run_test "nvmf_fio" test/nvmf/target/fio.sh "${TEST_ARGS[@]}"
+run_test "nvmf_shutdown" test/nvmf/target/shutdown.sh "${TEST_ARGS[@]}"
+run_test "nvmf_bdevio" test/nvmf/target/bdevio.sh "${TEST_ARGS[@]}"
+run_test "nvmf_invalid" test/nvmf/target/invalid.sh "${TEST_ARGS[@]}"
+run_test "nvmf_abort" test/nvmf/target/abort.sh "${TEST_ARGS[@]}"
 
 timing_enter host
 
-run_test suite test/nvmf/host/bdevperf.sh
-run_test suite test/nvmf/host/identify.sh
-run_test suite test/nvmf/host/perf.sh
-# TODO: disabled due to intermittent failures (RDMA_CM_EVENT_UNREACHABLE/ETIMEDOUT)
-#run_test test/nvmf/host/identify_kernel_nvmf.sh
-run_test suite test/nvmf/host/aer.sh
-run_test suite test/nvmf/host/fio.sh
+run_test "nvmf_bdevperf" test/nvmf/host/bdevperf.sh "${TEST_ARGS[@]}"
+run_test "nvmf_identify" test/nvmf/host/identify.sh "${TEST_ARGS[@]}"
+run_test "nvmf_perf" test/nvmf/host/perf.sh "${TEST_ARGS[@]}"
 
-run_test suite test/nvmf/nmic/nmic.sh
+# TODO: disabled due to intermittent failures (RDMA_CM_EVENT_UNREACHABLE/ETIMEDOUT)
+#run_test test/nvmf/host/identify_kernel_nvmf.sh $TEST_ARGS
+run_test "nvmf_aer" test/nvmf/host/aer.sh "${TEST_ARGS[@]}"
+run_test "nvmf_fio" test/nvmf/host/fio.sh "${TEST_ARGS[@]}"
+run_test "nvmf_target_disconnect" test/nvmf/host/target_disconnect.sh "${TEST_ARGS[@]}"
 
 timing_exit host
+
 trap - SIGINT SIGTERM EXIT
-kill_stub
-
-# TODO: enable nvme device detachment for multi-process so that
-#  we can use the stub for this test
-run_test suite test/nvmf/rpc/rpc.sh
-run_test suite test/nvmf/fio/fio.sh
 revert_soft_roce
-
-report_test_completion "nvmf"
-timing_exit nvmf_tgt

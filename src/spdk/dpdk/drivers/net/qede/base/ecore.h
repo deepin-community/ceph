@@ -19,6 +19,7 @@
 #include <zlib.h>
 #endif
 
+#include "ecore_status.h"
 #include "ecore_hsi_common.h"
 #include "ecore_hsi_debug_tools.h"
 #include "ecore_hsi_init_func.h"
@@ -27,8 +28,8 @@
 #include "mcp_public.h"
 
 #define ECORE_MAJOR_VERSION		8
-#define ECORE_MINOR_VERSION		30
-#define ECORE_REVISION_VERSION		8
+#define ECORE_MINOR_VERSION		40
+#define ECORE_REVISION_VERSION		26
 #define ECORE_ENGINEERING_VERSION	0
 
 #define ECORE_VERSION							\
@@ -207,6 +208,7 @@ struct ecore_l2_info;
 struct ecore_igu_info;
 struct ecore_mcp_info;
 struct ecore_dcbx_info;
+struct ecore_llh_info;
 
 struct ecore_rt_data {
 	u32	*init_val;
@@ -465,6 +467,8 @@ struct ecore_wfq_data {
 	bool configured;
 };
 
+#define OFLD_GRP_SIZE 4
+
 struct ecore_qm_info {
 	struct init_qm_pq_params    *qm_pq_params;
 	struct init_qm_vport_params *qm_vport_params;
@@ -511,6 +515,8 @@ struct ecore_fw_data {
 	const u8 *modes_tree_buf;
 	union init_op *init_ops;
 	const u32 *arr_data;
+	const u32 *fw_overlays;
+	u32 fw_overlays_len;
 	u32 init_ops_size;
 };
 
@@ -543,6 +549,9 @@ enum ecore_mf_mode_bit {
 
 	/* Use stag for steering */
 	ECORE_MF_8021AD_TAGGING,
+
+	/* Allow FIP discovery fallback */
+	ECORE_MF_FIP_SPECIAL,
 };
 
 enum ecore_ufp_mode {
@@ -587,6 +596,7 @@ struct ecore_hwfn {
 
 	u8				num_funcs_on_engine;
 	u8				enabled_func_idx;
+	u8				num_funcs_on_port;
 
 	/* BAR access */
 	void OSAL_IOMEM			*regview;
@@ -660,6 +670,7 @@ struct ecore_hwfn {
 #endif
 
 	struct dbg_tools_data		dbg_info;
+	void				*dbg_user_info;
 
 	struct z_stream_s		*stream;
 
@@ -687,6 +698,8 @@ struct ecore_hwfn {
 	 * struct ecore_hw_prepare_params by ecore client.
 	 */
 	bool b_en_pacing;
+
+	struct phys_mem_desc            *fw_overlay_mem;
 
 	/* @DPDK */
 	struct ecore_ptt		*p_arfs_ptt;
@@ -827,13 +840,31 @@ struct ecore_dev {
 	u8				cache_shift;
 
 	/* Init */
-	const struct iro		*iro_arr;
-	#define IRO (p_hwfn->p_dev->iro_arr)
+	const u32			*iro_arr;
+#define IRO	((const struct iro *)p_hwfn->p_dev->iro_arr)
 
 	/* HW functions */
 	u8				num_hwfns;
 	struct ecore_hwfn		hwfns[MAX_HWFNS_PER_DEVICE];
+#define ECORE_LEADING_HWFN(dev)		(&dev->hwfns[0])
 #define ECORE_IS_CMT(dev)		((dev)->num_hwfns > 1)
+
+	/* Engine affinity */
+	u8				l2_affin_hint;
+	u8				fir_affin;
+	u8				iwarp_affin;
+	/* Macro for getting the engine-affinitized hwfn for FCoE/iSCSI/RoCE */
+#define ECORE_FIR_AFFIN_HWFN(dev)	(&dev->hwfns[dev->fir_affin])
+	/* Macro for getting the engine-affinitized hwfn for iWARP */
+#define ECORE_IWARP_AFFIN_HWFN(dev)	(&dev->hwfns[dev->iwarp_affin])
+	/* Generic macro for getting the engine-affinitized hwfn */
+#define ECORE_AFFIN_HWFN(dev) \
+	(ECORE_IS_IWARP_PERSONALITY(ECORE_LEADING_HWFN(dev)) ? \
+	 ECORE_IWARP_AFFIN_HWFN(dev) : \
+	 ECORE_FIR_AFFIN_HWFN(dev))
+	/* Macro for getting the index (0/1) of the engine-affinitized hwfn */
+#define ECORE_AFFIN_HWFN_IDX(dev) \
+	(IS_LEAD_HWFN(ECORE_AFFIN_HWFN(dev)) ? 0 : 1)
 
 	/* SRIOV */
 	struct ecore_hw_sriov_info	*p_iov_info;
@@ -868,7 +899,14 @@ struct ecore_dev {
 
 #ifndef ASIC_ONLY
 	bool				b_is_emul_full;
+	bool				b_is_emul_mac;
 #endif
+	/* LLH info */
+	u8				ppfid_bitmap;
+	struct ecore_llh_info		*p_llh_info;
+
+	/* Indicates whether this PF serves a storage target */
+	bool				b_is_target;
 
 #ifdef CONFIG_ECORE_BINARY_FW /* @DPDK */
 	void				*firmware;
@@ -880,16 +918,52 @@ struct ecore_dev {
 	u8				engine_for_debug;
 };
 
-#define NUM_OF_VFS(dev)		(ECORE_IS_BB(dev) ? MAX_NUM_VFS_BB \
-						  : MAX_NUM_VFS_K2)
-#define NUM_OF_L2_QUEUES(dev)	(ECORE_IS_BB(dev) ? MAX_NUM_L2_QUEUES_BB \
-						  : MAX_NUM_L2_QUEUES_K2)
-#define NUM_OF_PORTS(dev)	(ECORE_IS_BB(dev) ? MAX_NUM_PORTS_BB \
-						  : MAX_NUM_PORTS_K2)
-#define NUM_OF_SBS(dev)		(ECORE_IS_BB(dev) ? MAX_SB_PER_PATH_BB \
-						  : MAX_SB_PER_PATH_K2)
-#define NUM_OF_ENG_PFS(dev)	(ECORE_IS_BB(dev) ? MAX_NUM_PFS_BB \
-						  : MAX_NUM_PFS_K2)
+enum ecore_hsi_def_type {
+	ECORE_HSI_DEF_MAX_NUM_VFS,
+	ECORE_HSI_DEF_MAX_NUM_L2_QUEUES,
+	ECORE_HSI_DEF_MAX_NUM_PORTS,
+	ECORE_HSI_DEF_MAX_SB_PER_PATH,
+	ECORE_HSI_DEF_MAX_NUM_PFS,
+	ECORE_HSI_DEF_MAX_NUM_VPORTS,
+	ECORE_HSI_DEF_NUM_ETH_RSS_ENGINE,
+	ECORE_HSI_DEF_MAX_QM_TX_QUEUES,
+	ECORE_HSI_DEF_NUM_PXP_ILT_RECORDS,
+	ECORE_HSI_DEF_NUM_RDMA_STATISTIC_COUNTERS,
+	ECORE_HSI_DEF_MAX_QM_GLOBAL_RLS,
+	ECORE_HSI_DEF_MAX_PBF_CMD_LINES,
+	ECORE_HSI_DEF_MAX_BTB_BLOCKS,
+	ECORE_NUM_HSI_DEFS
+};
+
+u32 ecore_get_hsi_def_val(struct ecore_dev *p_dev,
+			  enum ecore_hsi_def_type type);
+
+#define NUM_OF_VFS(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_MAX_NUM_VFS)
+#define NUM_OF_L2_QUEUES(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_MAX_NUM_L2_QUEUES)
+#define NUM_OF_PORTS(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_MAX_NUM_PORTS)
+#define NUM_OF_SBS(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_MAX_SB_PER_PATH)
+#define NUM_OF_ENG_PFS(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_MAX_NUM_PFS)
+#define NUM_OF_VPORTS(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_MAX_NUM_VPORTS)
+#define NUM_OF_RSS_ENGINES(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_NUM_ETH_RSS_ENGINE)
+#define NUM_OF_QM_TX_QUEUES(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_MAX_QM_TX_QUEUES)
+#define NUM_OF_PXP_ILT_RECORDS(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_NUM_PXP_ILT_RECORDS)
+#define NUM_OF_RDMA_STATISTIC_COUNTERS(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_NUM_RDMA_STATISTIC_COUNTERS)
+#define NUM_OF_QM_GLOBAL_RLS(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_MAX_QM_GLOBAL_RLS)
+#define NUM_OF_PBF_CMD_LINES(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_MAX_PBF_CMD_LINES)
+#define NUM_OF_BTB_BLOCKS(dev) \
+	ecore_get_hsi_def_val(dev, ECORE_HSI_DEF_MAX_BTB_BLOCKS)
 
 #define CRC8_TABLE_SIZE 256
 
@@ -917,7 +991,6 @@ static OSAL_INLINE u8 ecore_concrete_to_sw_fid(u32 concrete_fid)
 }
 
 #define PKT_LB_TC 9
-#define MAX_NUM_VOQS_E4 20
 
 int ecore_configure_vport_wfq(struct ecore_dev *p_dev, u16 vp_id, u32 rate);
 void ecore_configure_vp_wfq_on_link_change(struct ecore_dev *p_dev,
@@ -958,6 +1031,8 @@ void ecore_db_recovery_dp(struct ecore_hwfn *p_hwfn);
 void ecore_db_recovery_execute(struct ecore_hwfn *p_hwfn,
 			       enum ecore_db_rec_exec);
 
+bool ecore_edpm_enabled(struct ecore_hwfn *p_hwfn);
+
 /* amount of resources used in qm init */
 u8 ecore_init_qm_get_num_tcs(struct ecore_hwfn *p_hwfn);
 u16 ecore_init_qm_get_num_vfs(struct ecore_hwfn *p_hwfn);
@@ -965,6 +1040,34 @@ u16 ecore_init_qm_get_num_pf_rls(struct ecore_hwfn *p_hwfn);
 u16 ecore_init_qm_get_num_vports(struct ecore_hwfn *p_hwfn);
 u16 ecore_init_qm_get_num_pqs(struct ecore_hwfn *p_hwfn);
 
-#define ECORE_LEADING_HWFN(dev)	(&dev->hwfns[0])
+#define MFW_PORT(_p_hwfn)	((_p_hwfn)->abs_pf_id % \
+				 ecore_device_num_ports((_p_hwfn)->p_dev))
+
+/* The PFID<->PPFID calculation is based on the relative index of a PF on its
+ * port. In BB there is a bug in the LLH in which the PPFID is actually engine
+ * based, and thus it equals the PFID.
+ */
+#define ECORE_PFID_BY_PPFID(_p_hwfn, abs_ppfid) \
+	(ECORE_IS_BB((_p_hwfn)->p_dev) ? \
+	 (abs_ppfid) : \
+	 (abs_ppfid) * (_p_hwfn)->p_dev->num_ports_in_engine + \
+	 MFW_PORT(_p_hwfn))
+#define ECORE_PPFID_BY_PFID(_p_hwfn) \
+	(ECORE_IS_BB((_p_hwfn)->p_dev) ? \
+	 (_p_hwfn)->rel_pf_id : \
+	 (_p_hwfn)->rel_pf_id / (_p_hwfn)->p_dev->num_ports_in_engine)
+
+enum _ecore_status_t ecore_all_ppfids_wr(struct ecore_hwfn *p_hwfn,
+					 struct ecore_ptt *p_ptt, u32 addr,
+					 u32 val);
+
+/* Utility functions for dumping the content of the NIG LLH filters */
+enum _ecore_status_t ecore_llh_dump_ppfid(struct ecore_dev *p_dev, u8 ppfid);
+enum _ecore_status_t ecore_llh_dump_all(struct ecore_dev *p_dev);
+
+#define TSTORM_QZONE_START	PXP_VF_BAR0_START_SDM_ZONE_A
+
+#define MSTORM_QZONE_START(dev) \
+	(TSTORM_QZONE_START + (TSTORM_QZONE_SIZE * NUM_OF_L2_QUEUES(dev)))
 
 #endif /* __ECORE_H */

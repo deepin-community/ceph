@@ -25,10 +25,10 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "os.asm"
+%include "include/os.asm"
 %include "job_aes_hmac.asm"
 %include "mb_mgr_datastruct.asm"
-%include "reg_sizes.asm"
+%include "include/reg_sizes.asm"
 
 extern sha256_oct_avx2
 
@@ -257,12 +257,18 @@ end_loop:
 
 	mov	p, [job_rax + _auth_tag_output]
 
-	; copy SHA224=14bytes and SHA256=16bytes
+%ifdef SHA224
+        cmp     qword [job_rax + _auth_tag_output_len_in_bytes], 14
+        jne     copy_full_digest
+%else
+        cmp     qword [job_rax + _auth_tag_output_len_in_bytes], 16
+        jne     copy_full_digest
+%endif
+	;; copy SHA224 14bytes / SHA256 16bytes
 	mov	DWORD(tmp),  [state + _args_digest_sha256 + 4*idx + 0*SHA256_DIGEST_ROW_SIZE]
 	mov	DWORD(tmp2), [state + _args_digest_sha256 + 4*idx + 1*SHA256_DIGEST_ROW_SIZE]
 	mov	DWORD(tmp4), [state + _args_digest_sha256 + 4*idx + 2*SHA256_DIGEST_ROW_SIZE]
 	mov	DWORD(tmp5), [state + _args_digest_sha256 + 4*idx + 3*SHA256_DIGEST_ROW_SIZE]
-
 	bswap	DWORD(tmp)
 	bswap	DWORD(tmp2)
 	bswap	DWORD(tmp4)
@@ -270,12 +276,87 @@ end_loop:
 	mov	[p + 0*4], DWORD(tmp)
 	mov	[p + 1*4], DWORD(tmp2)
 	mov	[p + 2*4], DWORD(tmp4)
-
 %ifdef SHA224
 	mov	[p + 3*4], WORD(tmp5)
 %else
 	mov	[p + 3*4], DWORD(tmp5)
 %endif
+        jmp     clear_ret
+
+copy_full_digest:
+	mov	DWORD(tmp),  [state + _args_digest_sha256 + 4*idx + 0*SHA256_DIGEST_ROW_SIZE]
+	mov	DWORD(tmp2), [state + _args_digest_sha256 + 4*idx + 1*SHA256_DIGEST_ROW_SIZE]
+	mov	DWORD(tmp4), [state + _args_digest_sha256 + 4*idx + 2*SHA256_DIGEST_ROW_SIZE]
+	mov	DWORD(tmp5), [state + _args_digest_sha256 + 4*idx + 3*SHA256_DIGEST_ROW_SIZE]
+	bswap	DWORD(tmp)
+	bswap	DWORD(tmp2)
+	bswap	DWORD(tmp4)
+	bswap	DWORD(tmp5)
+	mov	[p + 0*4], DWORD(tmp)
+	mov	[p + 1*4], DWORD(tmp2)
+	mov	[p + 2*4], DWORD(tmp4)
+	mov	[p + 3*4], DWORD(tmp5)
+
+	mov	DWORD(tmp),  [state + _args_digest_sha256 + 4*idx + 4*SHA256_DIGEST_ROW_SIZE]
+	mov	DWORD(tmp2), [state + _args_digest_sha256 + 4*idx + 5*SHA256_DIGEST_ROW_SIZE]
+	mov	DWORD(tmp4), [state + _args_digest_sha256 + 4*idx + 6*SHA256_DIGEST_ROW_SIZE]
+%ifndef SHA224
+	mov	DWORD(tmp5), [state + _args_digest_sha256 + 4*idx + 7*SHA256_DIGEST_ROW_SIZE]
+%endif
+	bswap	DWORD(tmp)
+	bswap	DWORD(tmp2)
+	bswap	DWORD(tmp4)
+%ifndef SHA224
+	bswap	DWORD(tmp5)
+%endif
+	mov	[p + 4*4], DWORD(tmp)
+	mov	[p + 5*4], DWORD(tmp2)
+	mov	[p + 6*4], DWORD(tmp4)
+%ifndef SHA224
+	mov	[p + 7*4], DWORD(tmp5)
+%endif
+
+clear_ret:
+
+%ifdef SAFE_DATA
+        vpxor   ymm0, ymm0
+
+        ;; Clear digest (28B/32B), outer_block (28B/32B) and extra_block (64B)
+        ;; of returned job and NULL jobs
+%assign I 0
+%rep 8
+	cmp	qword [state + _ldata_sha256 + (I*_HMAC_SHA1_LANE_DATA_size) + _job_in_lane], 0
+	jne	APPEND(skip_clear_,I)
+
+        ;; Clear digest (28 bytes for SHA-224, 32 bytes for SHA-256 bytes)
+%assign J 0
+%rep 7
+        mov     dword [state + _args_digest_sha256 + SHA256_DIGEST_WORD_SIZE*I + J*SHA256_DIGEST_ROW_SIZE], 0
+%assign J (J+1)
+%endrep
+%ifndef SHA224
+        mov     dword [state + _args_digest_sha256 + SHA256_DIGEST_WORD_SIZE*I + 7*SHA256_DIGEST_ROW_SIZE], 0
+%endif
+
+        lea     lane_data, [state + _ldata_sha256 + (I*_HMAC_SHA1_LANE_DATA_size)]
+        ;; Clear first 64 bytes of extra_block
+        vmovdqa [lane_data + _extra_block], ymm0
+        vmovdqa [lane_data + _extra_block + 32], ymm0
+
+        ;; Clear first 28 bytes (SHA-224) or 32 bytes (SHA-256) of outer_block
+%ifdef SHA224
+        vmovdqa [lane_data + _outer_block], xmm0
+        mov     qword [lane_data + _outer_block + 16], 0
+        mov     dword [lane_data + _outer_block + 24], 0
+%else
+        vmovdqu [lane_data + _outer_block], ymm0
+%endif
+
+APPEND(skip_clear_,I):
+%assign I (I+1)
+%endrep
+
+%endif ;; SAFE_DATA
 
 return:
         vzeroupper

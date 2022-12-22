@@ -25,11 +25,12 @@
 ;; OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ;;
 
-%include "os.asm"
+%include "include/os.asm"
 %include "job_aes_hmac.asm"
 %include "mb_mgr_datastruct.asm"
-%include "reg_sizes.asm"
-%include "memcpy.asm"
+%include "include/reg_sizes.asm"
+%include "include/memcpy.asm"
+%include "include/const.inc"
 
 extern sha512_x2_sse
 
@@ -128,7 +129,10 @@ FUNC:
 
 	mov	[lane_data + _job_in_lane_sha512], job
 	mov	dword [lane_data + _outer_done_sha512], 0
-	mov	[state + _lens_sha512 + 2*lane], WORD(tmp) ; 2 is word size in bytes
+
+        movdqa  xmm0, [state + _lens_sha512]
+        XPINSRW xmm0, xmm1, p, lane, tmp, scale_x16
+        movdqa  [state + _lens_sha512], xmm0
 
 	mov	last_len, len
 	and	last_len, 127
@@ -184,7 +188,10 @@ end_fast_copy:
 	jnz	ge128_bytes
 
 lt128_bytes:
-	mov	[state + _lens_sha512 + 2*lane], WORD(extra_blocks)
+        movdqa  xmm0, [state + _lens_sha512]
+        XPINSRW xmm0, xmm1, tmp, lane, extra_blocks, scale_x16
+        movdqa  [state + _lens_sha512], xmm0
+
 	lea	tmp, [lane_data + _extra_block_sha512 + start_offset]
 	mov	[state + _args_data_ptr_sha512 + PTR_SZ*lane], tmp ;; 8 to hold a UINT8
 	mov	dword [lane_data + _extra_blocks_sha512], 0
@@ -227,7 +234,11 @@ proc_outer:
 	mov	dword [lane_data + _outer_done_sha512], 1
 	mov	DWORD(size_offset), [lane_data + _size_offset_sha512]
 	mov	qword [lane_data + _extra_block_sha512 + size_offset], 0
-	mov	word [state + _lens_sha512 + 2*idx], 1
+
+        movdqa  xmm0, [state + _lens_sha512]
+        XPINSRW xmm0, xmm1, tmp, idx, 1, scale_x16
+        movdqa  [state + _lens_sha512], xmm0
+
 	lea	tmp, [lane_data + _outer_block_sha512]
 	mov	job, [lane_data + _job_in_lane_sha512]
 	mov	[state + _args_data_ptr_sha512 + PTR_SZ*idx], tmp
@@ -254,7 +265,11 @@ proc_outer:
 	align	16
 proc_extra_blocks:
 	mov	DWORD(start_offset), [lane_data + _start_offset_sha512]
-	mov	[state + _lens_sha512 + 2*idx], WORD(extra_blocks)
+
+        movdqa  xmm0, [state + _lens_sha512]
+        XPINSRW xmm0, xmm1, tmp, idx, extra_blocks, scale_x16
+        movdqa  [state + _lens_sha512], xmm0
+
 	lea	tmp, [lane_data + _extra_block_sha512 + start_offset]
 	mov	[state + _args_data_ptr_sha512 + PTR_SZ*idx], tmp
 	mov	dword [lane_data + _extra_blocks_sha512], 0
@@ -287,8 +302,15 @@ end_loop:
 
 	mov	p, [job_rax + _auth_tag_output]
 
-	; below is the code for both SHA512 & SHA384. SHA512=32 bytes and SHA384=24 bytes
+%if (SHA_X_DIGEST_SIZE != 384)
+        cmp     qword [job_rax + _auth_tag_output_len_in_bytes], 32
+        jne     copy_full_digest
+%else
+        cmp     qword [job_rax + _auth_tag_output_len_in_bytes], 24
+        jne     copy_full_digest
+%endif
 
+	;; copy 32 bytes for SHA512 / 24 bytes for SHA384
 	mov	QWORD(tmp),  [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 0*SHA512_DIGEST_ROW_SIZE]
 	mov	QWORD(tmp2), [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 1*SHA512_DIGEST_ROW_SIZE]
 	mov	QWORD(tmp3), [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 2*SHA512_DIGEST_ROW_SIZE]
@@ -307,9 +329,75 @@ end_loop:
 %if (SHA_X_DIGEST_SIZE != 384)
 	mov	[p + 3*8], QWORD(tmp4)
 %endif
+        jmp     clear_ret
+
+copy_full_digest:
+	;; copy 64 bytes for SHA512 / 48 bytes for SHA384
+	mov	QWORD(tmp),  [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 0*SHA512_DIGEST_ROW_SIZE]
+	mov	QWORD(tmp2), [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 1*SHA512_DIGEST_ROW_SIZE]
+	mov	QWORD(tmp3), [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 2*SHA512_DIGEST_ROW_SIZE]
+	mov	QWORD(tmp4), [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 3*SHA512_DIGEST_ROW_SIZE] ; this line of code will run only for SHA512
+	bswap	QWORD(tmp)
+	bswap	QWORD(tmp2)
+	bswap	QWORD(tmp3)
+	bswap	QWORD(tmp4)
+	mov	[p + 0*8], QWORD(tmp)
+	mov	[p + 1*8], QWORD(tmp2)
+	mov	[p + 2*8], QWORD(tmp3)
+	mov	[p + 3*8], QWORD(tmp4)
+	mov	QWORD(tmp),  [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 4*SHA512_DIGEST_ROW_SIZE]
+	mov	QWORD(tmp2), [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 5*SHA512_DIGEST_ROW_SIZE]
+%if (SHA_X_DIGEST_SIZE != 384)
+	mov	QWORD(tmp3), [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 6*SHA512_DIGEST_ROW_SIZE]
+	mov	QWORD(tmp4), [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 7*SHA512_DIGEST_ROW_SIZE] ; this line of code will run only for SHA512
+%endif
+	bswap	QWORD(tmp)
+	bswap	QWORD(tmp2)
+%if (SHA_X_DIGEST_SIZE != 384)
+	bswap	QWORD(tmp3)
+	bswap	QWORD(tmp4)
+%endif
+	mov	[p + 4*8], QWORD(tmp)
+	mov	[p + 5*8], QWORD(tmp2)
+%if (SHA_X_DIGEST_SIZE != 384)
+	mov	[p + 6*8], QWORD(tmp3)
+	mov	[p + 7*8], QWORD(tmp4)
+%endif
+
+clear_ret:
+
+%ifdef SAFE_DATA
+        ;; Clear digest (48B/64B), outer_block (48B/64B) and extra_block (128B) of returned job
+%assign J 0
+%rep 6
+        mov     qword [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + J*SHA512_DIGEST_ROW_SIZE], 0
+%assign J (J+1)
+%endrep
+%if (SHA_X_DIGEST_SIZE != 384)
+        mov     qword [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 6*SHA256_DIGEST_ROW_SIZE], 0
+        mov     qword [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 7*SHA256_DIGEST_ROW_SIZE], 0
+%endif
+
+        pxor    xmm0, xmm0
+        imul	lane_data, idx, _SHA512_LANE_DATA_size
+        lea	lane_data, [state + _ldata_sha512 + lane_data]
+        ;; Clear first 128 bytes of extra_block
+%assign offset 0
+%rep 8
+        movdqa  [lane_data + _extra_block + offset], xmm0
+%assign offset (offset + 16)
+%endrep
+
+        ;; Clear first 48 bytes (SHA-384) or 64 bytes (SHA-512) of outer_block
+        movdqa  [lane_data + _outer_block], xmm0
+        movdqa  [lane_data + _outer_block + 16], xmm0
+        movdqa  [lane_data + _outer_block + 32], xmm0
+%if (SHA_X_DIGEST_SIZE != 384)
+        movdqa  [lane_data + _outer_block + 48], xmm0
+%endif
+%endif ;; SAFE_DATA
 
 return:
-
 	mov	rbx, [rsp + _gpr_save + 8*0]
 	mov	rbp, [rsp + _gpr_save + 8*1]
 %ifndef LINUX
@@ -317,7 +405,6 @@ return:
 	mov	rdi, [rsp + _gpr_save + 8*3]
 %endif
 	mov	rsp, [rsp + _rsp_save]	; original SP
-
 	ret
 
 %ifdef LINUX

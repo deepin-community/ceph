@@ -1,17 +1,17 @@
 import { TestBed } from '@angular/core/testing';
 
-import { configureTestBed, i18nProviders } from '../../../testing/unit-test-helper';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { MdsSummaryPipe } from './mds-summary.pipe';
 
 describe('MdsSummaryPipe', () => {
   let pipe: MdsSummaryPipe;
 
   configureTestBed({
-    providers: [MdsSummaryPipe, i18nProviders]
+    providers: [MdsSummaryPipe]
   });
 
   beforeEach(() => {
-    pipe = TestBed.get(MdsSummaryPipe);
+    pipe = TestBed.inject(MdsSummaryPipe);
   });
 
   it('create an instance', () => {
@@ -46,7 +46,7 @@ describe('MdsSummaryPipe', () => {
   });
 
   it('transforms with 0 filesystems', () => {
-    const payload = {
+    const payload: Record<string, any> = {
       standbys: [0],
       filesystems: []
     };

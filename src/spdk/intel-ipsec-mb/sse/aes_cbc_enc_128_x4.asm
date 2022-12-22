@@ -29,7 +29,7 @@
 ;;; processes 4 buffers at a time, single data structure as input
 ;;; Updates In and Out pointers at end
 
-%include "os.asm"
+%include "include/os.asm"
 %include "mb_mgr_datastruct.asm"
 
 %define	MOVDQ movdqu ;; assume buffers not aligned
@@ -39,15 +39,15 @@
 %endm
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; struct AES_ARGS_x8 {
+;; struct AES_ARGS {
 ;;     void*    in[8];
 ;;     void*    out[8];
 ;;     UINT128* keys[8];
 ;;     UINT128  IV[8];
 ;; }
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; void aes_cbc_enc_128_x4(AES_ARGS_x8 *args, UINT64 len);
-;; arg 1: ARG : addr of AES_ARGS_x8 structure
+;; void aes_cbc_enc_128_x4(AES_ARGS *args, UINT64 len);
+;; arg 1: ARG : addr of AES_ARGS structure
 ;; arg 2: LEN : len (in units of bytes)
 
 struc STACK
@@ -115,12 +115,26 @@ endstruc
 
 section .text
 
+%ifndef AES_CBC_ENC_X4
+
 %ifdef CBC_MAC
 MKGLOBAL(aes128_cbc_mac_x4,function,internal)
 aes128_cbc_mac_x4:
 %else
 MKGLOBAL(aes_cbc_enc_128_x4,function,internal)
 aes_cbc_enc_128_x4:
+%endif
+
+%else ;; AES_CBC_ENC_X4 already defined
+
+%ifdef CBC_MAC
+MKGLOBAL(aes128_cbc_mac_x4_no_aesni,function,internal)
+aes128_cbc_mac_x4_no_aesni:
+%else
+MKGLOBAL(aes_cbc_enc_128_x4_no_aesni,function,internal)
+aes_cbc_enc_128_x4_no_aesni:
+%endif
+
 %endif
 	sub	rsp, STACK_size
 	mov	[rsp + _gpr_save + 8*0], rbp

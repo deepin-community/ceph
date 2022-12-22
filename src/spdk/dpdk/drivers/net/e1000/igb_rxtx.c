@@ -50,6 +50,10 @@
 #endif
 /* Bit Mask to indicate what bits required for building TX context */
 #define IGB_TX_OFFLOAD_MASK (			 \
+		PKT_TX_OUTER_IPV6 |	 \
+		PKT_TX_OUTER_IPV4 |	 \
+		PKT_TX_IPV6 |		 \
+		PKT_TX_IPV4 |		 \
 		PKT_TX_VLAN_PKT |		 \
 		PKT_TX_IP_CKSUM |		 \
 		PKT_TX_L4_MASK |		 \
@@ -285,17 +289,20 @@ igbe_set_xmit_ctx(struct igb_tx_queue* txq,
 		case PKT_TX_UDP_CKSUM:
 			type_tucmd_mlhl |= E1000_ADVTXD_TUCMD_L4T_UDP |
 				E1000_ADVTXD_DTYP_CTXT | E1000_ADVTXD_DCMD_DEXT;
-			mss_l4len_idx |= sizeof(struct udp_hdr) << E1000_ADVTXD_L4LEN_SHIFT;
+			mss_l4len_idx |= sizeof(struct rte_udp_hdr)
+				<< E1000_ADVTXD_L4LEN_SHIFT;
 			break;
 		case PKT_TX_TCP_CKSUM:
 			type_tucmd_mlhl |= E1000_ADVTXD_TUCMD_L4T_TCP |
 				E1000_ADVTXD_DTYP_CTXT | E1000_ADVTXD_DCMD_DEXT;
-			mss_l4len_idx |= sizeof(struct tcp_hdr) << E1000_ADVTXD_L4LEN_SHIFT;
+			mss_l4len_idx |= sizeof(struct rte_tcp_hdr)
+				<< E1000_ADVTXD_L4LEN_SHIFT;
 			break;
 		case PKT_TX_SCTP_CKSUM:
 			type_tucmd_mlhl |= E1000_ADVTXD_TUCMD_L4T_SCTP |
 				E1000_ADVTXD_DTYP_CTXT | E1000_ADVTXD_DCMD_DEXT;
-			mss_l4len_idx |= sizeof(struct sctp_hdr) << E1000_ADVTXD_L4LEN_SHIFT;
+			mss_l4len_idx |= sizeof(struct rte_sctp_hdr)
+				<< E1000_ADVTXD_L4LEN_SHIFT;
 			break;
 		default:
 			type_tucmd_mlhl |= E1000_ADVTXD_TUCMD_L4T_RSV |
@@ -625,25 +632,25 @@ eth_igb_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 			if ((m->tso_segsz > IGB_TSO_MAX_MSS) ||
 					(m->l2_len + m->l3_len + m->l4_len >
 					IGB_TSO_MAX_HDRLEN)) {
-				rte_errno = -EINVAL;
+				rte_errno = EINVAL;
 				return i;
 			}
 
 		if (m->ol_flags & IGB_TX_OFFLOAD_NOTSUP_MASK) {
-			rte_errno = -ENOTSUP;
+			rte_errno = ENOTSUP;
 			return i;
 		}
 
 #ifdef RTE_LIBRTE_ETHDEV_DEBUG
 		ret = rte_validate_tx_offload(m);
 		if (ret != 0) {
-			rte_errno = ret;
+			rte_errno = -ret;
 			return i;
 		}
 #endif
 		ret = rte_net_intel_cksum_prepare(m);
 		if (ret != 0) {
-			rte_errno = ret;
+			rte_errno = -ret;
 			return i;
 		}
 	}
@@ -1143,17 +1150,17 @@ eth_igb_recv_scattered_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		 */
 		rxm->next = NULL;
 		if (unlikely(rxq->crc_len > 0)) {
-			first_seg->pkt_len -= ETHER_CRC_LEN;
-			if (data_len <= ETHER_CRC_LEN) {
+			first_seg->pkt_len -= RTE_ETHER_CRC_LEN;
+			if (data_len <= RTE_ETHER_CRC_LEN) {
 				rte_pktmbuf_free_seg(rxm);
 				first_seg->nb_segs--;
 				last_seg->data_len = (uint16_t)
 					(last_seg->data_len -
-					 (ETHER_CRC_LEN - data_len));
+					 (RTE_ETHER_CRC_LEN - data_len));
 				last_seg->next = NULL;
 			} else
-				rxm->data_len =
-					(uint16_t) (data_len - ETHER_CRC_LEN);
+				rxm->data_len = (uint16_t)
+					(data_len - RTE_ETHER_CRC_LEN);
 		}
 
 		/*
@@ -1452,10 +1459,10 @@ igb_reset_tx_queue(struct igb_tx_queue *txq, struct rte_eth_dev *dev)
 uint64_t
 igb_get_tx_port_offloads_capa(struct rte_eth_dev *dev)
 {
-	uint64_t rx_offload_capa;
+	uint64_t tx_offload_capa;
 
 	RTE_SET_USED(dev);
-	rx_offload_capa = DEV_TX_OFFLOAD_VLAN_INSERT |
+	tx_offload_capa = DEV_TX_OFFLOAD_VLAN_INSERT |
 			  DEV_TX_OFFLOAD_IPV4_CKSUM  |
 			  DEV_TX_OFFLOAD_UDP_CKSUM   |
 			  DEV_TX_OFFLOAD_TCP_CKSUM   |
@@ -1463,17 +1470,17 @@ igb_get_tx_port_offloads_capa(struct rte_eth_dev *dev)
 			  DEV_TX_OFFLOAD_TCP_TSO     |
 			  DEV_TX_OFFLOAD_MULTI_SEGS;
 
-	return rx_offload_capa;
+	return tx_offload_capa;
 }
 
 uint64_t
 igb_get_tx_queue_offloads_capa(struct rte_eth_dev *dev)
 {
-	uint64_t rx_queue_offload_capa;
+	uint64_t tx_queue_offload_capa;
 
-	rx_queue_offload_capa = igb_get_tx_port_offloads_capa(dev);
+	tx_queue_offload_capa = igb_get_tx_port_offloads_capa(dev);
 
-	return rx_queue_offload_capa;
+	return tx_queue_offload_capa;
 }
 
 int
@@ -1638,9 +1645,9 @@ igb_get_rx_port_offloads_capa(struct rte_eth_dev *dev)
 			  DEV_RX_OFFLOAD_UDP_CKSUM   |
 			  DEV_RX_OFFLOAD_TCP_CKSUM   |
 			  DEV_RX_OFFLOAD_JUMBO_FRAME |
-			  DEV_RX_OFFLOAD_CRC_STRIP   |
 			  DEV_RX_OFFLOAD_KEEP_CRC    |
-			  DEV_RX_OFFLOAD_SCATTER;
+			  DEV_RX_OFFLOAD_SCATTER     |
+			  DEV_RX_OFFLOAD_RSS_HASH;
 
 	return rx_offload_capa;
 }
@@ -1721,8 +1728,8 @@ eth_igb_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq->reg_idx = (uint16_t)((RTE_ETH_DEV_SRIOV(dev).active == 0) ?
 		queue_idx : RTE_ETH_DEV_SRIOV(dev).def_pool_q_idx + queue_idx);
 	rxq->port_id = dev->data->port_id;
-	if (rte_eth_dev_must_keep_crc(dev->data->dev_conf.rxmode.offloads))
-		rxq->crc_len = ETHER_CRC_LEN;
+	if (dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_KEEP_CRC)
+		rxq->crc_len = RTE_ETHER_CRC_LEN;
 	else
 		rxq->crc_len = 0;
 
@@ -2374,8 +2381,8 @@ eth_igb_rx_init(struct rte_eth_dev *dev)
 		 * Reset crc_len in case it was changed after queue setup by a
 		 *  call to configure
 		 */
-		if (rte_eth_dev_must_keep_crc(dev->data->dev_conf.rxmode.offloads))
-			rxq->crc_len = ETHER_CRC_LEN;
+		if (dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_KEEP_CRC)
+			rxq->crc_len = RTE_ETHER_CRC_LEN;
 		else
 			rxq->crc_len = 0;
 
@@ -2506,7 +2513,7 @@ eth_igb_rx_init(struct rte_eth_dev *dev)
 	E1000_WRITE_REG(hw, E1000_RXCSUM, rxcsum);
 
 	/* Setup the Receive Control Register. */
-	if (rte_eth_dev_must_keep_crc(dev->data->dev_conf.rxmode.offloads)) {
+	if (dev->data->dev_conf.rxmode.offloads & DEV_RX_OFFLOAD_KEEP_CRC) {
 		rctl &= ~E1000_RCTL_SECRC; /* Do not Strip Ethernet CRC. */
 
 		/* clear STRCRC bit in all queues */
@@ -2852,11 +2859,17 @@ igb_txq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 }
 
 int
-igb_rss_conf_init(struct igb_rte_flow_rss_conf *out,
+igb_rss_conf_init(struct rte_eth_dev *dev,
+		  struct igb_rte_flow_rss_conf *out,
 		  const struct rte_flow_action_rss *in)
 {
+	struct e1000_hw *hw = E1000_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+
 	if (in->key_len > RTE_DIM(out->key) ||
-	    in->queue_num > RTE_DIM(out->queue))
+	    ((hw->mac.type == e1000_82576) &&
+	     (in->queue_num > IGB_MAX_RX_QUEUE_NUM_82576)) ||
+	    ((hw->mac.type != e1000_82576) &&
+	     (in->queue_num > IGB_MAX_RX_QUEUE_NUM)))
 		return -EINVAL;
 	out->conf = (struct rte_flow_action_rss){
 		.func = in->func,
@@ -2945,7 +2958,7 @@ igb_config_rss_filter(struct rte_eth_dev *dev,
 		rss_conf.rss_key = rss_intel_key; /* Default hash key */
 	igb_hw_rss_hash_set(hw, &rss_conf);
 
-	if (igb_rss_conf_init(&filter_info->rss_info, &conf->conf))
+	if (igb_rss_conf_init(dev, &filter_info->rss_info, &conf->conf))
 		return -EINVAL;
 
 	return 0;

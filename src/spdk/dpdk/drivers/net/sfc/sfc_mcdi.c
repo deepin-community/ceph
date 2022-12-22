@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
@@ -256,7 +256,8 @@ sfc_mcdi_init(struct sfc_adapter *sa)
 	if (rc != 0)
 		goto fail_dma_alloc;
 
-	mcdi->logtype = sfc_register_logtype(sa, SFC_LOGTYPE_MCDI_STR,
+	mcdi->logtype = sfc_register_logtype(&sa->priv.shared->pci_addr,
+					     SFC_LOGTYPE_MCDI_STR,
 					     RTE_LOG_NOTICE);
 
 	emtp = &mcdi->transport;

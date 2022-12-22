@@ -113,7 +113,7 @@ Application stages
 Initialization
 ~~~~~~~~~~~~~~
 
-During this stage, EAL layer is initialised and application specific arguments are parsed. Furthermore, the data strcutures
+During this stage, EAL layer is initialised and application specific arguments are parsed. Furthermore, the data structures
 (i.e. linked lists) for application objects are initialized. In case of any initialization error, an error message
 is displayed and the application is terminated.
 
@@ -185,7 +185,7 @@ Examples
    +-----------------------+----------------------+----------------+------------------------------------+
    | IP routing            | LPM (IPv4)           | Forward        | 1. Mempool Create                  |
    |                       |                      |                | 2. Link create                     |
-   |                       | * Key = IP dest addr |                | 3. Pipeline creat                  |
+   |                       | * Key = IP dest addr |                | 3. Pipeline create                 |
    |                       | * Offset = 286       |                | 4. Pipeline port in/out            |
    |                       | * Table size = 4K    |                | 5. Pipeline table                  |
    |                       |                      |                | 6. Pipeline port in table          |
@@ -249,27 +249,35 @@ Traffic manager
 
   tmgr subport profile
    <tb_rate> <tb_size>
-   <tc0_rate> <tc1_rate> <tc2_rate> <tc3_rate>
+   <tc0_rate> <tc1_rate> <tc2_rate> <tc3_rate> <tc4_rate>
+   <tc5_rate> <tc6_rate> <tc7_rate> <tc8_rate>
+   <tc9_rate> <tc10_rate> <tc11_rate> <tc12_rate>
    <tc_period>
-
+   pps <n_pipes_per_subport>
+   qsize <qsize_tc0> <qsize_tc1> <qsize_tc2>
+   <qsize_tc3> <qsize_tc4> <qsize_tc5> <qsize_tc6>
+   <qsize_tc7> <qsize_tc8> <qsize_tc9> <qsize_tc10>
+   <qsize_tc11> <qsize_tc12>
 
  Add traffic manager pipe profile ::
 
   tmgr pipe profile
    <tb_rate> <tb_size>
-   <tc0_rate> <tc1_rate> <tc2_rate> <tc3_rate>
+   <tc0_rate> <tc1_rate> <tc2_rate> <tc3_rate> <tc4_rate>
+   <tc5_rate> <tc6_rate> <tc7_rate> <tc8_rate>
+   <tc9_rate> <tc10_rate> <tc11_rate> <tc12_rate>
    <tc_period>
-   <tc_ov_weight> <wrr_weight0..15>
+   <tc_ov_weight>
+   <wrr_weight0..3>
 
  Create traffic manager port ::
 
   tmgr <tmgr_name>
    rate <rate>
    spp <n_subports_per_port>
-   pps <n_pipes_per_subport>
-   qsize <qsize_tc0>
-   <qsize_tc1> <qsize_tc2> <qsize_tc3>
-   fo <frame_overhead> mtu <mtu> cpu <cpu_id>
+   fo <frame_overhead>
+   mtu <mtu>
+   cpu <cpu_id>
 
  Configure traffic manager subport ::
 
@@ -304,6 +312,15 @@ Kni
     [thread <thread_id>]
 
 
+Cryptodev
+~~~~~~~~~
+
+  Create cryptodev port ::
+
+   cryptodev <cryptodev_name>
+    dev <DPDK Cryptodev PMD name>
+    queue <n_queues> <queue_size>
+
 Action profile
 ~~~~~~~~~~~~~~
 
@@ -330,6 +347,8 @@ Action profile
    [ttl drop | fwd
        stats none | pkts]
    [stats pkts | bytes | both]
+   [sym_crypto cryptodev <cryptodev_name>
+       mempool_create <mempool_name> mempool_init <mempool_name>]
    [time]
 
 
@@ -471,6 +490,18 @@ Add rule to table for specific pipeline instance ::
      [ttl dec | keep]
      [stats]
      [time]
+     [sym_crypto
+        encrypt | decrypt
+        type
+        | cipher
+           cipher_algo <algo> cipher_key <key> cipher_iv <iv>
+        | cipher_auth
+           cipher_algo <algo> cipher_key <key> cipher_iv <iv>
+           auth_algo <algo> auth_key <key> digest_size <size>
+        | aead
+           aead_algo <algo> aead_key <key> aead_iv <iv> aead_aad <aad>
+           digest_size <size>
+        data_offset <data_offset>]
 
   where:
      <pa> ::= g | y | r | drop

@@ -44,6 +44,22 @@ rte_kvargs_tokenize(struct rte_kvargs *kvlist, const char *params)
 		    kvlist->pairs[i].value == NULL)
 			return -1;
 
+		/* Detect list [a,b] to skip comma delimiter in list. */
+		str = kvlist->pairs[i].value;
+		if (str[0] == '[') {
+			/* Find the end of the list. */
+			while (str[strlen(str) - 1] != ']') {
+				/* Restore the comma erased by strtok_r(). */
+				if (ctx1 == NULL || ctx1[0] == '\0')
+					return -1; /* no closing bracket */
+				str[strlen(str)] = ',';
+				/* Parse until next comma. */
+				str = strtok_r(NULL, RTE_KVARGS_PAIRS_DELIM, &ctx1);
+				if (str == NULL)
+					return -1; /* no closing bracket */
+			}
+		}
+
 		kvlist->count++;
 		str = NULL;
 	}
@@ -120,6 +136,9 @@ rte_kvargs_process(const struct rte_kvargs *kvlist,
 	const struct rte_kvargs_pair *pair;
 	unsigned i;
 
+	if (kvlist == NULL)
+		return 0;
+
 	for (i = 0; i < kvlist->count; i++) {
 		pair = &kvlist->pairs[i];
 		if (key_match == NULL || strcmp(pair->key, key_match) == 0) {
@@ -169,7 +188,6 @@ rte_kvargs_parse(const char *args, const char * const valid_keys[])
 	return kvlist;
 }
 
-__rte_experimental
 struct rte_kvargs *
 rte_kvargs_parse_delim(const char *args, const char * const valid_keys[],
 		       const char *valid_ends)
@@ -194,7 +212,6 @@ rte_kvargs_parse_delim(const char *args, const char * const valid_keys[],
 	return kvlist;
 }
 
-__rte_experimental
 int
 rte_kvargs_strcmp(const char *key __rte_unused,
 		  const char *value, void *opaque)

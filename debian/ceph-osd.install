@@ -1,10 +1,10 @@
 debian/udev/* lib/udev/rules.d
-etc/sudoers.d/ceph-osd-smartctl
 etc/sysctl.d/30-ceph-osd.conf
 lib/systemd/system/ceph-osd*
 lib/systemd/system/ceph-volume@.service
 usr/bin/ceph-bluestore-tool
 usr/bin/ceph-clsinfo
+usr/bin/ceph-erasure-code-tool
 usr/bin/ceph-objectstore-tool
 usr/bin/ceph-osd
 usr/bin/ceph-osdomap-tool

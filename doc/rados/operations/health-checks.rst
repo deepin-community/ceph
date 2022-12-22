@@ -1,3 +1,4 @@
+.. _health-checks:
 
 =============
 Health checks
@@ -23,6 +24,18 @@ Definitions
 
 Monitor
 -------
+
+DAEMON_OLD_VERSION
+__________________
+
+Warn if old version(s) of Ceph are running on any daemons.
+It will generate a health error if multiple versions are detected.
+This condition must exist for over mon_warn_older_version_delay (set to 1 week by default) in order for the
+health condition to be triggered.  This allows most upgrades to proceed
+without falsely seeing the warning.  If upgrade is paused for an extended
+time period, health mute can be used like this
+"ceph health mute DAEMON_OLD_VERSION --sticky".  In this case after
+upgrade has finished use "ceph health unmute DAEMON_OLD_VERSION".
 
 MON_DOWN
 ________
@@ -70,6 +83,57 @@ listen for v2 connections on the new default 3300 port.
 
 If a monitor is configured to listen for v1 connections on a non-standard port (not 6789), then the monmap will need to be modified manually.
 
+
+MON_DISK_LOW
+____________
+
+One or more monitors is low on disk space.  This alert triggers if the
+available space on the file system storing the monitor database
+(normally ``/var/lib/ceph/mon``), as a percentage, drops below
+``mon_data_avail_warn`` (default: 30%).
+
+This may indicate that some other process or user on the system is
+filling up the same file system used by the monitor.  It may also
+indicate that the monitors database is large (see ``MON_DISK_BIG``
+below).
+
+If space cannot be freed, the monitor's data directory may need to be
+moved to another storage device or file system (while the monitor
+daemon is not running, of course).
+
+
+MON_DISK_CRIT
+_____________
+
+One or more monitors is critically low on disk space.  This alert
+triggers if the available space on the file system storing the monitor
+database (normally ``/var/lib/ceph/mon``), as a percentage, drops
+below ``mon_data_avail_crit`` (default: 5%).  See ``MON_DISK_LOW``, above.
+
+MON_DISK_BIG
+____________
+
+The database size for one or more monitors is very large.  This alert
+triggers if the size of the monitor's database is larger than
+``mon_data_size_warn`` (default: 15 GiB).
+
+A large database is unusual, but may not necessarily indicate a
+problem.  Monitor databases may grow in size when there are placement
+groups that have not reached an ``active+clean`` state in a long time.
+
+This may also indicate that the monitor's database is not properly
+compacting, which has been observed with some older versions of
+leveldb and rocksdb.  Forcing a compaction with ``ceph daemon mon.<id>
+compact`` may shrink the on-disk size.
+
+This warning may also indicate that the monitor has a bug that is
+preventing it from pruning the cluster metadata it stores.  If the
+problem persists, please report a bug.
+
+The warning threshold may be adjusted with::
+
+  ceph config set global mon_data_size_warn <size>
+
 AUTH_INSECURE_GLOBAL_ID_RECLAIM
 _______________________________
 
@@ -101,7 +165,12 @@ with::
 
   ceph config set mon auth_allow_insecure_global_id_reclaim false
 
-Although we do NOT recommend doing so, you can disable this warning indefinitely
+If it is impractical to upgrade all clients immediately, you can silence
+this warning temporarily with::
+
+  ceph health mute AUTH_INSECURE_GLOBAL_ID_RECLAIM 1w   # 1 week
+
+Although we do NOT recommend doing so, you can also disable this warning indefinitely
 with::
 
   ceph config set mon mon_warn_on_insecure_global_id_reclaim false
@@ -122,7 +191,12 @@ upgraded, and it is safe to disallow insecure global_id reclaim with::
 
   ceph config set mon auth_allow_insecure_global_id_reclaim false
 
-Although we do NOT recommend doing so, you can disable this warning indefinitely
+If there are still clients that need to be upgraded, then this alert can be
+silenced temporarily with::
+
+  ceph health mute AUTH_INSECURE_GLOBAL_ID_RECLAIM_ALLOWED 1w   # 1 week
+
+Although we do NOT recommend doing so, you can also disable this warning indefinitely
 with::
 
   ceph config set mon mon_warn_on_insecure_global_id_reclaim_allowed false
@@ -130,6 +204,24 @@ with::
 
 Manager
 -------
+
+MGR_DOWN
+________
+
+All manager daemons are currently down.  The cluster should normally
+have at least one running manager (``ceph-mgr``) daemon.  If no
+manager daemon is running, the cluster's ability to monitor itself will
+be compromised, and parts of the management API will become
+unavailable (for example, the dashboard will not work, and most CLI
+commands that report metrics or runtime state will block).  However,
+the cluster will still be able to perform all IO operations and
+recover from failures.
+
+The down manager daemon should generally be restarted as soon as
+possible to ensure that the cluster can be monitored (e.g., so that
+the ``ceph -s`` information is up to date, and/or metrics can be
+scraped by Prometheus).
+
 
 MGR_MODULE_DEPENDENCY
 _____________________
@@ -196,15 +288,15 @@ The OSD can be removed from the CRUSH hierarchy with::
 OSD_OUT_OF_ORDER_FULL
 _____________________
 
-The utilization thresholds for `backfillfull`, `nearfull`, `full`,
+The utilization thresholds for `nearfull`, `backfillfull`, `full`,
 and/or `failsafe_full` are not ascending.  In particular, we expect
-`backfillfull < nearfull`, `nearfull < full`, and `full <
+`nearfull < backfillfull`, `backfillfull < full`, and `full <
 failsafe_full`.
 
 The thresholds can be adjusted with::
 
-  ceph osd set-backfillfull-ratio <ratio>
   ceph osd set-nearfull-ratio <ratio>
+  ceph osd set-backfillfull-ratio <ratio>
   ceph osd set-full-ratio <ratio>
 
 
@@ -465,6 +557,46 @@ This warning can be disabled with::
 
   ceph config set global bluestore_warn_on_legacy_statfs false
 
+BLUESTORE_NO_PER_POOL_OMAP
+__________________________
+
+Starting with the Octopus release, BlueStore tracks omap space utilization
+by pool, and one or more OSDs have volumes that were created prior to
+Octopus.  If all OSDs are not running BlueStore with the new tracking
+enabled, the cluster will report and approximate value for per-pool omap usage
+based on the most recent deep-scrub.
+
+The old OSDs can be updated to track by pool by stopping each OSD,
+running a repair operation, and the restarting it.  For example, if
+``osd.123`` needed to be updated,::
+
+  systemctl stop ceph-osd@123
+  ceph-bluestore-tool repair --path /var/lib/ceph/osd/ceph-123
+  systemctl start ceph-osd@123
+
+This warning can be disabled with::
+
+  ceph config set global bluestore_warn_on_no_per_pool_omap false
+
+BLUESTORE_NO_PER_PG_OMAP
+__________________________
+
+Starting with the Pacific release, BlueStore tracks omap space utilization
+by PG, and one or more OSDs have volumes that were created prior to
+Pacific.  Per-PG omap enables faster PG removal when PGs migrate.
+
+The older OSDs can be updated to track by PG by stopping each OSD,
+running a repair operation, and the restarting it.  For example, if
+``osd.123`` needed to be updated,::
+
+  systemctl stop ceph-osd@123
+  ceph-bluestore-tool repair --path /var/lib/ceph/osd/ceph-123
+  systemctl start ceph-osd@123
+
+This warning can be disabled with::
+
+  ceph config set global bluestore_warn_on_no_per_pg_omap false
+
 
 BLUESTORE_DISK_SIZE_MISMATCH
 ____________________________
@@ -482,6 +614,42 @@ risk.  For example, if osd ``$N`` has the error,::
   ceph osd destroy osd.$N
   ceph-volume lvm zap /path/to/device
   ceph-volume lvm create --osd-id $N --data /path/to/device
+
+BLUESTORE_NO_COMPRESSION
+________________________
+
+One or more OSDs is unable to load a BlueStore compression plugin.
+This can be caused by a broken installation, in which the ``ceph-osd``
+binary does not match the compression plugins, or a recent upgrade
+that did not include a restart of the ``ceph-osd`` daemon.
+
+Verify that the package(s) on the host running the OSD(s) in question
+are correctly installed and that the OSD daemon(s) have been
+restarted.  If the problem persists, check the OSD log for any clues
+as to the source of the problem.
+
+BLUESTORE_SPURIOUS_READ_ERRORS
+______________________________
+
+One or more OSDs using BlueStore detects spurious read errors at main device.
+BlueStore has recovered from these errors by retrying disk reads.
+Though this might show some issues with underlying hardware, I/O subsystem,
+etc.
+Which theoretically might cause permanent data corruption.
+Some observations on the root cause can be found at 
+https://tracker.ceph.com/issues/22464
+
+This alert doesn't require immediate response but corresponding host might need
+additional attention, e.g. upgrading to the latest OS/kernel versions and
+H/W resource utilization monitoring.
+
+This warning can be disabled on all OSDs with::
+
+  ceph config set osd bluestore_warn_on_spurious_read_errors false
+
+Alternatively, it can be disabled on a specific OSD with::
+
+  ceph config set osd.123 bluestore_warn_on_spurious_read_errors false
 
 
 Device health
@@ -649,13 +817,6 @@ handles errors for data at rest.  In order to identify possible failing disks
 that aren't seeing scrub errors, a count of read repairs is maintained.  If
 it exceeds a config value threshold *mon_osd_warn_num_repaired* default 10,
 this health warning is generated.
-
-In order to allow clearing of the warning, a new command
-``ceph tell osd.# clear_shards_repaired [count]`` has been added.
-By default it will set the repair count to 0.  If the administrator wanted
-to re-enable the warning if any additional repairs are performed you can provide
-a value to the command and specify the value of ``mon_osd_warn_num_repaired``.
-This command will be replaced in future releases by the health mute/unmute feature.
 
 LARGE_OMAP_OBJECTS
 __________________
@@ -868,8 +1029,10 @@ not contain as much data have too many PGs.  See the discussion of
 *TOO_MANY_PGS* above.
 
 The threshold can be raised to silence the health warning by adjusting
-the ``mon_pg_warn_max_object_skew`` config option on the monitors.
+the ``mon_pg_warn_max_object_skew`` config option on the managers.
 
+The health warning will be silenced for a particular pool if
+``pg_autoscale_mode`` is set to ``on``.
 
 POOL_APP_NOT_ENABLED
 ____________________
@@ -906,8 +1069,9 @@ Setting the quota value to 0 will disable the quota.
 POOL_NEAR_FULL
 ______________
 
-One or more pools is approaching is quota.  The threshold to trigger
-this warning condition is controlled by the
+One or more pools is approaching a configured fullness threshold.
+
+One threshold that can trigger this warning condition is the
 ``mon_pool_quota_warn_threshold`` configuration option.
 
 Pool quotas can be adjusted up or down (or removed) with::
@@ -916,6 +1080,11 @@ Pool quotas can be adjusted up or down (or removed) with::
   ceph osd pool set-quota <pool> max_objects <objects>
 
 Setting the quota value to 0 will disable the quota.
+
+Other thresholds that can trigger the above two warning conditions are
+``mon_osd_nearfull_ratio`` and ``mon_osd_full_ratio``.  Visit the
+:ref:`storage-capacity` and :ref:`no-free-drive-space` documents for details
+and resolution.
 
 OBJECT_MISPLACED
 ________________
@@ -952,12 +1121,12 @@ told to roll back to a previous version of the object. See
 SLOW_OPS
 ________
 
-One or more OSD requests is taking a long time to process.  This can
+One or more OSD or monitor requests is taking a long time to process.  This can
 be an indication of extreme load, a slow storage device, or a software
 bug.
 
-The request queue on the OSD(s) in question can be queried with the
-following command, executed from the OSD host::
+The request queue for the daemon in question can be queried with the
+following command, executed from the daemon's host::
 
   ceph daemon osd.<id> ops
 
@@ -972,10 +1141,13 @@ The location of an OSD can be found with::
 PG_NOT_SCRUBBED
 _______________
 
-One or more PGs has not been scrubbed recently.  PGs are normally
-scrubbed every ``mon_scrub_interval`` seconds, and this warning
-triggers when ``mon_warn_pg_not_scrubbed_ratio`` percentage of interval has elapsed
-without a scrub since it was due.
+One or more PGs has not been scrubbed recently.  PGs are normally scrubbed
+within every configured interval specified by
+:ref:`osd_scrub_max_interval <osd_scrub_max_interval>` globally. This
+interval can be overriden on per-pool basis with
+:ref:`scrub_max_interval <scrub_max_interval>`. The warning triggers when
+``mon_warn_pg_not_scrubbed_ratio`` percentage of interval has elapsed without a
+scrub since it was due.
 
 PGs will not scrub if they are not flagged as *clean*, which may
 happen if they are misplaced or degraded (see *PG_AVAILABILITY* and
@@ -1001,6 +1173,26 @@ You can manually initiate a scrub of a clean PG with::
 
   ceph pg deep-scrub <pgid>
 
+
+PG_SLOW_SNAP_TRIMMING
+_____________________
+
+The snapshot trim queue for one or more PGs has exceeded the
+configured warning threshold.  This indicates that either an extremely
+large number of snapshots were recently deleted, or that the OSDs are
+unable to trim snapshots quickly enough to keep up with the rate of
+new snapshot deletions.
+
+The warning threshold is controlled by the
+``mon_osd_snap_trim_queue_warn_on`` option (default: 32768).
+
+This warning may trigger if OSDs are under excessive load and unable
+to keep up with their background work, or if the OSDs' internal
+metadata database is heavily fragmented and unable to perform.  It may
+also indicate some other performance issue with the OSDs.
+
+The exact size of the snapshot trim queue is reported by the
+``snaptrimq_len`` field of ``ceph pg ls -f json-detail``.
 
 Miscellaneous
 -------------
@@ -1069,6 +1261,48 @@ To re-enable telemetry (and make this warning go away),::
 To disable telemetry (and make this warning go away),::
 
   ceph telemetry off
+
+AUTH_BAD_CAPS
+_____________
+
+One or more auth users has capabilities that cannot be parsed by the
+monitor.  This generally indicates that the user will not be
+authorized to perform any action with one or more daemon types.
+
+This error is mostly likely to occur after an upgrade if the
+capabilities were set with an older version of Ceph that did not
+properly validate their syntax, or if the syntax of the capabilities
+has changed.
+
+The user in question can be removed with::
+
+  ceph auth rm <entity-name>
+
+(This will resolve the health alert, but obviously clients will not be
+able to authenticate as that user.)
+
+Alternatively, the capabilities for the user can be updated with::
+
+  ceph auth <entity-name> <daemon-type> <caps> [<daemon-type> <caps> ...]
+
+For more information about auth capabilities, see :ref:`user-management`.
+
+OSD_NO_DOWN_OUT_INTERVAL
+________________________
+
+The ``mon_osd_down_out_interval`` option is set to zero, which means
+that the system will not automatically perform any repair or healing
+operations after an OSD fails.  Instead, an administrator (or some
+other external entity) will need to manually mark down OSDs as 'out'
+(i.e., via ``ceph osd out <osd-id>``) in order to trigger recovery.
+
+This option is normally set to five or ten minutes--enough time for a
+host to power-cycle or reboot.
+
+This warning can silenced by setting the
+``mon_warn_on_osd_down_out_interval_zero`` to false::
+
+  ceph config global mon mon_warn_on_osd_down_out_interval_zero false
 
 DASHBOARD_DEBUG
 _______________

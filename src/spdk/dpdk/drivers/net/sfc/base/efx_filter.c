@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2007-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2007-2019 Solarflare Communications Inc.
  */
 
 #include "efx.h"
@@ -28,7 +28,7 @@ static	__checkReturn	efx_rc_t
 siena_filter_add(
 	__in		efx_nic_t *enp,
 	__inout		efx_filter_spec_t *spec,
-	__in		boolean_t may_replace);
+	__in		efx_filter_replacement_policy_t policy);
 
 static	__checkReturn	efx_rc_t
 siena_filter_delete(
@@ -56,7 +56,7 @@ static const efx_filter_ops_t	__efx_filter_siena_ops = {
 };
 #endif /* EFSYS_OPT_SIENA */
 
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
+#if EFX_OPTS_EF10()
 static const efx_filter_ops_t	__efx_filter_ef10_ops = {
 	ef10_filter_init,		/* efo_init */
 	ef10_filter_fini,		/* efo_fini */
@@ -66,7 +66,7 @@ static const efx_filter_ops_t	__efx_filter_ef10_ops = {
 	ef10_filter_supported_filters,	/* efo_supported_filters */
 	ef10_filter_reconfigure,	/* efo_reconfigure */
 };
-#endif /* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */
+#endif /* EFX_OPTS_EF10() */
 
 	__checkReturn	efx_rc_t
 efx_filter_insert(
@@ -93,8 +93,16 @@ efx_filter_insert(
 		goto fail2;
 	}
 
-	return (efop->efo_add(enp, spec, B_FALSE));
+	if (spec->efs_priority == EFX_FILTER_PRI_AUTO) {
+		rc = EINVAL;
+		goto fail3;
+	}
 
+	return (efop->efo_add(enp, spec,
+	    EFX_FILTER_REPLACEMENT_HIGHER_PRIORITY));
+
+fail3:
+	EFSYS_PROBE(fail3);
 fail2:
 	EFSYS_PROBE(fail2);
 fail1:
@@ -314,7 +322,7 @@ efx_filter_spec_init_tx(
 	EFSYS_ASSERT3P(etp, !=, NULL);
 
 	memset(spec, 0, sizeof (*spec));
-	spec->efs_priority = EFX_FILTER_PRI_REQUIRED;
+	spec->efs_priority = EFX_FILTER_PRI_MANUAL;
 	spec->efs_flags = EFX_FILTER_FLAG_TX;
 	spec->efs_dmaq_id = (uint16_t)etp->et_index;
 }
@@ -490,27 +498,42 @@ fail1:
 }
 
 /*
- * Specify inner and outer Ethernet address and VXLAN ID in filter
+ * Specify inner and outer Ethernet address and VNI or VSID in tunnel filter
  * specification.
  */
-	__checkReturn	efx_rc_t
-efx_filter_spec_set_vxlan_full(
-	__inout		efx_filter_spec_t *spec,
-	__in		const uint8_t *vxlan_id,
+static	__checkReturn	efx_rc_t
+efx_filter_spec_set_tunnel(
+	__inout	efx_filter_spec_t *spec,
+	__in		efx_tunnel_protocol_t encap_type,
+	__in		const uint8_t *vni_or_vsid,
 	__in		const uint8_t *inner_addr,
 	__in		const uint8_t *outer_addr)
 {
+	efx_rc_t rc;
+
 	EFSYS_ASSERT3P(spec, !=, NULL);
-	EFSYS_ASSERT3P(vxlan_id, !=, NULL);
+	EFSYS_ASSERT3P(vni_or_vsid, !=, NULL);
 	EFSYS_ASSERT3P(inner_addr, !=, NULL);
 	EFSYS_ASSERT3P(outer_addr, !=, NULL);
 
-	if ((inner_addr == NULL) && (outer_addr == NULL))
-		return (EINVAL);
+	switch (encap_type) {
+	case EFX_TUNNEL_PROTOCOL_VXLAN:
+	case EFX_TUNNEL_PROTOCOL_GENEVE:
+	case EFX_TUNNEL_PROTOCOL_NVGRE:
+		break;
+	default:
+		rc = EINVAL;
+		goto fail1;
+	}
 
-	if (vxlan_id != NULL) {
+	if ((inner_addr == NULL) && (outer_addr == NULL)) {
+		rc = EINVAL;
+		goto fail2;
+	}
+
+	if (vni_or_vsid != NULL) {
 		spec->efs_match_flags |= EFX_FILTER_MATCH_VNI_OR_VSID;
-		memcpy(spec->efs_vni_or_vsid, vxlan_id, EFX_VNI_OR_VSID_LEN);
+		memcpy(spec->efs_vni_or_vsid, vni_or_vsid, EFX_VNI_OR_VSID_LEN);
 	}
 	if (outer_addr != NULL) {
 		spec->efs_match_flags |= EFX_FILTER_MATCH_LOC_MAC;
@@ -520,10 +543,63 @@ efx_filter_spec_set_vxlan_full(
 		spec->efs_match_flags |= EFX_FILTER_MATCH_IFRM_LOC_MAC;
 		memcpy(spec->efs_ifrm_loc_mac, inner_addr, EFX_MAC_ADDR_LEN);
 	}
+
 	spec->efs_match_flags |= EFX_FILTER_MATCH_ENCAP_TYPE;
-	spec->efs_encap_type = EFX_TUNNEL_PROTOCOL_VXLAN;
+	spec->efs_encap_type = encap_type;
 
 	return (0);
+
+fail2:
+	EFSYS_PROBE(fail2);
+fail1:
+	EFSYS_PROBE1(fail1, efx_rc_t, rc);
+
+	return (rc);
+}
+
+/*
+ * Specify inner and outer Ethernet address and VNI in VXLAN filter
+ * specification.
+ */
+__checkReturn		efx_rc_t
+efx_filter_spec_set_vxlan(
+	__inout		efx_filter_spec_t *spec,
+	__in		const uint8_t *vni,
+	__in		const uint8_t *inner_addr,
+	__in		const uint8_t *outer_addr)
+{
+	return efx_filter_spec_set_tunnel(spec, EFX_TUNNEL_PROTOCOL_VXLAN,
+	    vni, inner_addr, outer_addr);
+}
+
+/*
+ * Specify inner and outer Ethernet address and VNI in Geneve filter
+ * specification.
+ */
+__checkReturn		efx_rc_t
+efx_filter_spec_set_geneve(
+	__inout		efx_filter_spec_t *spec,
+	__in		const uint8_t *vni,
+	__in		const uint8_t *inner_addr,
+	__in		const uint8_t *outer_addr)
+{
+	return efx_filter_spec_set_tunnel(spec, EFX_TUNNEL_PROTOCOL_GENEVE,
+	    vni, inner_addr, outer_addr);
+}
+
+/*
+ * Specify inner and outer Ethernet address and vsid in NVGRE filter
+ * specification.
+ */
+__checkReturn		efx_rc_t
+efx_filter_spec_set_nvgre(
+	__inout		efx_filter_spec_t *spec,
+	__in		const uint8_t *vsid,
+	__in		const uint8_t *inner_addr,
+	__in		const uint8_t *outer_addr)
+{
+	return efx_filter_spec_set_tunnel(spec, EFX_TUNNEL_PROTOCOL_NVGRE,
+	    vsid, inner_addr, outer_addr);
 }
 
 #if EFSYS_OPT_RX_SCALE
@@ -1369,7 +1445,7 @@ static	 __checkReturn	efx_rc_t
 siena_filter_add(
 	__in		efx_nic_t *enp,
 	__inout		efx_filter_spec_t *spec,
-	__in		boolean_t may_replace)
+	__in		efx_filter_replacement_policy_t policy)
 {
 	efx_rc_t rc;
 	siena_filter_spec_t sf_spec;
@@ -1410,9 +1486,17 @@ siena_filter_add(
 	saved_sf_spec = &sftp->sft_spec[filter_idx];
 
 	if (siena_filter_test_used(sftp, filter_idx)) {
-		if (may_replace == B_FALSE) {
+		/* All Siena filter are considered the same priority */
+		switch (policy) {
+		case EFX_FILTER_REPLACEMENT_NEVER:
+		case EFX_FILTER_REPLACEMENT_HIGHER_PRIORITY:
 			rc = EEXIST;
 			goto fail4;
+		case EFX_FILTER_REPLACEMENT_HIGHER_OR_EQUAL_PRIORITY:
+			break;
+		default:
+			EFSYS_ASSERT(0);
+			break;
 		}
 	}
 	siena_filter_set_used(sftp, filter_idx);

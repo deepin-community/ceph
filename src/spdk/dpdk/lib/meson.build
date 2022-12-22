@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Copyright(c) 2017 Intel Corporation
+# Copyright(c) 2017-2019 Intel Corporation
 
 
 # process all libraries equally, as far as possible
@@ -8,33 +8,52 @@
 # sometimes skip deps that would be implied by others, e.g. if mempool is
 # given as a dep, no need to mention ring. This is especially true for the
 # core libs which are widely reused, so their deps are kept to a minimum.
-libraries = [ 'compat', # just a header, used for versioning
-	'kvargs',
-	'eal', 'ring', 'mempool', 'mbuf', 'net', 'ethdev', 'pci', # core
+libraries = [
+	'kvargs', # eal depends on kvargs
+	'telemetry', # basic info querying
+	'eal', # everything depends on eal
+	'ring',
+	'rcu', # rcu depends on ring
+	'mempool', 'mbuf', 'net', 'meter', 'ethdev', 'pci', # core
+	'cmdline',
 	'metrics', # bitrate/latency stats depends on this
 	'hash',    # efd depends on this
 	'timer',   # eventdev depends on this
 	'acl', 'bbdev', 'bitratestats', 'cfgfile',
-	'cmdline', 'compressdev', 'cryptodev',
+	'compressdev', 'cryptodev',
 	'distributor', 'efd', 'eventdev',
 	'gro', 'gso', 'ip_frag', 'jobstats',
 	'kni', 'latencystats', 'lpm', 'member',
-	'meter', 'power', 'pdump', 'rawdev',
-	'reorder', 'sched', 'security', 'vhost',
+	'power', 'pdump', 'rawdev',
+	'rib', 'reorder', 'sched', 'security', 'stack', 'vhost',
+	# ipsec lib depends on net, crypto and security
+	'ipsec',
+	#fib lib depends on rib
+	'fib',
 	# add pkt framework libs which use other libs from above
 	'port', 'table', 'pipeline',
 	# flow_classify lib depends on pkt framework table lib
-	'flow_classify', 'bpf']
+	'flow_classify', 'bpf', 'graph', 'node']
+
+if is_windows
+	libraries = ['kvargs','eal'] # only supported libraries for windows
+endif
 
 default_cflags = machine_args
+default_cflags += ['-DALLOW_EXPERIMENTAL_API']
+default_cflags += ['-DALLOW_INTERNAL_API']
+
 if cc.has_argument('-Wno-format-truncation')
 	default_cflags += '-Wno-format-truncation'
 endif
+
+enabled_libs = [] # used to print summary at the end
+
 foreach l:libraries
 	build = true
+	reason = '<unknown reason>' # set if build == false to explain why
 	name = l
-	version = 1
-	allow_experimental_apis = false
+	use_function_versioning = false
 	sources = []
 	headers = []
 	includes = []
@@ -45,18 +64,33 @@ foreach l:libraries
 	# use "deps" for internal DPDK dependencies, and "ext_deps" for
 	# external package/library requirements
 	ext_deps = []
-	deps = ['eal']   # eal is standard dependency except for itself
-	if l == 'kvargs'
-		deps = []
-	endif
-	if l == 'eal'
-		deps = ['kvargs']
+	deps = []
+	# eal is standard dependency once built
+	if dpdk_conf.has('RTE_LIBRTE_EAL')
+		deps += ['eal']
 	endif
 
 	dir_name = 'librte_' + l
 	subdir(dir_name)
 
 	if build
+		shared_deps = ext_deps
+		static_deps = ext_deps
+		foreach d:deps
+			if not is_variable('shared_rte_' + d)
+				error('Missing internal dependency "@0@" for @1@ [@2@]'
+						.format(d, name, 'lib/' + dir_name))
+			endif
+			shared_deps += [get_variable('shared_rte_' + d)]
+			static_deps += [get_variable('static_rte_' + d)]
+		endforeach
+	endif
+
+	if not build
+		dpdk_libs_disabled += name
+		set_variable(name.underscorify() + '_disable_reason', reason)
+	else
+		enabled_libs += name
 		dpdk_conf.set('RTE_LIBRTE_' + name.to_upper(), 1)
 		install_headers(headers)
 
@@ -68,29 +102,23 @@ foreach l:libraries
 			shared_dep = declare_dependency(include_directories: includes)
 			static_dep = shared_dep
 		else
-			shared_deps = ext_deps
-			static_deps = ext_deps
-			foreach d:deps
-				if not is_variable('shared_rte_' + d)
-					error('Missing dependency ' + d +
-						' for library ' + lib_name)
-				endif
-				shared_deps += [get_variable('shared_rte_' + d)]
-				static_deps += [get_variable('static_rte_' + d)]
-			endforeach
 
-			if allow_experimental_apis
-				cflags += '-DALLOW_EXPERIMENTAL_API'
+			if use_function_versioning
+				cflags += '-DRTE_USE_FUNCTION_VERSIONING'
 			endif
 
-			if get_option('per_library_versions')
-				lib_version = '@0@.1'.format(version)
-				so_version = '@0@'.format(version)
+			version_map = '@0@/@1@/rte_@2@_version.map'.format(
+					meson.current_source_dir(), dir_name, name)
+
+			is_stable = run_command(is_stable_cmd,
+					files(version_map)).returncode() == 0
+
+			if is_stable
+				lib_version = abi_version
+				so_version = stable_so_version
 			else
-				prj_ver = meson.project_version().split('.')
-				lib_version = '@0@.@1@'.format(
-						prj_ver.get(0), prj_ver.get(1))
-				so_version = lib_version
+				lib_version = experimental_abi_version
+				so_version = experimental_so_version
 			endif
 
 			# first build static lib
@@ -105,19 +133,52 @@ foreach l:libraries
 					include_directories: includes,
 					dependencies: static_deps)
 
-			# then use pre-build objects to build shared lib
-			sources = []
-			objs += static_lib.extract_all_objects(recursive: false)
+			if not use_function_versioning
+				# use pre-build objects to build shared lib
+				sources = []
+				objs += static_lib.extract_all_objects(recursive: false)
+			else
+				# for compat we need to rebuild with
+				# RTE_BUILD_SHARED_LIB defined
+				cflags += '-DRTE_BUILD_SHARED_LIB'
+			endif
 			version_map = '@0@/@1@/rte_@2@_version.map'.format(
 					meson.current_source_dir(), dir_name, name)
+			implib = dir_name + '.dll.a'
+
+			def_file = custom_target(name + '_def',
+				command: [map_to_def_cmd, '@INPUT@', '@OUTPUT@'],
+				input: version_map,
+				output: 'rte_@0@_exports.def'.format(name))
+
+			if is_ms_linker
+				lk_args = ['-Wl,/def:' + def_file.full_path(),
+					'-Wl,/implib:lib\\' + implib]
+			else
+				lk_args = ['-Wl,--version-script=' + version_map]
+			endif
+
+			lk_deps = [version_map, def_file]
+			if not is_windows
+				# on unix systems check the output of the
+				# check-symbols.sh script, using it as a
+				# dependency of the .so build
+				lk_deps += custom_target(name + '.sym_chk',
+					command: [check_symbols,
+						version_map, '@INPUT@'],
+					capture: true,
+					input: static_lib,
+					output: name + '.sym_chk')
+			endif
+
 			shared_lib = shared_library(libname,
 					sources,
 					objects: objs,
 					c_args: cflags,
 					dependencies: shared_deps,
 					include_directories: includes,
-					link_args: '-Wl,--version-script=' + version_map,
-					link_depends: version_map,
+					link_args: lk_args,
+					link_depends: lk_deps,
 					version: lib_version,
 					soversion: so_version,
 					install: true)
@@ -126,9 +187,15 @@ foreach l:libraries
 					dependencies: shared_deps)
 
 			dpdk_libraries = [shared_lib] + dpdk_libraries
+			dpdk_static_libraries = [static_lib] + dpdk_static_libraries
+			if libname == 'rte_node'
+				dpdk_graph_nodes = [static_lib]
+			endif
 		endif # sources.length() > 0
 
-		set_variable('shared_' + libname, shared_dep)
-		set_variable('static_' + libname, static_dep)
+		set_variable('shared_rte_' + name, shared_dep)
+		set_variable('static_rte_' + name, static_dep)
+		message('lib/@0@: Defining dependency "@1@"'.format(
+				dir_name, name))
 	endif # if build
 endforeach

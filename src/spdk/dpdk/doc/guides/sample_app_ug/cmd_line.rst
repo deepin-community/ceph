@@ -48,7 +48,7 @@ The application is located in the ``cmd_line`` sub-directory.
 Running the Application
 -----------------------
 
-To run the application in linuxapp environment, issue the following command:
+To run the application in linux environment, issue the following command:
 
 .. code-block:: console
 
@@ -128,7 +128,7 @@ For example, the cmd_obj_del_show command is defined as shown below:
         struct object *obj;
     };
 
-    static void cmd_obj_del_show_parsed(void *parsed_result, struct cmdline *cl, attribute ((unused)) void *data)
+    static void cmd_obj_del_show_parsed(void *parsed_result, struct cmdline *cl, __rte_unused void *data)
     {
        /* ... */
     }

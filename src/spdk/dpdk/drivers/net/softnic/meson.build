@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2018 Intel Corporation
 
-allow_experimental_apis = true
+if not is_linux
+	build = false
+	reason = 'only supported on linux'
+endif
 install_headers('rte_eth_softnic.h')
 sources = files('rte_eth_softnic_tm.c',
 	'rte_eth_softnic.c',
@@ -13,6 +16,9 @@ sources = files('rte_eth_softnic_tm.c',
 	'rte_eth_softnic_pipeline.c',
 	'rte_eth_softnic_thread.c',
 	'rte_eth_softnic_cli.c',
+	'rte_eth_softnic_flow.c',
+	'rte_eth_softnic_meter.c',
+	'rte_eth_softnic_cryptodev.c',
 	'parser.c',
 	'conn.c')
-deps += ['pipeline', 'port', 'table', 'sched']
+deps += ['pipeline', 'port', 'table', 'sched', 'cryptodev']

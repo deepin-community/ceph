@@ -10,6 +10,7 @@ inc_dir = path + '/include'
 lib = cc.find_library('libmusdk', dirs: [lib_dir], required: false)
 if not lib.found()
 	build = false
+	reason = 'missing dependency, "libmusdk"'
 else
 	ext_deps += lib
 	includes += include_directories(inc_dir)
@@ -18,4 +19,4 @@ endif
 
 sources = files('rte_mrvl_pmd.c', 'rte_mrvl_pmd_ops.c')
 
-deps += ['bus_vdev']
+deps += ['bus_vdev', 'common_mvep']

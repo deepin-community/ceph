@@ -16,9 +16,7 @@
 
 #include <ostream>
 
-#undef FMT_HEADER_ONLY
-#define FMT_HEADER_ONLY 1
-#include "seastar/fmt/include/fmt/format.h"
+#include <fmt/format.h>
 
 namespace ceph::msgr::v2 {
 
@@ -208,8 +206,7 @@ bufferlist FrameAssembler::asm_secure_rev1(const preamble_block_t& preamble,
   if (segment_bls[0].length() > 0) {
     m_crypto->tx->reset_tx_handler({segment_bls[0].length()});
     m_crypto->tx->authenticated_encrypt_update(segment_bls[0]);
-    auto tmp = m_crypto->tx->authenticated_encrypt_final();
-    frame_bl.claim_append(tmp);
+    frame_bl.claim_append(m_crypto->tx->authenticated_encrypt_final());
   }
   if (m_descs.size() == 1) {
     return frame_bl;  // no epilogue if only one segment
@@ -236,8 +233,7 @@ bufferlist FrameAssembler::asm_secure_rev1(const preamble_block_t& preamble,
     }
   }
   m_crypto->tx->authenticated_encrypt_update(epilogue_bl);
-  auto tmp = m_crypto->tx->authenticated_encrypt_final();
-  frame_bl.claim_append(tmp);
+  frame_bl.claim_append(m_crypto->tx->authenticated_encrypt_final());
   return frame_bl;
 }
 
@@ -398,7 +394,7 @@ void FrameAssembler::disasm_first_secure_rev1(bufferlist& preamble_bl,
     segment_bl.swap(tmp);
     preamble_bl.splice(sizeof(preamble_block_t), FRAME_PREAMBLE_INLINE_SIZE,
                        &segment_bl);
-    segment_bl.claim_append(tmp);
+    segment_bl.claim_append(std::move(tmp));
   } else {
     ceph_assert(segment_bl.length() == 0);
     preamble_bl.splice(sizeof(preamble_block_t), FRAME_PREAMBLE_INLINE_SIZE,

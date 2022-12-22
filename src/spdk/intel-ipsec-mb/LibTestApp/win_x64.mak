@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2017-2018, Intel Corporation
+# Copyright (c) 2017-2019, Intel Corporation
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -12,7 +12,7 @@
 #     * Neither the name of Intel Corporation nor the names of its contributors
 #       may be used to endorse or promote products derived from this software
 #       without specific prior written permission.
-# 
+#
 # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
 # AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 # IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
@@ -25,7 +25,8 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-APP = ipsec_MB_testapp
+TEST_APP = ipsec_MB_testapp
+XVALID_APP = ipsec_xvalid_test
 INSTNAME = intel-ipsec-mb
 
 !if !defined(PREFIX)
@@ -45,22 +46,40 @@ DCFLAGS = /Od /DDEBUG /Z7
 DLFLAGS = /debug
 !else
 DCFLAGS = /O2 /Oi
-DLFLAGS = 
+DLFLAGS =
+!endif
+
+!if "$(GCM_BIG_DATA)" == "y"
+GCM_CFLAGS = /DGCM_BIG_DATA
+!else
+GCM_CFLAGS =
 !endif
 
 CC = cl
 # _CRT_SECURE_NO_WARNINGS disables warning C4996 about unsecure snprintf() being used
-CFLAGS = /nologo /D_CRT_SECURE_NO_WARNINGS $(DCFLAGS) /Y- /W3 /WX- /Gm- /fp:precise /EHsc $(INCDIR)
+CFLAGS = /nologo /D_CRT_SECURE_NO_WARNINGS $(DCFLAGS) /Y- /W3 /WX- /Gm- /fp:precise /EHsc $(EXTRA_CFLAGS) $(GCM_CFLAGS) $(INCDIR)
 
 LNK = link
-LFLAGS = /out:$(APP).exe $(DLFLAGS)
+TEST_LFLAGS = /out:$(TEST_APP).exe $(DLFLAGS)
+XVALID_LFLAGS = /out:$(XVALID_APP).exe $(DLFLAGS)
 
-OBJS = main.obj gcm_test.obj ctr_test.obj customop_test.obj des_test.obj ccm_test.obj cmac_test.obj
+AS = nasm
+AFLAGS = -fwin64 -Xvc -DWIN_ABI
 
-all: $(APP).exe
+TEST_OBJS = main.obj gcm_test.obj ctr_test.obj customop_test.obj des_test.obj ccm_test.obj cmac_test.obj hmac_sha1_test.obj hmac_sha256_sha512_test.obj utils.obj hmac_md5_test.obj aes_test.obj sha_test.obj chained_test.obj api_test.obj pon_test.obj ecb_test.obj zuc_test.obj kasumi_test.obj snow3g_test.obj direct_api_test.obj
 
-$(APP).exe: $(OBJS) $(IPSECLIB)
-        $(LNK) $(LFLAGS) $(OBJS) $(IPSECLIB)
+XVALID_OBJS = ipsec_xvalid.obj misc.obj
+
+all: $(TEST_APP).exe $(XVALID_APP).exe
+
+$(TEST_APP).exe: $(TEST_OBJS) $(IPSECLIB)
+        $(LNK) $(TEST_LFLAGS) $(TEST_OBJS) $(IPSECLIB)
+
+$(XVALID_APP).exe: $(XVALID_OBJS) $(IPSECLIB)
+        $(LNK) $(XVALID_LFLAGS) $(XVALID_OBJS) $(IPSECLIB)
+
+misc.obj: misc.asm
+	$(AS) -o $@ $(AFLAGS) misc.asm
 
 main.obj: main.c do_test.h
 	$(CC) /c $(CFLAGS) main.c
@@ -71,17 +90,62 @@ gcm_test.obj: gcm_test.c gcm_ctr_vectors_test.h
 ctr_test.obj: ctr_test.c gcm_ctr_vectors_test.h
 	$(CC) /c $(CFLAGS) ctr_test.c
 
+pon_test.obj: pon_test.c gcm_ctr_vectors_test.h
+	$(CC) /c $(CFLAGS) pon_test.c
+
 customop_test.obj: customop_test.c customop_test.h
 	$(CC) /c $(CFLAGS) customop_test.c
 
 des_test.obj: des_test.c gcm_ctr_vectors_test.h
 	$(CC) /c $(CFLAGS) des_test.c
 
-ccm_test.obj: ccm_test.c gcm_ctr_vectors_test.h
+ccm_test.obj: ccm_test.c gcm_ctr_vectors_test.h utils.h
 	$(CC) /c $(CFLAGS) ccm_test.c
 
-cmac_test.obj: cmac_test.c
+cmac_test.obj: cmac_test.c utils.h
 	$(CC) /c $(CFLAGS) cmac_test.c
 
+hmac_sha1_test.obj: hmac_sha1_test.c utils.h
+	$(CC) /c $(CFLAGS) hmac_sha1_test.c
+
+hmac_sha256_sha512_test.obj: hmac_sha256_sha512_test.c utils.h
+	$(CC) /c $(CFLAGS) hmac_sha256_sha512_test.c
+
+hmac_md5_test.obj: hmac_md5_test.c utils.h
+	$(CC) /c $(CFLAGS) hmac_md5_test.c
+
+aes_test.obj: aes_test.c utils.h
+	$(CC) /c $(CFLAGS) aes_test.c
+
+ecb_test.obj: ecb_test.c utils.h
+	$(CC) /c $(CFLAGS) ecb_test.c
+
+utils.obj: utils.c
+	$(CC) /c $(CFLAGS) utils.c
+
+sha_test.obj: sha_test.c utils.h
+	$(CC) /c $(CFLAGS) sha_test.c
+
+chained_test.obj: chained_test.c utils.h
+	$(CC) /c $(CFLAGS) chained_test.c
+
+api_test.obj: api_test.c gcm_ctr_vectors_test.h
+	$(CC) /c $(CFLAGS) api_test.c
+
+zuc_test.obj: zuc_test.c zuc_test_vectors.h
+	$(CC) /c $(CFLAGS) zuc_test.c
+
+kasumi_test.obj: kasumi_test.c kasumi_test_vectors.h
+	$(CC) /c $(CFLAGS) kasumi_test.c
+
+snow3g_test.obj: snow3g_test.c snow3g_test_vectors.h
+	$(CC) /c $(CFLAGS) snow3g_test.c
+
+direct_api_test.obj: direct_api_test.c
+	$(CC) /c $(CFLAGS) direct_api_test.c
+
+ipsec_xvalid.obj: ipsec_xvalid.c misc.h
+	$(CC) /c $(CFLAGS) ipsec_xvalid.c
+
 clean:
-	del /q $(OBJS) $(APP).*
+	del /q $(TEST_OBJS) $(TEST_APP).* $(XVALID_OBJS) $(XVALID_APP).*

@@ -38,6 +38,12 @@ be loaded as shown below:
 
 .. note::
 
+   ``igb_uio`` module is disabled by default starting from ``DPDK v20.02``.
+   To build it, the config option ``CONFIG_RTE_EAL_IGB_UIO`` should be enabled.
+   It is planned to move ``igb_uio`` module to a different git repository.
+
+.. note::
+
     For some devices which lack support for legacy interrupts, e.g. virtual function
     (VF) devices, the ``igb_uio`` module may be needed in place of ``uio_pci_generic``.
 
@@ -47,6 +53,13 @@ be loaded as shown below:
    UIO on the system. Therefore, devices for use by DPDK should be bound to the
    ``vfio-pci`` kernel module rather than ``igb_uio`` or ``uio_pci_generic``.
    For more details see :ref:`linux_gsg_binding_kernel` below.
+
+.. note::
+
+   If the devices used for DPDK are bound to the ``uio_pci_generic`` kernel module,
+   please make sure that the IOMMU is disabled or passthrough. One can add
+   ``intel_iommu=off`` or ``amd_iommu=off`` or ``intel_iommu=on iommu=pt``in GRUB
+   command line on x86_64 systems, or add ``iommu.passthrough=1`` on arm64 system.
 
 Since DPDK release 1.7 onward provides VFIO support, use of UIO is optional
 for platforms that support using VFIO.
@@ -78,6 +91,8 @@ This can be done by using the DPDK setup script (called dpdk-setup.sh and locate
 
     VFIO can be used without IOMMU. While this is just as unsafe as using UIO, it does make it possible for the user to keep the degree of device access and programming that VFIO has, in situations where IOMMU is not available.
 
+.. _bifurcated_driver:
+
 Bifurcated Driver
 -----------------
 
@@ -92,11 +107,14 @@ Such model has the following benefits:
  - It enables the user to use legacy linux tools such as ``ethtool`` or
    ``ifconfig`` while running DPDK application on the same network ports.
  - It enables the DPDK application to filter only part of the traffic,
-   While the rest will be directed and handled by the kernel driver.
+   while the rest will be directed and handled by the kernel driver.
+   The flow bifurcation is performed by the NIC hardware.
+   As an example, using :ref:`flow_isolated_mode` allows to choose
+   strictly what is received in DPDK.
 
 More about the bifurcated driver can be found in
 `Mellanox Bifurcated DPDK PMD
-<https://dpdksummit.com/Archive/pdf/2016Userspace/Day02-Session04-RonyEfraim-Userspace2016.pdf>`__.
+<https://www.dpdk.org/wp-content/uploads/sites/35/2016/10/Day02-Session04-RonyEfraim-Userspace2016.pdf>`__.
 
 .. _linux_gsg_binding_kernel:
 

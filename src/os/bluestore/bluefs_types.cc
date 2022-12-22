@@ -7,6 +7,12 @@
 #include "include/uuid.h"
 #include "include/stringify.h"
 
+using std::list;
+using std::ostream;
+
+using ceph::bufferlist;
+using ceph::Formatter;
+
 // bluefs_extent_t
 void bluefs_extent_t::dump(Formatter *f) const
 {
@@ -30,27 +36,58 @@ ostream& operator<<(ostream& out, const bluefs_extent_t& e)
 	     << std::dec;
 }
 
+// bluefs_layout_t
+
+void bluefs_layout_t::encode(bufferlist& bl) const
+{
+  ENCODE_START(1, 1, bl);
+  encode(shared_bdev, bl);
+  encode(dedicated_db, bl);
+  encode(dedicated_wal, bl);
+  ENCODE_FINISH(bl);
+}
+
+void bluefs_layout_t::decode(bufferlist::const_iterator& p)
+{
+  DECODE_START(1, p);
+  decode(shared_bdev, p);
+  decode(dedicated_db, p);
+  decode(dedicated_wal, p);
+  DECODE_FINISH(p);
+}
+
+void bluefs_layout_t::dump(Formatter *f) const
+{
+  f->dump_stream("shared_bdev") << shared_bdev;
+  f->dump_stream("dedicated_db") << dedicated_db;
+  f->dump_stream("dedicated_wal") << dedicated_wal;
+}
+
 // bluefs_super_t
 
 void bluefs_super_t::encode(bufferlist& bl) const
 {
-  ENCODE_START(1, 1, bl);
+  ENCODE_START(2, 1, bl);
   encode(uuid, bl);
   encode(osd_uuid, bl);
   encode(version, bl);
   encode(block_size, bl);
   encode(log_fnode, bl);
+  encode(memorized_layout, bl);
   ENCODE_FINISH(bl);
 }
 
 void bluefs_super_t::decode(bufferlist::const_iterator& p)
 {
-  DECODE_START(1, p);
+  DECODE_START(2, p);
   decode(uuid, p);
   decode(osd_uuid, p);
   decode(version, p);
   decode(block_size, p);
   decode(log_fnode, p);
+  if (struct_v >= 2) {
+    decode(memorized_layout, p);
+  }
   DECODE_FINISH(p);
 }
 
@@ -173,7 +210,7 @@ void bluefs_transaction_t::decode(bufferlist::const_iterator& p)
   DECODE_FINISH(p);
   uint32_t actual = op_bl.crc32c(-1);
   if (actual != crc)
-    throw buffer::malformed_input("bad crc " + stringify(actual)
+    throw ceph::buffer::malformed_input("bad crc " + stringify(actual)
 				  + " expected " + stringify(crc));
 }
 
@@ -191,8 +228,6 @@ void bluefs_transaction_t::generate_test_instances(
   ls.push_back(new bluefs_transaction_t);
   ls.push_back(new bluefs_transaction_t);
   ls.back()->op_init();
-  ls.back()->op_alloc_add(0, 0, 123123211);
-  ls.back()->op_alloc_rm(1, 0, 123);
   ls.back()->op_dir_create("dir");
   ls.back()->op_dir_create("dir2");
   bluefs_fnode_t fnode;

@@ -51,6 +51,7 @@ enum ecore_iov_pf_to_vf_status {
 	PFVF_STATUS_NO_RESOURCE,
 	PFVF_STATUS_FORCED,
 	PFVF_STATUS_MALICIOUS,
+	PFVF_STATUS_ACQUIRED,
 };
 
 struct ecore_mcp_link_params;
@@ -84,6 +85,13 @@ struct ecore_public_vf_info {
 	 */
 	u8 forced_mac[ETH_ALEN];
 	u16 forced_vlan;
+
+	/* Trusted VFs can configure promiscuous mode and
+	 * set MAC address inspite PF has set forced MAC.
+	 * Also store shadow promisc configuration if needed.
+	 */
+	bool is_trusted_configured;
+	bool is_trusted_request;
 };
 
 struct ecore_iov_vf_init_params {
@@ -695,6 +703,16 @@ bool ecore_iov_is_vf_started(struct ecore_hwfn *p_hwfn,
  */
 int ecore_iov_get_vf_min_rate(struct ecore_hwfn *p_hwfn, int vfid);
 
+/**
+ * @brief - Configure min rate for VF's vport.
+ * @param p_dev
+ * @param vfid
+ * @param - rate in Mbps
+ *
+ * @return
+ */
+enum _ecore_status_t ecore_iov_configure_min_tx_rate(struct ecore_dev *p_dev,
+						     int vfid, u32 rate);
 #endif
 
 /**
@@ -723,7 +741,7 @@ ecore_iov_pf_configure_vf_queue_coalesce(struct ecore_hwfn *p_hwfn,
  * @param p_hwfn
  * @param rel_vf_id
  *
- * @return MAX_NUM_VFS_E4 in case no further active VFs, otherwise index.
+ * @return MAX_NUM_VFS_K2 in case no further active VFs, otherwise index.
  */
 u16 ecore_iov_get_next_active_vf(struct ecore_hwfn *p_hwfn, u16 rel_vf_id);
 
@@ -747,7 +765,7 @@ void ecore_iov_set_vf_hw_channel(struct ecore_hwfn *p_hwfn, int vfid,
 
 #define ecore_for_each_vf(_p_hwfn, _i)					\
 	for (_i = ecore_iov_get_next_active_vf(_p_hwfn, 0);		\
-	     _i < MAX_NUM_VFS_E4;					\
+	     _i < MAX_NUM_VFS_K2;					\
 	     _i = ecore_iov_get_next_active_vf(_p_hwfn, _i + 1))
 
 #endif

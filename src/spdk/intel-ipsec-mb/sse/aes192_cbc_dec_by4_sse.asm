@@ -41,7 +41,12 @@
 ; arg 4: OUT:  pointer to output (plain text)
 ; arg 5: LEN:  length in bytes (multiple of 16)
 ;
-%include "os.asm"
+%include "include/os.asm"
+
+
+%ifndef AES_CBC_DEC_192
+%define AES_CBC_DEC_192 aes_cbc_dec_192_sse
+%endif
 
 %define MOVDQ	movdqu
 
@@ -82,8 +87,8 @@
 
 section .text
 
-MKGLOBAL(aes_cbc_dec_192_sse,function,internal)
-aes_cbc_dec_192_sse:
+MKGLOBAL(AES_CBC_DEC_192,function,internal)
+AES_CBC_DEC_192:
 %ifndef LINUX
 	mov	LEN, [rsp + 8*5]
 %endif

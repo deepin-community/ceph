@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 #include <string>
 #include <map>
@@ -20,16 +20,16 @@ static void dump_usage_categories_info(Formatter *formatter, const rgw_usage_log
     const rgw_usage_data& usage = uiter->second;
     formatter->open_object_section("entry");
     formatter->dump_string("category", uiter->first);
-    formatter->dump_int("bytes_sent", usage.bytes_sent);
-    formatter->dump_int("bytes_received", usage.bytes_received);
-    formatter->dump_int("ops", usage.ops);
-    formatter->dump_int("successful_ops", usage.successful_ops);
+    formatter->dump_unsigned("bytes_sent", usage.bytes_sent);
+    formatter->dump_unsigned("bytes_received", usage.bytes_received);
+    formatter->dump_unsigned("ops", usage.ops);
+    formatter->dump_unsigned("successful_ops", usage.successful_ops);
     formatter->close_section(); // entry
   }
   formatter->close_section(); // categories
 }
 
-int RGWUsage::show(RGWRados *store, const rgw_user& uid, const string& bucket_name, uint64_t start_epoch,
+int RGWUsage::show(const DoutPrefixProvider *dpp, RGWRados *store, const rgw_user& uid, const string& bucket_name, uint64_t start_epoch,
 		   uint64_t end_epoch, bool show_log_entries, bool show_log_sum, map<string, bool> *categories,
 		   RGWFormatterFlusher& flusher)
 {
@@ -52,7 +52,7 @@ int RGWUsage::show(RGWRados *store, const rgw_user& uid, const string& bucket_na
   bool user_section_open = false;
   map<string, rgw_usage_log_entry> summary_map;
   while (is_truncated) {
-    int ret = store->read_usage(uid, bucket_name, start_epoch, end_epoch, max_entries,
+    int ret = store->read_usage(dpp, uid, bucket_name, start_epoch, end_epoch, max_entries,
                                 &is_truncated, usage_iter, usage);
 
     if (ret == -ENOENT) {
@@ -119,10 +119,10 @@ int RGWUsage::show(RGWRados *store, const rgw_user& uid, const string& bucket_na
       rgw_usage_data total_usage;
       entry.sum(total_usage, *categories);
       formatter->open_object_section("total");
-      formatter->dump_int("bytes_sent", total_usage.bytes_sent);
-      formatter->dump_int("bytes_received", total_usage.bytes_received);
-      formatter->dump_int("ops", total_usage.ops);
-      formatter->dump_int("successful_ops", total_usage.successful_ops);
+      encode_json("bytes_sent", total_usage.bytes_sent, formatter);
+      encode_json("bytes_received", total_usage.bytes_received, formatter);
+      encode_json("ops", total_usage.ops, formatter);
+      encode_json("successful_ops", total_usage.successful_ops, formatter);
       formatter->close_section(); // total
 
       formatter->close_section(); // user
@@ -139,13 +139,13 @@ int RGWUsage::show(RGWRados *store, const rgw_user& uid, const string& bucket_na
   return 0;
 }
 
-int RGWUsage::trim(RGWRados *store, const rgw_user& uid, const string& bucket_name, uint64_t start_epoch,
+int RGWUsage::trim(const DoutPrefixProvider *dpp, RGWRados *store, const rgw_user& uid, const string& bucket_name, uint64_t start_epoch,
                    uint64_t end_epoch)
 {
-  return store->trim_usage(uid, bucket_name, start_epoch, end_epoch);
+  return store->trim_usage(dpp, uid, bucket_name, start_epoch, end_epoch);
 }
 
-int RGWUsage::clear(RGWRados *store)
+int RGWUsage::clear(const DoutPrefixProvider *dpp, RGWRados *store)
 {
-  return store->clear_usage();
+  return store->clear_usage(dpp);
 }

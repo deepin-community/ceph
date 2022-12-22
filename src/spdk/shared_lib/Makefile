@@ -36,30 +36,35 @@ include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
 include $(SPDK_ROOT_DIR)/mk/spdk.app.mk
 include $(SPDK_ROOT_DIR)/mk/spdk.modules.mk
 
+SO_VER := 2
+SO_MINOR := 0
+
 # Build combined libspdk.so shared library
 SHARED_LINKED_LIB := $(SPDK_ROOT_DIR)/build/lib/libspdk.so
-SHARED_REALNAME_LIB := $(SHARED_LINKED_LIB).$(SO_SUFFIX_ALL)
+SHARED_REALNAME_LIB := $(SHARED_LINKED_LIB).$(SO_SUFFIX)
 IGNORED_LIBS := libspdk.so
-IGNORED_LIBS += libspdk_spdk_mock.so
+IGNORED_LIBS += libspdk_ut_mock.so
 IGNORED_LIBS += libspdk_env_dpdk.so
 
 SPDK_SHARED_LIBS := $(filter-out $(IGNORED_LIBS), $(sort $(notdir $(wildcard $(SPDK_ROOT_DIR)/build/lib/*.so))))
 
 $(SHARED_REALNAME_LIB):
 	$(Q)echo "  SO $(notdir $@)"; \
-	echo "GROUP ( AS_NEEDED ( $(SPDK_SHARED_LIBS) ) )" > $(SHARED_REALNAME_LIB)
+	echo "GROUP ( $(SPDK_SHARED_LIBS) )" > $(SHARED_REALNAME_LIB)
 
 $(SHARED_LINKED_LIB) : $(SHARED_REALNAME_LIB)
 	$(Q)echo "  SYMLINK $(notdir $@)"; $(BUILD_LINKERNAME_LIB)
 
-.PHONY: all clean $(DIRS-y)
+.PHONY: all clean $(DIRS-y) $(SHARED_LINKED_LIB) install uninstall
 
 all: $(SHARED_LINKED_LIB)
 
-clean:
-	$(CLEAN_C) $(SHARED_REALNAME_LIB) $(SHARED_LINKED_LIB)
+CLEAN_FILES += $(SHARED_REALNAME_LIB) $(SHARED_LINKED_LIB)
 
 install:
 	$(INSTALL_SHARED_LIB)
+
+uninstall:
+	$(UNINSTALL_SHARED_LIB)
 
 include $(SPDK_ROOT_DIR)/mk/spdk.subdirs.mk

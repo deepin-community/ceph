@@ -24,21 +24,25 @@
 
 void SnapInfo::encode(bufferlist& bl) const
 {
-  ENCODE_START(2, 2, bl);
+  ENCODE_START(3, 2, bl);
   encode(snapid, bl);
   encode(ino, bl);
   encode(stamp, bl);
   encode(name, bl);
+  encode(metadata, bl);
   ENCODE_FINISH(bl);
 }
 
 void SnapInfo::decode(bufferlist::const_iterator& bl)
 {
-  DECODE_START_LEGACY_COMPAT_LEN(2, 2, 2, bl);
+  DECODE_START_LEGACY_COMPAT_LEN(3, 2, 2, bl);
   decode(snapid, bl);
   decode(ino, bl);
   decode(stamp, bl);
   decode(name, bl);
+  if (struct_v >= 3) {
+    decode(metadata, bl);
+  }
   DECODE_FINISH(bl);
 }
 
@@ -48,9 +52,14 @@ void SnapInfo::dump(Formatter *f) const
   f->dump_unsigned("ino", ino);
   f->dump_stream("stamp") << stamp;
   f->dump_string("name", name);
+  f->open_object_section("metadata");
+  for (auto &[key, value] : metadata) {
+    f->dump_string(key, value);
+  }
+  f->close_section();
 }
 
-void SnapInfo::generate_test_instances(list<SnapInfo*>& ls)
+void SnapInfo::generate_test_instances(std::list<SnapInfo*>& ls)
 {
   ls.push_back(new SnapInfo);
   ls.push_back(new SnapInfo);
@@ -58,6 +67,7 @@ void SnapInfo::generate_test_instances(list<SnapInfo*>& ls)
   ls.back()->ino = 2;
   ls.back()->stamp = utime_t(3, 4);
   ls.back()->name = "foo";
+  ls.back()->metadata = {{"foo", "bar"}};
 }
 
 ostream& operator<<(ostream& out, const SnapInfo &sn)
@@ -106,7 +116,7 @@ void snaplink_t::dump(Formatter *f) const
   f->dump_unsigned("first", first);
 }
 
-void snaplink_t::generate_test_instances(list<snaplink_t*>& ls)
+void snaplink_t::generate_test_instances(std::list<snaplink_t*>& ls)
 {
   ls.push_back(new snaplink_t);
   ls.push_back(new snaplink_t);
@@ -196,7 +206,7 @@ void sr_t::dump(Formatter *f) const
   f->close_section();
 }
 
-void sr_t::generate_test_instances(list<sr_t*>& ls)
+void sr_t::generate_test_instances(std::list<sr_t*>& ls)
 {
   ls.push_back(new sr_t);
   ls.push_back(new sr_t);

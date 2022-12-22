@@ -1,12 +1,10 @@
-<cd-table
-  #poolConfTable
-  [data]="data"
-  [columns]="poolConfigurationColumns"
-  identifier="name">
+<cd-table #poolConfTable
+          [data]="data"
+          [columns]="poolConfigurationColumns"
+          identifier="name">
 </cd-table>
 
 <ng-template #configurationSourceTpl
-             let-row="row"
              let-value="value">
 
   <div [ngSwitch]="value">

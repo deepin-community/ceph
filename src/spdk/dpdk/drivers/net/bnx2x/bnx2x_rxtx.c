@@ -12,19 +12,8 @@ static const struct rte_memzone *
 ring_dma_zone_reserve(struct rte_eth_dev *dev, const char *ring_name,
 		      uint16_t queue_id, uint32_t ring_size, int socket_id)
 {
-	char z_name[RTE_MEMZONE_NAMESIZE];
-	const struct rte_memzone *mz;
-
-	snprintf(z_name, sizeof(z_name), "%s_%s_%d_%d",
-			dev->device->driver->name, ring_name,
-			dev->data->port_id, queue_id);
-
-	mz = rte_memzone_lookup(z_name);
-	if (mz)
-		return mz;
-
-	return rte_memzone_reserve_aligned(z_name, ring_size, socket_id,
-			RTE_MEMZONE_IOVA_CONTIG, BNX2X_PAGE_SIZE);
+	return rte_eth_dma_zone_reserve(dev, ring_name, queue_id,
+			ring_size, BNX2X_PAGE_SIZE, socket_id);
 }
 
 static void
@@ -76,7 +65,7 @@ bnx2x_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq = rte_zmalloc_socket("ethdev RX queue", sizeof(struct bnx2x_rx_queue),
 				 RTE_CACHE_LINE_SIZE, socket_id);
 	if (NULL == rxq) {
-		PMD_INIT_LOG(ERR, "rte_zmalloc for rxq failed!");
+		PMD_DRV_LOG(ERR, sc, "rte_zmalloc for rxq failed!");
 		return -ENOMEM;
 	}
 	rxq->sc = sc;
@@ -92,7 +81,7 @@ bnx2x_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	sc->rx_ring_size = USABLE_RX_BD(rxq);
 	rxq->nb_cq_pages = RCQ_BD_PAGES(rxq);
 
-	PMD_INIT_LOG(DEBUG, "fp[%02d] req_bd=%u, usable_bd=%lu, "
+	PMD_DRV_LOG(DEBUG, sc, "fp[%02d] req_bd=%u, usable_bd=%lu, "
 		       "total_bd=%lu, rx_pages=%u, cq_pages=%u",
 		       queue_idx, nb_desc, (unsigned long)USABLE_RX_BD(rxq),
 		       (unsigned long)TOTAL_RX_BD(rxq), rxq->nb_rx_pages,
@@ -275,7 +264,7 @@ bnx2x_dev_tx_queue_setup(struct rte_eth_dev *dev,
 	txq->tx_free_thresh = min(txq->tx_free_thresh,
 				  txq->nb_tx_desc - BDS_PER_TX_PKT);
 
-	PMD_INIT_LOG(DEBUG, "fp[%02d] req_bd=%u, thresh=%u, usable_bd=%lu, "
+	PMD_DRV_LOG(DEBUG, sc, "fp[%02d] req_bd=%u, thresh=%u, usable_bd=%lu, "
 		     "total_bd=%lu, tx_pages=%u",
 		     queue_idx, nb_desc, txq->tx_free_thresh,
 		     (unsigned long)USABLE_TX_BD(txq),
@@ -301,7 +290,7 @@ bnx2x_dev_tx_queue_setup(struct rte_eth_dev *dev,
 		return -ENOMEM;
 	}
 
-	/* PMD_DRV_LOG(DEBUG, "sw_ring=%p hw_ring=%p dma_addr=0x%"PRIx64,
+	/* PMD_DRV_LOG(DEBUG, sc, "sw_ring=%p hw_ring=%p dma_addr=0x%"PRIx64,
 	   txq->sw_ring, txq->tx_ring, txq->tx_ring_phys_addr); */
 
 	/* Link TX pages */
@@ -310,7 +299,9 @@ bnx2x_dev_tx_queue_setup(struct rte_eth_dev *dev,
 		busaddr = txq->tx_ring_phys_addr + BNX2X_PAGE_SIZE * (i % txq->nb_tx_pages);
 		tx_n_bd->addr_hi = rte_cpu_to_le_32(U64_HI(busaddr));
 		tx_n_bd->addr_lo = rte_cpu_to_le_32(U64_LO(busaddr));
-		/* PMD_DRV_LOG(DEBUG, "link tx page %lu", (TOTAL_TX_BD_PER_PAGE * i - 1)); */
+		/* PMD_DRV_LOG(DEBUG, sc, "link tx page %lu",
+		 *          (TOTAL_TX_BD_PER_PAGE * i - 1));
+		 */
 	}
 
 	txq->queue_id = queue_idx;
@@ -320,7 +311,6 @@ bnx2x_dev_tx_queue_setup(struct rte_eth_dev *dev,
 	txq->tx_bd_tail = 0;
 	txq->tx_bd_head = 0;
 	txq->nb_tx_avail = txq->nb_tx_desc;
-	dev->tx_pkt_burst = bnx2x_xmit_pkts;
 	dev->data->tx_queues[queue_idx] = txq;
 	if (!sc->tx_queues) sc->tx_queues = dev->data->tx_queues;
 
@@ -331,12 +321,14 @@ static inline void
 bnx2x_upd_rx_prod_fast(struct bnx2x_softc *sc, struct bnx2x_fastpath *fp,
 		uint16_t rx_bd_prod, uint16_t rx_cq_prod)
 {
-	union ustorm_eth_rx_producers rx_prods;
+	struct ustorm_eth_rx_producers rx_prods = { 0 };
+	uint32_t *val = NULL;
 
-	rx_prods.prod.bd_prod  = rx_bd_prod;
-	rx_prods.prod.cqe_prod = rx_cq_prod;
+	rx_prods.bd_prod  = rx_bd_prod;
+	rx_prods.cqe_prod = rx_cq_prod;
 
-	REG_WR(sc, fp->ustorm_rx_prods_offset, rx_prods.raw_data[0]);
+	val = (uint32_t *)&rx_prods;
+	REG_WR(sc, fp->ustorm_rx_prods_offset, val[0]);
 }
 
 static uint16_t
@@ -351,8 +343,11 @@ bnx2x_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	struct rte_mbuf *new_mb;
 	uint16_t rx_pref;
 	struct eth_fast_path_rx_cqe *cqe_fp;
-	uint16_t len, pad;
+	uint16_t len, pad, bd_len, buf_len;
 	struct rte_mbuf *rx_mb = NULL;
+	static bool log_once = true;
+
+	rte_spinlock_lock(&(fp)->rx_mtx);
 
 	hw_cq_cons = le16toh(*fp->rx_cq_cons_sb);
 	if ((hw_cq_cons & USABLE_RCQ_ENTRIES_PER_PAGE) ==
@@ -365,8 +360,10 @@ bnx2x_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	sw_cq_cons = rxq->rx_cq_head;
 	sw_cq_prod = rxq->rx_cq_tail;
 
-	if (sw_cq_cons == hw_cq_cons)
+	if (sw_cq_cons == hw_cq_cons) {
+		rte_spinlock_unlock(&(fp)->rx_mtx);
 		return 0;
+	}
 
 	while (nb_rx < nb_pkts && sw_cq_cons != hw_cq_cons) {
 
@@ -388,6 +385,20 @@ bnx2x_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 
 		len = cqe_fp->pkt_len_or_gro_seg_len;
 		pad = cqe_fp->placement_offset;
+		bd_len = cqe_fp->len_on_bd;
+		buf_len = rxq->sw_ring[bd_cons]->buf_len;
+
+		/* Check for sufficient buffer length */
+		if (unlikely(buf_len < len + (pad + RTE_PKTMBUF_HEADROOM))) {
+			if (unlikely(log_once)) {
+				PMD_DRV_LOG(ERR, sc, "mbuf size %d is not enough to hold Rx packet length more than %d",
+					    buf_len - RTE_PKTMBUF_HEADROOM,
+					    buf_len -
+					    (pad + RTE_PKTMBUF_HEADROOM));
+				log_once = false;
+			}
+			goto next_rx;
+		}
 
 		new_mb = rte_mbuf_raw_alloc(rxq->mb_pool);
 		if (unlikely(!new_mb)) {
@@ -412,7 +423,8 @@ bnx2x_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		rx_mb->data_off = pad + RTE_PKTMBUF_HEADROOM;
 		rx_mb->nb_segs = 1;
 		rx_mb->next = NULL;
-		rx_mb->pkt_len = rx_mb->data_len = len;
+		rx_mb->pkt_len = len;
+		rx_mb->data_len = bd_len;
 		rx_mb->port = rxq->port_id;
 		rte_prefetch1(rte_pktmbuf_mtod(rx_mb, void *));
 
@@ -422,7 +434,7 @@ bnx2x_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		 */
 		if (cqe_fp->pars_flags.flags & PARSING_FLAGS_VLAN) {
 			rx_mb->vlan_tci = cqe_fp->vlan_tag;
-			rx_mb->ol_flags |= PKT_RX_VLAN;
+			rx_mb->ol_flags |= PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED;
 		}
 
 		rx_pkts[nb_rx] = rx_mb;
@@ -447,23 +459,38 @@ next_rx:
 
 	bnx2x_upd_rx_prod_fast(sc, fp, bd_prod, sw_cq_prod);
 
+	rte_spinlock_unlock(&(fp)->rx_mtx);
+
 	return nb_rx;
 }
 
-int
-bnx2x_dev_rx_init(struct rte_eth_dev *dev)
+static uint16_t
+bnx2x_rxtx_pkts_dummy(__rte_unused void *p_rxq,
+		      __rte_unused struct rte_mbuf **rx_pkts,
+		      __rte_unused uint16_t nb_pkts)
+{
+	return 0;
+}
+
+void bnx2x_dev_rxtx_init_dummy(struct rte_eth_dev *dev)
+{
+	dev->rx_pkt_burst = bnx2x_rxtx_pkts_dummy;
+	dev->tx_pkt_burst = bnx2x_rxtx_pkts_dummy;
+}
+
+void bnx2x_dev_rxtx_init(struct rte_eth_dev *dev)
 {
 	dev->rx_pkt_burst = bnx2x_recv_pkts;
-
-	return 0;
+	dev->tx_pkt_burst = bnx2x_xmit_pkts;
 }
 
 void
 bnx2x_dev_clear_queues(struct rte_eth_dev *dev)
 {
+	struct bnx2x_softc *sc = dev->data->dev_private;
 	uint8_t i;
 
-	PMD_INIT_FUNC_TRACE();
+	PMD_INIT_FUNC_TRACE(sc);
 
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		struct bnx2x_tx_queue *txq = dev->data->tx_queues[i];

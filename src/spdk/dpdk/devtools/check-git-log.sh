@@ -83,47 +83,22 @@ bad=$(echo "$headlines" | grep --color=always \
 	| sed 's,^,\t,')
 [ -z "$bad" ] || printf "Wrong headline uppercase:\n$bad\n"
 
-# check headline uppercase (Rx/Tx, VF, L2, MAC, Linux, ARM...)
-bad=$(echo "$headlines" | grep -E --color=always \
-	-e ':.*\<(rx|tx|RX|TX)\>' \
-	-e ':.*\<[pv]f\>' \
-	-e ':.*\<[hsf]w\>' \
-	-e ':.*\<l[234]\>' \
-	-e ':.*\<api\>' \
-	-e ':.*\<arm\>' \
-	-e ':.*\<armv7\>' \
-	-e ':.*\<armv8\>' \
-	-e ':.*\<crc\>' \
-	-e ':.*\<dma\>' \
-	-e ':.*\<eeprom\>' \
-	-e ':.*\<freebsd\>' \
-	-e ':.*\<iova\>' \
-	-e ':.*\<linux\>' \
-	-e ':.*\<lro\>' \
-	-e ':.*\<lsc\>' \
-	-e ':.*\<mac\>' \
-	-e ':.*\<mss\>' \
-	-e ':.*\<mtu\>' \
-	-e ':.*\<nic\>' \
-	-e ':.*\<nvm\>' \
-	-e ':.*\<numa\>' \
-	-e ':.*\<pci\>' \
-	-e ':.*\<pmd\>' \
-	-e ':.*\<rss\>' \
-	-e ':.*\<sctp\>' \
-	-e ':.*\<tso\>' \
-	-e ':.*\<udp\>' \
-	-e ':.*\<[Vv]lan\>' \
-	-e ':.*\<vdpa\>' \
-	-e ':.*\<vsi\>' \
-	| sed 's,^,\t,')
-[ -z "$bad" ] || printf "Wrong headline lowercase:\n$bad\n"
-
-# special case check for VMDq to give good error message
-bad=$(echo "$headlines" | grep -E --color=always \
-	-e '\<(vmdq|VMDQ)\>' \
-	| sed 's,^,\t,')
-[ -z "$bad" ] || printf "Wrong headline capitalization, use 'VMDq':\n$bad\n"
+# check headline case (Rx/Tx, VF, L2, MAC, Linux ...)
+IFS='
+'
+words="$selfdir/words-case.txt"
+for word in $(cat $words); do
+	bad=$(echo "$headlines" | grep -iw $word | grep -v $word)
+	if [ "$word" = "Tx" ]; then
+		bad=$(echo $bad | grep -v 'OCTEON\ TX')
+	fi
+	for bad_line in $bad; do
+		bad_word=$(echo $bad_line | cut -d":" -f2 | grep -io $word)
+		if [ -n "$bad_word" ]; then
+			printf "Wrong headline case:\n\"$bad_line\": $bad_word --> $word\n"
+		fi
+	done
+done
 
 # check headline length (60 max)
 bad=$(echo "$headlines" |
@@ -151,6 +126,24 @@ bad=$(echo "$tags" |
 	sed 's,^.,\t&,')
 [ -z "$bad" ] || printf "Wrong tag:\n$bad\n"
 
+# check missing Coverity issue: tag
+bad=$(for commit in $commits; do
+	body=$(git log --format='%b' -1 $commit)
+	echo "$body" | grep -qi coverity || continue
+	echo "$body" | grep -q '^Coverity issue:' && continue
+	git log --format='\t%s' -1 $commit
+done)
+[ -z "$bad" ] || printf "Missing 'Coverity issue:' tag:\n$bad\n"
+
+# check missing Bugzilla ID: tag
+bad=$(for commit in $commits; do
+	body=$(git log --format='%b' -1 $commit)
+	echo "$body" | grep -qi bugzilla || continue
+	echo "$body" | grep -q '^Bugzilla ID:' && continue
+	git log --format='\t%s' -1 $commit
+done)
+[ -z "$bad" ] || printf "Missing 'Bugzilla ID:' tag:\n$bad\n"
+
 # check missing Fixes: tag
 bad=$(for fix in $fixes ; do
 	git log --format='%b' -1 $fix | grep -q '^Fixes: ' ||
@@ -159,8 +152,6 @@ done)
 [ -z "$bad" ] || printf "Missing 'Fixes' tag:\n$bad\n"
 
 # check Fixes: reference
-IFS='
-'
 fixtags=$(echo "$tags" | grep '^Fixes: ')
 bad=$(for fixtag in $fixtags ; do
 	hash=$(echo "$fixtag" | sed 's,^Fixes: \([0-9a-f]*\).*,\1,')

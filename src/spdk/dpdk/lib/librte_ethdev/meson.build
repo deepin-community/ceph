@@ -2,9 +2,10 @@
 # Copyright(c) 2017 Intel Corporation
 
 name = 'ethdev'
-version = 10
-allow_experimental_apis = true
-sources = files('ethdev_profile.c',
+sources = files('ethdev_private.c',
+	'ethdev_profile.c',
+	'ethdev_trace_points.c',
+	'rte_class_eth.c',
 	'rte_ethdev.c',
 	'rte_flow.c',
 	'rte_mtr.c',
@@ -14,6 +15,8 @@ headers = files('rte_ethdev.h',
 	'rte_ethdev_driver.h',
 	'rte_ethdev_core.h',
 	'rte_ethdev_pci.h',
+	'rte_ethdev_trace.h',
+	'rte_ethdev_trace_fp.h',
 	'rte_ethdev_vdev.h',
 	'rte_eth_ctrl.h',
 	'rte_dev_info.h',
@@ -24,4 +27,4 @@ headers = files('rte_ethdev.h',
 	'rte_tm.h',
 	'rte_tm_driver.h')
 
-deps += ['net', 'kvargs']
+deps += ['net', 'kvargs', 'meter', 'telemetry']

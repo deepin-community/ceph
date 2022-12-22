@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2012-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2012-2019 Solarflare Communications Inc.
  */
 
 #include "efx.h"
@@ -20,7 +20,6 @@ hunt_nic_get_required_pcie_bandwidth(
 	__out		uint32_t *bandwidth_mbpsp)
 {
 	uint32_t port_modes;
-	uint32_t max_port_mode;
 	uint32_t bandwidth;
 	efx_rc_t rc;
 
@@ -30,7 +29,8 @@ hunt_nic_get_required_pcie_bandwidth(
 	 * capable mode is in use.
 	 */
 
-	if ((rc = efx_mcdi_get_port_modes(enp, &port_modes, NULL)) != 0) {
+	if ((rc = efx_mcdi_get_port_modes(enp, &port_modes,
+		    NULL, NULL)) != 0) {
 		/* No port mode info available */
 		bandwidth = 0;
 		goto out;
@@ -46,17 +46,13 @@ hunt_nic_get_required_pcie_bandwidth(
 			goto fail1;
 	} else {
 		if (port_modes & (1U << TLV_PORT_MODE_40G)) {
-			max_port_mode = TLV_PORT_MODE_40G;
+			bandwidth = 40000;
 		} else if (port_modes & (1U << TLV_PORT_MODE_10G_10G_10G_10G)) {
-			max_port_mode = TLV_PORT_MODE_10G_10G_10G_10G;
+			bandwidth = 4 * 10000;
 		} else {
 			/* Assume two 10G ports */
-			max_port_mode = TLV_PORT_MODE_10G_10G;
+			bandwidth = 2 * 10000;
 		}
-
-		if ((rc = ef10_nic_get_port_mode_bandwidth(max_port_mode,
-							    &bandwidth)) != 0)
-			goto fail2;
 	}
 
 out:
@@ -64,8 +60,6 @@ out:
 
 	return (0);
 
-fail2:
-	EFSYS_PROBE(fail2);
 fail1:
 	EFSYS_PROBE1(fail1, efx_rc_t, rc);
 
@@ -78,7 +72,6 @@ hunt_board_cfg(
 {
 	efx_nic_cfg_t *encp = &(enp->en_nic_cfg);
 	efx_port_t *epp = &(enp->en_port);
-	uint32_t flags;
 	uint32_t sysclk, dpcpu_clk;
 	uint32_t bandwidth;
 	efx_rc_t rc;
@@ -136,43 +129,9 @@ hunt_board_cfg(
 		encp->enc_bug41750_workaround = B_TRUE;
 	}
 
-	/*
-	 * If the bug26807 workaround is enabled, then firmware has enabled
-	 * support for chained multicast filters. Firmware will reset (FLR)
-	 * functions which have filters in the hardware filter table when the
-	 * workaround is enabled/disabled.
-	 *
-	 * We must recheck if the workaround is enabled after inserting the
-	 * first hardware filter, in case it has been changed since this check.
-	 */
-	rc = efx_mcdi_set_workaround(enp, MC_CMD_WORKAROUND_BUG26807,
-	    B_TRUE, &flags);
-	if (rc == 0) {
-		encp->enc_bug26807_workaround = B_TRUE;
-		if (flags & (1 << MC_CMD_WORKAROUND_EXT_OUT_FLR_DONE_LBN)) {
-			/*
-			 * Other functions had installed filters before the
-			 * workaround was enabled, and they have been reset
-			 * by firmware.
-			 */
-			EFSYS_PROBE(bug26807_workaround_flr_done);
-			/* FIXME: bump MC warm boot count ? */
-		}
-	} else if (rc == EACCES) {
-		/*
-		 * Unprivileged functions cannot enable the workaround in older
-		 * firmware.
-		 */
-		encp->enc_bug26807_workaround = B_FALSE;
-	} else if ((rc == ENOTSUP) || (rc == ENOENT)) {
-		encp->enc_bug26807_workaround = B_FALSE;
-	} else {
-		goto fail3;
-	}
-
 	/* Get clock frequencies (in MHz). */
 	if ((rc = efx_mcdi_get_clock(enp, &sysclk, &dpcpu_clk)) != 0)
-		goto fail4;
+		goto fail3;
 
 	/*
 	 * The Huntington timer quantum is 1536 sysclk cycles, documented for
@@ -189,15 +148,31 @@ hunt_board_cfg(
 
 	encp->enc_bug61265_workaround = B_FALSE; /* Medford only */
 
+	/* Checksums for TSO sends can be incorrect on Huntington. */
+	encp->enc_bug61297_workaround = B_TRUE;
+
+	encp->enc_ev_desc_size = EF10_EVQ_DESC_SIZE;
+	encp->enc_rx_desc_size = EF10_RXQ_DESC_SIZE;
+	encp->enc_tx_desc_size = EF10_TXQ_DESC_SIZE;
+
 	/* Alignment for receive packet DMA buffers */
 	encp->enc_rx_buf_align_start = 1;
 	encp->enc_rx_buf_align_end = 64; /* RX DMA end padding */
+
+	encp->enc_evq_max_nevs = EF10_EVQ_MAXNEVS;
+	encp->enc_evq_min_nevs = EF10_EVQ_MINNEVS;
+
+	encp->enc_rxq_max_ndescs = EF10_RXQ_MAXNDESCS;
+	encp->enc_rxq_min_ndescs = EF10_RXQ_MINNDESCS;
 
 	/*
 	 * The workaround for bug35388 uses the top bit of transmit queue
 	 * descriptor writes, preventing the use of 4096 descriptor TXQs.
 	 */
-	encp->enc_txq_max_ndescs = encp->enc_bug35388_workaround ? 2048 : 4096;
+	encp->enc_txq_max_ndescs = encp->enc_bug35388_workaround ?
+	    HUNT_TXQ_MAXNDESCS_BUG35388_WORKAROUND :
+	    HUNT_TXQ_MAXNDESCS;
+	encp->enc_txq_min_ndescs = EF10_TXQ_MINNDESCS;
 
 	EFX_STATIC_ASSERT(HUNT_PIOBUF_NBUFS <= EF10_MAX_PIOBUF_NBUFS);
 	encp->enc_piobuf_limit = HUNT_PIOBUF_NBUFS;
@@ -205,7 +180,7 @@ hunt_board_cfg(
 	encp->enc_piobuf_min_alloc_size = HUNT_MIN_PIO_ALLOC_SIZE;
 
 	if ((rc = hunt_nic_get_required_pcie_bandwidth(enp, &bandwidth)) != 0)
-		goto fail5;
+		goto fail4;
 	encp->enc_required_pcie_bandwidth_mbps = bandwidth;
 
 	/* All Huntington devices have a PCIe Gen3, 8 lane connector */
@@ -213,8 +188,6 @@ hunt_board_cfg(
 
 	return (0);
 
-fail5:
-	EFSYS_PROBE(fail5);
 fail4:
 	EFSYS_PROBE(fail4);
 fail3:

@@ -74,6 +74,9 @@ public:
   bool use_per_pool_stats() const {
     return osd_sum.num_osds == osd_sum.num_per_pool_osds;
   }
+  bool use_per_pool_omap_stats() const {
+    return osd_sum.num_osds == osd_sum.num_per_pool_omap_osds;
+  }
 
   // recent deltas, and summation
   /**
@@ -173,7 +176,9 @@ public:
 				   const pool_stat_t &pool_stat,
 				   uint64_t avail,
 				   float raw_used_rate,
-				   bool verbose, bool per_pool,
+				   bool verbose,
+				   bool per_pool,
+				   bool per_pool_omap,
 				   const pg_pool_t *pool);
 
   size_t get_num_pg_by_osd(int osd) const {
@@ -437,6 +442,7 @@ public:
   void dump(ceph::Formatter *f, bool with_net = true) const;
   void dump_basic(ceph::Formatter *f) const;
   void dump_pg_stats(ceph::Formatter *f, bool brief) const;
+  void dump_pg_progress(ceph::Formatter *f) const;
   void dump_pool_stats(ceph::Formatter *f) const;
   void dump_osd_stats(ceph::Formatter *f, bool with_net = true) const;
   void dump_osd_ping_times(ceph::Formatter *f) const;
@@ -487,10 +493,12 @@ public:
   void get_filtered_pg_stats(uint64_t state, int64_t poolid, int64_t osdid,
                              bool primary, std::set<pg_t>& pgs) const;
 
+  std::set<std::string> osd_parentage(const OSDMap& osdmap, int id) const;
   void get_health_checks(
     CephContext *cct,
     const OSDMap& osdmap,
     health_check_map_t *checks) const;
+  void print_summary(ceph::Formatter *f, std::ostream *out) const;
 
   static void generate_test_instances(std::list<PGMap*>& o);
 };

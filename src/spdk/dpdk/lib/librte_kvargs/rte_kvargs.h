@@ -110,7 +110,7 @@ struct rte_kvargs *rte_kvargs_parse_delim(const char *args,
  * rte_kvargs_parse().
  *
  * @param kvlist
- *   The rte_kvargs structure
+ *   The rte_kvargs structure. No error if NULL.
  */
 void rte_kvargs_free(struct rte_kvargs *kvlist);
 
@@ -119,11 +119,10 @@ void rte_kvargs_free(struct rte_kvargs *kvlist);
  *
  * For each key/value association that matches the given key, calls the
  * handler function with the for a given arg_name passing the value on the
- * dictionary for that key and a given extra argument. If *kvlist* is NULL
- * function does nothing.
+ * dictionary for that key and a given extra argument.
  *
  * @param kvlist
- *   The rte_kvargs structure
+ *   The rte_kvargs structure. No error if NULL.
  * @param key_match
  *   The key on which the handler should be called, or NULL to process handler
  *   on all associations
@@ -172,7 +171,7 @@ unsigned rte_kvargs_count(const struct rte_kvargs *kvlist,
  *   0 if the strings match.
  *   !0 otherwise or on error.
  *
- *   Unless strcmp, comparison ordering is not kept.
+ *   Unlike strcmp, comparison ordering is not kept.
  *   In order for rte_kvargs_process to stop processing on match error,
  *   a negative value is returned even if strcmp had returned a positive one.
  */

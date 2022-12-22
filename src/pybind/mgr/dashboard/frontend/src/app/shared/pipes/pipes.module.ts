@@ -1,7 +1,9 @@
 import { CommonModule, DatePipe } from '@angular/common';
 import { NgModule } from '@angular/core';
 
+import { ArrayPipe } from './array.pipe';
 import { BooleanTextPipe } from './boolean-text.pipe';
+import { BooleanPipe } from './boolean.pipe';
 import { CdDatePipe } from './cd-date.pipe';
 import { CephReleaseNamePipe } from './ceph-release-name.pipe';
 import { CephShortVersionPipe } from './ceph-short-version.pipe';
@@ -15,7 +17,7 @@ import { FilterPipe } from './filter.pipe';
 import { HealthColorPipe } from './health-color.pipe';
 import { IopsPipe } from './iops.pipe';
 import { IscsiBackstorePipe } from './iscsi-backstore.pipe';
-import { ListPipe } from './list.pipe';
+import { JoinPipe } from './join.pipe';
 import { LogPriorityPipe } from './log-priority.pipe';
 import { MapPipe } from './map.pipe';
 import { MillisecondsPipe } from './milliseconds.pipe';
@@ -24,11 +26,16 @@ import { OrdinalPipe } from './ordinal.pipe';
 import { RbdConfigurationSourcePipe } from './rbd-configuration-source.pipe';
 import { RelativeDatePipe } from './relative-date.pipe';
 import { RoundPipe } from './round.pipe';
+import { SanitizeHtmlPipe } from './sanitize-html.pipe';
+import { SearchHighlightPipe } from './search-highlight.pipe';
+import { TruncatePipe } from './truncate.pipe';
 import { UpperFirstPipe } from './upper-first.pipe';
 
 @NgModule({
   imports: [CommonModule],
   declarations: [
+    ArrayPipe,
+    BooleanPipe,
     BooleanTextPipe,
     DimlessBinaryPipe,
     DimlessBinaryPerSecondPipe,
@@ -38,7 +45,7 @@ import { UpperFirstPipe } from './upper-first.pipe';
     CephReleaseNamePipe,
     RelativeDatePipe,
     IscsiBackstorePipe,
-    ListPipe,
+    JoinPipe,
     LogPriorityPipe,
     FilterPipe,
     CdDatePipe,
@@ -52,9 +59,14 @@ import { UpperFirstPipe } from './upper-first.pipe';
     UpperFirstPipe,
     RbdConfigurationSourcePipe,
     DurationPipe,
-    MapPipe
+    MapPipe,
+    TruncatePipe,
+    SanitizeHtmlPipe,
+    SearchHighlightPipe
   ],
   exports: [
+    ArrayPipe,
+    BooleanPipe,
     BooleanTextPipe,
     DimlessBinaryPipe,
     DimlessBinaryPerSecondPipe,
@@ -64,7 +76,7 @@ import { UpperFirstPipe } from './upper-first.pipe';
     CephReleaseNamePipe,
     RelativeDatePipe,
     IscsiBackstorePipe,
-    ListPipe,
+    JoinPipe,
     LogPriorityPipe,
     FilterPipe,
     CdDatePipe,
@@ -78,9 +90,14 @@ import { UpperFirstPipe } from './upper-first.pipe';
     UpperFirstPipe,
     RbdConfigurationSourcePipe,
     DurationPipe,
-    MapPipe
+    MapPipe,
+    TruncatePipe,
+    SanitizeHtmlPipe,
+    SearchHighlightPipe
   ],
   providers: [
+    ArrayPipe,
+    BooleanPipe,
     BooleanTextPipe,
     DatePipe,
     CephShortVersionPipe,
@@ -90,7 +107,7 @@ import { UpperFirstPipe } from './upper-first.pipe';
     DimlessPipe,
     RelativeDatePipe,
     IscsiBackstorePipe,
-    ListPipe,
+    JoinPipe,
     LogPriorityPipe,
     CdDatePipe,
     EmptyPipe,
@@ -100,7 +117,9 @@ import { UpperFirstPipe } from './upper-first.pipe';
     MillisecondsPipe,
     NotAvailablePipe,
     UpperFirstPipe,
-    MapPipe
+    MapPipe,
+    TruncatePipe,
+    SanitizeHtmlPipe
   ]
 })
 export class PipesModule {}

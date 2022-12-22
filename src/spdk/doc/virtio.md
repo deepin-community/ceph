@@ -6,8 +6,9 @@ SPDK Virtio driver is a C library that allows communicating with Virtio devices.
 It allows any SPDK application to become an initiator for (SPDK) vhost targets.
 
 The driver supports two different usage models:
+
 * PCI - This is the standard mode of operation when used in a guest virtual
-machine, where QEMU has presented the virtio controller as a virtual PCI device.
+  machine, where QEMU has presented the virtio controller as a virtual PCI device.
 * vhost-user - Can be used to connect to a vhost socket directly on the same host.
 
 The driver, just like the SPDK @ref vhost, is using pollers instead of standard
@@ -27,7 +28,3 @@ uses one file per hugepage by default. So *by default* this makes SPDK Virtio pr
 with only 1GB hugepages. To run an SPDK app using Virtio initiator with 2MB hugepages
 it is required to pass '-g' command-line option . This forces DPDK to create a single
 non-physically-contiguous hugetlbfs file for all its memory.
-
-This functionality requires latest DPDK changes that are officially landing in DPDK
-18.05, but have been also backported to spdk-18.02 branch of our internal DPDK fork
-which is currently used as a default git submodule for SPDK.

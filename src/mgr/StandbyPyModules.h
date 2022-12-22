@@ -13,13 +13,13 @@
 
 #pragma once
 
-#include "PythonCompat.h"
-
 #include <string>
 #include <map>
 
+#include <Python.h>
+
 #include "common/Thread.h"
-#include "common/Mutex.h"
+#include "common/ceph_mutex.h"
 
 #include "mgr/Gil.h"
 #include "mon/MonClient.h"
@@ -33,7 +33,7 @@ class Finisher;
  */
 class StandbyPyModuleState
 {
-  mutable Mutex lock{"StandbyPyModuleState::lock"};
+  mutable ceph::mutex lock = ceph::make_mutex("StandbyPyModuleState::lock");
 
   MgrMap mgr_map;
   PyModuleConfig &module_config;
@@ -93,6 +93,9 @@ class StandbyPyModule : public PyModuleRunner
   bool get_config(const std::string &key, std::string *value) const;
   bool get_store(const std::string &key, std::string *value) const;
   std::string get_active_uri() const;
+  entity_addrvec_t get_myaddrs() const {
+    return state.get_monc().get_myaddrs();
+  }
 
   int load();
 };
@@ -100,7 +103,7 @@ class StandbyPyModule : public PyModuleRunner
 class StandbyPyModules
 {
 private:
-  mutable Mutex lock{"StandbyPyModules::lock"};
+  mutable ceph::mutex lock = ceph::make_mutex("StandbyPyModules::lock");
   std::map<std::string, std::unique_ptr<StandbyPyModule>> modules;
 
   StandbyPyModuleState state;

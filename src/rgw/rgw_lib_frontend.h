@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 #ifndef RGW_LIB_FRONTEND_H
 #define RGW_LIB_FRONTEND_H
@@ -66,7 +66,7 @@ namespace rgw {
     } /* enqueue_req */
 
     /* "regular" requests */
-    void handle_request(RGWRequest* req) override; // async handler, deletes req
+    void handle_request(const DoutPrefixProvider *dpp, RGWRequest* req) override; // async handler, deletes req
     int process_request(RGWLibRequest* req);
     int process_request(RGWLibRequest* req, RGWLibIO* io);
     void set_access_key(RGWAccessKey& key) { access_key = key; }

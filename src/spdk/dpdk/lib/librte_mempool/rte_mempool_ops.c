@@ -6,9 +6,12 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <rte_string_fns.h>
 #include <rte_mempool.h>
 #include <rte_errno.h>
 #include <rte_dev.h>
+
+#include "rte_mempool_trace.h"
 
 /* indirect jump table to support external memory pools. */
 struct rte_mempool_ops_table rte_mempool_ops_table = {
@@ -51,7 +54,7 @@ rte_mempool_register_ops(const struct rte_mempool_ops *h)
 
 	ops_index = rte_mempool_ops_table.num_ops++;
 	ops = &rte_mempool_ops_table.ops[ops_index];
-	snprintf(ops->name, sizeof(ops->name), "%s", h->name);
+	strlcpy(ops->name, h->name, sizeof(ops->name));
 	ops->alloc = h->alloc;
 	ops->free = h->free;
 	ops->enqueue = h->enqueue;
@@ -73,6 +76,7 @@ rte_mempool_ops_alloc(struct rte_mempool *mp)
 {
 	struct rte_mempool_ops *ops;
 
+	rte_mempool_trace_ops_alloc(mp);
 	ops = rte_mempool_get_ops(mp->ops_index);
 	return ops->alloc(mp);
 }
@@ -83,6 +87,7 @@ rte_mempool_ops_free(struct rte_mempool *mp)
 {
 	struct rte_mempool_ops *ops;
 
+	rte_mempool_trace_ops_free(mp);
 	ops = rte_mempool_get_ops(mp->ops_index);
 	if (ops->free == NULL)
 		return;
@@ -99,7 +104,9 @@ rte_mempool_ops_get_count(const struct rte_mempool *mp)
 	return ops->get_count(mp);
 }
 
-/* wrapper to notify new memory area to external mempool */
+/* wrapper to calculate the memory size required to store given number
+ * of objects
+ */
 ssize_t
 rte_mempool_ops_calc_mem_size(const struct rte_mempool *mp,
 				uint32_t obj_num, uint32_t pg_shift,
@@ -127,6 +134,8 @@ rte_mempool_ops_populate(struct rte_mempool *mp, unsigned int max_objs,
 
 	ops = rte_mempool_get_ops(mp->ops_index);
 
+	rte_mempool_trace_ops_populate(mp, max_objs, vaddr, iova, len, obj_cb,
+		obj_cb_arg);
 	if (ops->populate == NULL)
 		return rte_mempool_op_populate_default(mp, max_objs, vaddr,
 						       iova, len, obj_cb,
@@ -175,5 +184,6 @@ rte_mempool_set_ops_byname(struct rte_mempool *mp, const char *name,
 
 	mp->ops_index = i;
 	mp->pool_config = pool_config;
+	rte_mempool_trace_set_ops_byname(mp, name, pool_config);
 	return 0;
 }

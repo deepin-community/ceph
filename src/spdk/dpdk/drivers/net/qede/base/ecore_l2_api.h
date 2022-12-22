@@ -137,6 +137,16 @@ struct ecore_filter_accept_flags {
 #define ECORE_ACCEPT_MCAST_MATCHED	0x08
 #define ECORE_ACCEPT_MCAST_UNMATCHED	0x10
 #define ECORE_ACCEPT_BCAST		0x20
+#define ECORE_ACCEPT_ANY_VNI		0x40
+};
+
+enum ecore_filter_config_mode {
+	ECORE_FILTER_CONFIG_MODE_DISABLE,
+	ECORE_FILTER_CONFIG_MODE_5_TUPLE,
+	ECORE_FILTER_CONFIG_MODE_L4_PORT,
+	ECORE_FILTER_CONFIG_MODE_IP_DEST,
+	ECORE_FILTER_CONFIG_MODE_TUNN_TYPE,
+	ECORE_FILTER_CONFIG_MODE_IP_SRC,
 };
 
 struct ecore_arfs_config_params {
@@ -144,7 +154,7 @@ struct ecore_arfs_config_params {
 	bool udp;
 	bool ipv4;
 	bool ipv6;
-	bool arfs_enable;	/* Enable or disable arfs mode */
+	enum ecore_filter_config_mode mode;
 };
 
 /* Add / remove / move / remove-all unicast MAC-VLAN filters.
@@ -292,6 +302,8 @@ struct ecore_sp_vport_start_params {
 	bool b_err_big_pkt;
 	bool b_err_anti_spoof;
 	bool b_err_ctrl_frame;
+	bool b_en_rgfs;
+	bool b_en_tgfs;
 };
 
 /**
@@ -337,7 +349,10 @@ struct ecore_sp_vport_update_params {
 	/* MTU change - notice this requires the vport to be disabled.
 	 * If non-zero, value would be used.
 	 */
-	u16 mtu;
+	u16                     mtu;
+	u8			update_ctl_frame_check;
+	u8			mac_chk_en;
+	u8			ethtype_chk_en;
 };
 
 /**
@@ -435,6 +450,31 @@ void ecore_arfs_mode_configure(struct ecore_hwfn *p_hwfn,
 			       struct ecore_ptt *p_ptt,
 			       struct ecore_arfs_config_params *p_cfg_params);
 
+struct ecore_ntuple_filter_params {
+	/* Physically mapped address containing header of buffer to be used
+	 * as filter.
+	 */
+	dma_addr_t addr;
+
+	/* Length of header in bytes */
+	u16 length;
+
+	/* Relative queue-id to receive classified packet */
+	#define ECORE_RFS_NTUPLE_QID_RSS ((u16)-1)
+	u16 qid;
+
+	/* Identifier can either be according to vport-id or vfid */
+	bool b_is_vf;
+	u8 vport_id;
+	u8 vf_id;
+
+	/* true if this filter is to be added. Else to be removed */
+	bool b_is_add;
+
+	/* If packet needs to be dropped */
+	bool b_is_drop;
+};
+
 /**
  * @brief - ecore_configure_rfs_ntuple_filter
  *
@@ -444,20 +484,34 @@ void ecore_arfs_mode_configure(struct ecore_hwfn *p_hwfn,
  * @params p_cb		Used for ECORE_SPQ_MODE_CB,where client would initialize
  *			it with cookie and callback function address, if not
  *			using this mode then client must pass NULL.
- * @params p_addr	p_addr is an actual packet header that needs to be
- *			filter. It has to mapped with IO to read prior to
- *			calling this, [contains 4 tuples- src ip, dest ip,
- *			src port, dest port].
- * @params length	length of p_addr header up to past the transport header.
- * @params qid		receive packet will be directed to this queue.
- * @params vport_id
- * @params b_is_add	flag to add or remove filter.
- *
+ * @params p_params
  */
 enum _ecore_status_t
 ecore_configure_rfs_ntuple_filter(struct ecore_hwfn *p_hwfn,
 				  struct ecore_spq_comp_cb *p_cb,
-				  dma_addr_t p_addr, u16 length,
-				  u16 qid, u8 vport_id,
-				  bool b_is_add);
+				  struct ecore_ntuple_filter_params *p_params);
+
+/**
+ * @brief - ecore_update_eth_rss_ind_table_entry
+ *
+ * This function being used to update RSS indirection table entry to FW RAM
+ * instead of using the SP vport update ramrod with rss params.
+ *
+ * Notice:
+ * This function supports only one outstanding command per engine. Ecore
+ * clients which use this function should call ecore_mcp_ind_table_lock() prior
+ * to it and ecore_mcp_ind_table_unlock() after it.
+ *
+ * @params p_hwfn
+ * @params vport_id
+ * @params ind_table_index
+ * @params ind_table_value
+ *
+ * @return enum _ecore_status_t
+ */
+enum _ecore_status_t
+ecore_update_eth_rss_ind_table_entry(struct ecore_hwfn *p_hwfn,
+				     u8 vport_id,
+				     u8 ind_table_index,
+				     u16 ind_table_value);
 #endif

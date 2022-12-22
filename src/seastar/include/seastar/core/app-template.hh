@@ -21,7 +21,6 @@
 #pragma once
 
 #include <boost/program_options.hpp>
-#include <boost/optional.hpp>
 #include <functional>
 #include <seastar/core/future.hh>
 #include <seastar/core/sstring.hh>
@@ -32,8 +31,29 @@ namespace seastar {
 class app_template {
 public:
     struct config {
+        /// The name of the application.
+        ///
+        /// Will be used in the --help output to distinguish command line args
+        /// registered by the application, as opposed to those registered by
+        /// seastar and its subsystems.
         sstring name = "App";
+        /// The description of the application.
+        ///
+        /// Will be printed on the top of the --help output. Lines should be
+        /// hard-wrapped for 80 chars.
+        sstring description = "";
         std::chrono::duration<double> default_task_quota = std::chrono::microseconds(500);
+        /// \brief Handle SIGINT/SIGTERM by calling reactor::stop()
+        ///
+        /// When true, Seastar will set up signal handlers for SIGINT/SIGTERM that call
+        /// reactor::stop(). The reactor will then execute callbacks installed by
+        /// reactor::at_exit().
+        ///
+        /// When false, Seastar will not set up signal handlers for SIGINT/SIGTERM
+        /// automatically. The default behavior (terminate the program) will be kept.
+        /// You can adjust the behavior of SIGINT/SIGTERM by installing signal handlers
+        /// via reactor::handle_signal().
+        bool auto_handle_sigint_sigterm = true;
         config() {}
     };
 
@@ -43,7 +63,7 @@ private:
     boost::program_options::options_description _opts;
     boost::program_options::options_description _opts_conf_file;
     boost::program_options::positional_options_description _pos_opts;
-    boost::optional<boost::program_options::variables_map> _configuration;
+    std::optional<boost::program_options::variables_map> _configuration;
     configuration_reader _conf_reader;
 
     configuration_reader get_default_configuration_reader();

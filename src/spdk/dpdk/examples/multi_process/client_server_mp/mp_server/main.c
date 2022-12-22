@@ -11,7 +11,7 @@
 #include <inttypes.h>
 #include <sys/queue.h>
 #include <errno.h>
-#include <netinet/ip.h>
+#include <signal.h>
 
 #include <rte_common.h>
 #include <rte_memory.h>
@@ -61,12 +61,18 @@ get_printable_mac_addr(uint16_t port)
 {
 	static const char err_address[] = "00:00:00:00:00:00";
 	static char addresses[RTE_MAX_ETHPORTS][sizeof(err_address)];
+	int ret;
 
 	if (unlikely(port >= RTE_MAX_ETHPORTS))
 		return err_address;
 	if (unlikely(addresses[port][0]=='\0')){
-		struct ether_addr mac;
-		rte_eth_macaddr_get(port, &mac);
+		struct rte_ether_addr mac;
+		ret = rte_eth_macaddr_get(port, &mac);
+		if (ret != 0) {
+			printf("Failed to get MAC address (port %u): %s\n",
+			       port, rte_strerror(-ret));
+			return err_address;
+		}
 		snprintf(addresses[port], sizeof(addresses[port]),
 				"%02x:%02x:%02x:%02x:%02x:%02x\n",
 				mac.addr_bytes[0], mac.addr_bytes[1], mac.addr_bytes[2],
@@ -146,7 +152,7 @@ do_stats_display(void)
  * repeatedly sleeps.
  */
 static int
-sleep_lcore(__attribute__((unused)) void *dummy)
+sleep_lcore(__rte_unused void *dummy)
 {
 	/* Used to pick a display thread - static, so zero-initialised */
 	static rte_atomic32_t display_stats;
@@ -264,9 +270,23 @@ do_packet_forwarding(void)
 	}
 }
 
+static void
+signal_handler(int signal)
+{
+	uint16_t port_id;
+
+	if (signal == SIGINT)
+		RTE_ETH_FOREACH_DEV(port_id) {
+			rte_eth_dev_stop(port_id);
+			rte_eth_dev_close(port_id);
+		}
+	exit(0);
+}
+
 int
 main(int argc, char *argv[])
 {
+	signal(SIGINT, signal_handler);
 	/* initialise the system */
 	if (init(argc, argv) < 0 )
 		return -1;

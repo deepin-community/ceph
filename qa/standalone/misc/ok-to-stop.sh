@@ -250,7 +250,7 @@ function TEST_0_osd() {
     run_osd $dir 3 || return 1
 
     ceph osd erasure-code-profile set ec-profile m=2 k=2 crush-failure-domain=osd || return 1
-    ceph osd pool create ec 8 erasure ec-profile || return 1
+    ceph osd pool create ec erasure ec-profile || return 1
 
     wait_for_clean || return 1
 
@@ -264,6 +264,8 @@ function TEST_0_osd() {
     ceph osd ok-to-stop 3 || return 1
     ! ceph osd ok-to-stop 0 1 || return 1
     ! ceph osd ok-to-stop 2 3 || return 1
+    ceph osd ok-to-stop 0 --max 2 | grep '[0]' || return 1
+    ceph osd ok-to-stop 1 --max 2 | grep '[1]' || return 1
 
     # with min_size 2 we can stop 1 osds
     ceph osd pool set ec min_size 2 || return 1
@@ -273,6 +275,11 @@ function TEST_0_osd() {
     ceph osd ok-to-stop 2 3 || return 1
     ! ceph osd ok-to-stop 0 1 2 || return 1
     ! ceph osd ok-to-stop 1 2 3 || return 1
+
+    ceph osd ok-to-stop 0 --max 2 | grep '[0,1]' || return 1
+    ceph osd ok-to-stop 0 --max 20 | grep '[0,1]' || return 1
+    ceph osd ok-to-stop 2 --max 2 | grep '[2,3]' || return 1
+    ceph osd ok-to-stop 2 --max 20 | grep '[2,3]' || return 1
 
     # we should get the same result with one of the osds already down
     kill_daemons $dir TERM osd.0 || return 1

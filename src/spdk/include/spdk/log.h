@@ -46,10 +46,23 @@ extern "C" {
 #endif
 
 /**
+ * for passing user-provided log call
+ *
+ * \param level Log level threshold.
+ * \param file Name of the current source file.
+ * \param line Current source file line.
+ * \param func Current source function name.
+ * \param format Format string to the message.
+ * \param args Additional arguments for format string.
+ */
+typedef void logfunc(int level, const char *file, const int line,
+		     const char *func, const char *format, va_list args);
+
+/**
  * Initialize the logging module. Messages prior
  * to this call will be dropped.
  */
-void spdk_log_open(void);
+void spdk_log_open(logfunc *logf);
 
 /**
  * Close the currently active log. Messages after this call
@@ -119,12 +132,20 @@ void spdk_log_set_print_level(enum spdk_log_level level);
  */
 enum spdk_log_level spdk_log_get_print_level(void);
 
+#ifdef DEBUG
+#define SPDK_DEBUGLOG_FLAG_ENABLED(name) spdk_log_get_flag(name)
+#else
+#define SPDK_DEBUGLOG_FLAG_ENABLED(name) false
+#endif
+
 #define SPDK_NOTICELOG(...) \
 	spdk_log(SPDK_LOG_NOTICE, __FILE__, __LINE__, __func__, __VA_ARGS__)
 #define SPDK_WARNLOG(...) \
 	spdk_log(SPDK_LOG_WARN, __FILE__, __LINE__, __func__, __VA_ARGS__)
 #define SPDK_ERRLOG(...) \
 	spdk_log(SPDK_LOG_ERROR, __FILE__, __LINE__, __func__, __VA_ARGS__)
+#define SPDK_PRINTF(...) \
+	spdk_log(SPDK_LOG_NOTICE, NULL, -1, NULL, __VA_ARGS__)
 
 /**
  * Write messages to the log file. If \c level is set to \c SPDK_LOG_DISABLED,
@@ -140,47 +161,61 @@ void spdk_log(enum spdk_log_level level, const char *file, const int line, const
 	      const char *format, ...) __attribute__((__format__(__printf__, 5, 6)));
 
 /**
- * Dump the trace to a file.
+ * Same as spdk_log except that instead of being called with variable number of
+ * arguments it is called with an argument list as defined in stdarg.h
  *
- * \param fp File to hold the trace.
- * \param label Label to print to the file.
- * \param buf Buffer that holds the trace information.
- * \param len Length of trace to dump.
+ * \param level Log level threshold.
+ * \param file Name of the current source file.
+ * \param line Current source line number.
+ * \param func Current source function name.
+ * \param format Format string to the message.
+ * \param ap printf arguments
  */
-void spdk_trace_dump(FILE *fp, const char *label, const void *buf, size_t len);
+void spdk_vlog(enum spdk_log_level level, const char *file, const int line, const char *func,
+	       const char *format, va_list ap);
 
 /**
- * Check whether the trace flag exists and is enabled.
+ * Log the contents of a raw buffer to a file.
+ *
+ * \param fp File to hold the log.
+ * \param label Label to print to the file.
+ * \param buf Buffer that holds the log information.
+ * \param len Length of buffer to dump.
+ */
+void spdk_log_dump(FILE *fp, const char *label, const void *buf, size_t len);
+
+/**
+ * Check whether the log flag exists and is enabled.
  *
  * \return true if enabled, or false otherwise.
  */
-bool spdk_log_get_trace_flag(const char *flag);
+bool spdk_log_get_flag(const char *flag);
 
 /**
- * Enable the trace flag.
+ * Enable the log flag.
  *
- * \param flag Trace flag to be enabled.
+ * \param flag Log flag to be enabled.
  *
  * \return 0 on success, -1 on failure.
  */
-int spdk_log_set_trace_flag(const char *flag);
+int spdk_log_set_flag(const char *flag);
 
 /**
- * Clear a trace flag.
+ * Clear a log flag.
  *
- * \param flag Trace flag to clear.
+ * \param flag Log flag to clear.
  *
  * \return 0 on success, -1 on failure.
  */
-int spdk_log_clear_trace_flag(const char *flag);
+int spdk_log_clear_flag(const char *flag);
 
 /**
- * Show all the log trace flags and their usage.
+ * Show all the log flags and their usage.
  *
  * \param f File to hold all the flags' information.
- * \param trace_arg Command line option to set/enable the trace flag.
+ * \param log_arg Command line option to set/enable the log flag.
  */
-void spdk_tracelog_usage(FILE *f, const char *trace_arg);
+void spdk_log_usage(FILE *f, const char *log_arg);
 
 #ifdef __cplusplus
 }

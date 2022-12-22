@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2012-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2012-2019 Solarflare Communications Inc.
  */
 
 #include "efx.h"
 #include "efx_impl.h"
 
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
+#if EFX_OPTS_EF10()
 
 #if EFSYS_OPT_VPD || EFSYS_OPT_NVRAM
 
@@ -203,14 +203,14 @@ tlv_validate_state(
 
 	if (tlv_tag(cursor) != TLV_TAG_END) {
 		/* Check current item has space for tag and length */
-		if (cursor->current > (cursor->limit - 2)) {
+		if (cursor->current > (cursor->limit - 1)) {
 			cursor->current = NULL;
 			rc = EFAULT;
 			goto fail3;
 		}
 
-		/* Check we have value data for current item and another tag */
-		if (tlv_next_item_ptr(cursor) > (cursor->limit - 1)) {
+		/* Check we have value data for current item and an END tag */
+		if (tlv_next_item_ptr(cursor) > cursor->limit) {
 			cursor->current = NULL;
 			rc = EFAULT;
 			goto fail4;
@@ -367,7 +367,8 @@ tlv_write(
 	if (len > 0) {
 		ptr[(len - 1) / sizeof (uint32_t)] = 0;
 		memcpy(ptr, data, len);
-		ptr += P2ROUNDUP(len, sizeof (uint32_t)) / sizeof (*ptr);
+		ptr += EFX_P2ROUNDUP(uint32_t, len,
+		    sizeof (uint32_t)) / sizeof (*ptr);
 	}
 
 	return (ptr);
@@ -635,7 +636,6 @@ fail1:
 /* Validate buffer contents (before writing to flash) */
 	__checkReturn		efx_rc_t
 ef10_nvram_buffer_validate(
-	__in			efx_nic_t *enp,
 	__in			uint32_t partn,
 	__in_bcount(partn_size)	caddr_t partn_data,
 	__in			size_t partn_size)
@@ -648,7 +648,6 @@ ef10_nvram_buffer_validate(
 	int pos;
 	efx_rc_t rc;
 
-	_NOTE(ARGUNUSED(enp, partn))
 	EFX_STATIC_ASSERT(sizeof (*header) <= EF10_NVRAM_CHUNK);
 
 	if ((partn_data == NULL) || (partn_size == 0)) {
@@ -675,26 +674,32 @@ ef10_nvram_buffer_validate(
 		goto fail4;
 	}
 
+	/* Check partition header matches partn */
+	if (__LE_TO_CPU_16(header->type_id) != partn) {
+		rc = EINVAL;
+		goto fail5;
+	}
+
 	/* Check partition ends with PARTITION_TRAILER and END tags */
 	if ((rc = tlv_find(&cursor, TLV_TAG_PARTITION_TRAILER)) != 0) {
 		rc = EINVAL;
-		goto fail5;
+		goto fail6;
 	}
 	trailer = (struct tlv_partition_trailer *)tlv_item(&cursor);
 
 	if ((rc = tlv_advance(&cursor)) != 0) {
 		rc = EINVAL;
-		goto fail6;
+		goto fail7;
 	}
 	if (tlv_tag(&cursor) != TLV_TAG_END) {
 		rc = EINVAL;
-		goto fail7;
+		goto fail8;
 	}
 
 	/* Check generation counts are consistent */
 	if (trailer->generation != header->generation) {
 		rc = EINVAL;
-		goto fail8;
+		goto fail9;
 	}
 
 	/* Verify partition checksum */
@@ -704,11 +709,13 @@ ef10_nvram_buffer_validate(
 	}
 	if (cksum != 0) {
 		rc = EINVAL;
-		goto fail9;
+		goto fail10;
 	}
 
 	return (0);
 
+fail10:
+	EFSYS_PROBE(fail10);
 fail9:
 	EFSYS_PROBE(fail9);
 fail8:
@@ -731,13 +738,24 @@ fail1:
 	return (rc);
 }
 
+			void
+ef10_nvram_buffer_init(
+	__out_bcount(buffer_size)
+				caddr_t bufferp,
+	__in			size_t buffer_size)
+{
+	uint32_t *buf = (uint32_t *)bufferp;
 
+	memset(buf, 0xff, buffer_size);
+
+	tlv_init_block(buf);
+}
 
 	__checkReturn		efx_rc_t
 ef10_nvram_buffer_create(
-	__in			efx_nic_t *enp,
-	__in			uint16_t partn_type,
-	__in_bcount(partn_size)	caddr_t partn_data,
+	__in			uint32_t partn_type,
+	__out_bcount(partn_size)
+				caddr_t partn_data,
 	__in			size_t partn_size)
 {
 	uint32_t *buf = (uint32_t *)partn_data;
@@ -753,9 +771,8 @@ ef10_nvram_buffer_create(
 		goto fail1;
 	}
 
-	memset(buf, 0xff, partn_size);
+	ef10_nvram_buffer_init(partn_data, partn_size);
 
-	tlv_init_block(buf);
 	if ((rc = tlv_init_cursor(&cursor, buf,
 	    (uint32_t *)((uint8_t *)buf + partn_size),
 	    buf)) != 0) {
@@ -787,7 +804,7 @@ ef10_nvram_buffer_create(
 		goto fail6;
 
 	/* Check that the partition is valid. */
-	if ((rc = ef10_nvram_buffer_validate(enp, partn_type,
+	if ((rc = ef10_nvram_buffer_validate(partn_type,
 	    partn_data, partn_size)) != 0)
 		goto fail7;
 
@@ -959,22 +976,65 @@ ef10_nvram_buffer_find_item(
 }
 
 	__checkReturn		efx_rc_t
+ef10_nvram_buffer_peek_item(
+	__in_bcount(buffer_size)
+				caddr_t bufferp,
+	__in			size_t buffer_size,
+	__in			uint32_t offset,
+	__out			uint32_t *tagp,
+	__out			uint32_t *lengthp,
+	__out			uint32_t *value_offsetp)
+{
+	efx_rc_t rc;
+	tlv_cursor_t cursor;
+	uint32_t tag;
+
+	if ((rc = tlv_init_cursor_at_offset(&cursor, (uint8_t *)bufferp,
+			buffer_size, offset)) != 0) {
+		goto fail1;
+	}
+
+	tag = tlv_tag(&cursor);
+	*tagp = tag;
+	if (tag == TLV_TAG_END) {
+		/*
+		 * To allow stepping over the END tag, report the full tag
+		 * length and a zero length value.
+		 */
+		*lengthp = sizeof (tag);
+		*value_offsetp = sizeof (tag);
+	} else {
+		*lengthp = byte_offset(tlv_next_item_ptr(&cursor),
+			    cursor.current);
+		*value_offsetp = byte_offset((uint32_t *)tlv_value(&cursor),
+			    cursor.current);
+	}
+	return (0);
+
+fail1:
+	EFSYS_PROBE1(fail1, efx_rc_t, rc);
+
+	return (rc);
+}
+
+	__checkReturn		efx_rc_t
 ef10_nvram_buffer_get_item(
 	__in_bcount(buffer_size)
 				caddr_t bufferp,
 	__in			size_t buffer_size,
 	__in			uint32_t offset,
 	__in			uint32_t length,
-	__out_bcount_part(item_max_size, *lengthp)
-				caddr_t itemp,
-	__in			size_t item_max_size,
+	__out			uint32_t *tagp,
+	__out_bcount_part(value_max_size, *lengthp)
+				caddr_t valuep,
+	__in			size_t value_max_size,
 	__out			uint32_t *lengthp)
 {
 	efx_rc_t rc;
 	tlv_cursor_t cursor;
-	uint32_t item_length;
+	uint32_t value_length;
 
-	if (item_max_size < length) {
+	if (buffer_size < (offset + length)) {
 		rc = ENOSPC;
 		goto fail1;
 	}
@@ -984,14 +1044,15 @@ ef10_nvram_buffer_get_item(
 		goto fail2;
 	}
 
-	item_length = tlv_length(&cursor);
-	if (length < item_length) {
+	value_length = tlv_length(&cursor);
+	if (value_max_size < value_length) {
 		rc = ENOSPC;
 		goto fail3;
 	}
-	memcpy(itemp, tlv_value(&cursor), item_length);
+	memcpy(valuep, tlv_value(&cursor), value_length);
 
-	*lengthp = item_length;
+	*tagp = tlv_tag(&cursor);
+	*lengthp = value_length;
 
 	return (0);
 
@@ -1011,7 +1072,8 @@ ef10_nvram_buffer_insert_item(
 				caddr_t bufferp,
 	__in			size_t buffer_size,
 	__in			uint32_t offset,
-	__in_bcount(length)	caddr_t keyp,
+	__in			uint32_t tag,
+	__in_bcount(length)	caddr_t valuep,
 	__in			uint32_t length,
 	__out			uint32_t *lengthp)
 {
@@ -1023,7 +1085,44 @@ ef10_nvram_buffer_insert_item(
 		goto fail1;
 	}
 
-	rc = tlv_insert(&cursor, TLV_TAG_LICENSE, (uint8_t *)keyp, length);
+	rc = tlv_insert(&cursor, tag, (uint8_t *)valuep, length);
+
+	if (rc != 0)
+		goto fail2;
+
+	*lengthp = byte_offset(tlv_next_item_ptr(&cursor),
+		    cursor.current);
+
+	return (0);
+
+fail2:
+	EFSYS_PROBE(fail2);
+fail1:
+	EFSYS_PROBE1(fail1, efx_rc_t, rc);
+
+	return (rc);
+}
+
+	__checkReturn		efx_rc_t
+ef10_nvram_buffer_modify_item(
+	__in_bcount(buffer_size)
+				caddr_t bufferp,
+	__in			size_t buffer_size,
+	__in			uint32_t offset,
+	__in			uint32_t tag,
+	__in_bcount(length)	caddr_t valuep,
+	__in			uint32_t length,
+	__out			uint32_t *lengthp)
+{
+	efx_rc_t rc;
+	tlv_cursor_t cursor;
+
+	if ((rc = tlv_init_cursor_at_offset(&cursor, (uint8_t *)bufferp,
+			buffer_size, offset)) != 0) {
+		goto fail1;
+	}
+
+	rc = tlv_modify(&cursor, tag, (uint8_t *)valuep, length);
 
 	if (rc != 0) {
 		goto fail2;
@@ -1041,6 +1140,7 @@ fail1:
 
 	return (rc);
 }
+
 
 	__checkReturn		efx_rc_t
 ef10_nvram_buffer_delete_item(
@@ -1808,7 +1908,7 @@ ef10_nvram_partn_write_segment_tlv(
 		goto fail7;
 
 	/* Unlock the partition */
-	ef10_nvram_partn_unlock(enp, partn, NULL);
+	(void) ef10_nvram_partn_unlock(enp, partn, NULL);
 
 	EFSYS_KMEM_FREE(enp->en_esip, partn_size, partn_data);
 
@@ -1823,7 +1923,7 @@ fail5:
 fail4:
 	EFSYS_PROBE(fail4);
 
-	ef10_nvram_partn_unlock(enp, partn, NULL);
+	(void) ef10_nvram_partn_unlock(enp, partn, NULL);
 fail3:
 	EFSYS_PROBE(fail3);
 
@@ -1847,10 +1947,12 @@ ef10_nvram_partn_size(
 	__out			size_t *sizep)
 {
 	efx_rc_t rc;
+	efx_nvram_info_t eni = { 0 };
 
-	if ((rc = efx_mcdi_nvram_info(enp, partn, sizep,
-	    NULL, NULL, NULL)) != 0)
+	if ((rc = efx_mcdi_nvram_info(enp, partn, &eni)) != 0)
 		goto fail1;
+
+	*sizep = eni.eni_partn_size;
 
 	return (0);
 
@@ -1859,6 +1961,29 @@ fail1:
 
 	return (rc);
 }
+
+	__checkReturn		efx_rc_t
+ef10_nvram_partn_info(
+	__in			efx_nic_t *enp,
+	__in			uint32_t partn,
+	__out			efx_nvram_info_t *enip)
+{
+	efx_rc_t rc;
+
+	if ((rc = efx_mcdi_nvram_info(enp, partn, enip)) != 0)
+		goto fail1;
+
+	if (enip->eni_write_size == 0)
+		enip->eni_write_size = EF10_NVRAM_CHUNK;
+
+	return (0);
+
+fail1:
+	EFSYS_PROBE1(fail1, efx_rc_t, rc);
+
+	return (rc);
+}
+
 
 	__checkReturn		efx_rc_t
 ef10_nvram_partn_lock(
@@ -1958,11 +2083,13 @@ ef10_nvram_partn_erase(
 	__in			size_t size)
 {
 	efx_rc_t rc;
+	efx_nvram_info_t eni = { 0 };
 	uint32_t erase_size;
 
-	if ((rc = efx_mcdi_nvram_info(enp, partn, NULL, NULL,
-	    &erase_size, NULL)) != 0)
+	if ((rc = efx_mcdi_nvram_info(enp, partn, &eni)) != 0)
 		goto fail1;
+
+	erase_size = eni.eni_erase_size;
 
 	if (erase_size == 0) {
 		if ((rc = efx_mcdi_nvram_erase(enp, partn, offset, size)) != 0)
@@ -2000,16 +2127,18 @@ ef10_nvram_partn_write(
 	__in			efx_nic_t *enp,
 	__in			uint32_t partn,
 	__in			unsigned int offset,
-	__out_bcount(size)	caddr_t data,
+	__in_bcount(size)	caddr_t data,
 	__in			size_t size)
 {
 	size_t chunk;
+	efx_nvram_info_t eni = { 0 };
 	uint32_t write_size;
 	efx_rc_t rc;
 
-	if ((rc = efx_mcdi_nvram_info(enp, partn, NULL, NULL,
-	    NULL, &write_size)) != 0)
+	if ((rc = efx_mcdi_nvram_info(enp, partn, &eni)) != 0)
 		goto fail1;
+
+	write_size = eni.eni_write_size;
 
 	if (write_size != 0) {
 		/*
@@ -2049,6 +2178,10 @@ fail1:
 	return (rc);
 }
 
+#define	EF10_NVRAM_INITIAL_POLL_DELAY_US 10000
+#define	EF10_NVRAM_MAX_POLL_DELAY_US     1000000
+#define	EF10_NVRAM_POLL_RETRIES          100
+
 	__checkReturn		efx_rc_t
 ef10_nvram_partn_unlock(
 	__in			efx_nic_t *enp,
@@ -2056,17 +2189,58 @@ ef10_nvram_partn_unlock(
 	__out_opt		uint32_t *verify_resultp)
 {
 	boolean_t reboot = B_FALSE;
+	uint32_t poll_delay_us = EF10_NVRAM_INITIAL_POLL_DELAY_US;
+	uint32_t poll_retry = 0;
+	uint32_t verify_result = MC_CMD_NVRAM_VERIFY_RC_UNKNOWN;
 	efx_rc_t rc;
 
-	if (verify_resultp != NULL)
-		*verify_resultp = MC_CMD_NVRAM_VERIFY_RC_UNKNOWN;
+	rc = efx_mcdi_nvram_update_finish(enp, partn, reboot,
+	    EFX_NVRAM_UPDATE_FLAGS_BACKGROUND, &verify_result);
 
-	rc = efx_mcdi_nvram_update_finish(enp, partn, reboot, verify_resultp);
-	if (rc != 0)
-		goto fail1;
+	/*
+	 * NVRAM updates can take a long time (e.g. up to 1 minute for bundle
+	 * images). Polling for NVRAM update completion ensures that other MCDI
+	 * commands can be issued before the background NVRAM update completes.
+	 *
+	 * Without polling, other MCDI commands can only be issued before the
+	 * NVRAM update completes if the MCDI transport and the firmware
+	 * support the Asynchronous MCDI protocol extensions in SF-116575-PS.
+	 *
+	 * The initial call either completes the update synchronously, or
+	 * returns RC_PENDING to indicate processing is continuing. In the
+	 * latter case, we poll for at least 1 minute, at increasing intervals
+	 * (10ms, 100ms, 1s).
+	 */
+	while (verify_result == MC_CMD_NVRAM_VERIFY_RC_PENDING) {
+
+		if (poll_retry > EF10_NVRAM_POLL_RETRIES) {
+			rc = ETIMEDOUT;
+			goto fail1;
+		}
+		poll_retry++;
+
+		EFSYS_SLEEP(poll_delay_us);
+		if (poll_delay_us < EF10_NVRAM_MAX_POLL_DELAY_US)
+			poll_delay_us *= 10;
+
+		/* Poll for completion of background NVRAM update. */
+		verify_result = MC_CMD_NVRAM_VERIFY_RC_UNKNOWN;
+
+		rc = efx_mcdi_nvram_update_finish(enp, partn, reboot,
+		    EFX_NVRAM_UPDATE_FLAGS_POLL, &verify_result);
+		if (rc != 0) {
+			/* Poll failed, so assume NVRAM update failed. */
+			goto fail2;
+		}
+	}
+
+	if (verify_resultp != NULL)
+		*verify_resultp = verify_result;
 
 	return (0);
 
+fail2:
+	EFSYS_PROBE(fail2);
 fail1:
 	EFSYS_PROBE1(fail1, efx_rc_t, rc);
 
@@ -2168,6 +2342,10 @@ static ef10_parttbl_entry_t medford2_parttbl[] = {
 	PARTN_MAP_ENTRY(LICENSE,		ALL,	LICENSE),
 	PARTN_MAP_ENTRY(EXPANSION_UEFI,		ALL,	UEFIROM),
 	PARTN_MAP_ENTRY(MUM_FIRMWARE,		ALL,	MUM_FIRMWARE),
+	PARTN_MAP_ENTRY(DYNCONFIG_DEFAULTS,	ALL,	DYNCONFIG_DEFAULTS),
+	PARTN_MAP_ENTRY(ROMCONFIG_DEFAULTS,	ALL,	ROMCONFIG_DEFAULTS),
+	PARTN_MAP_ENTRY(BUNDLE,			ALL,	BUNDLE),
+	PARTN_MAP_ENTRY(BUNDLE_METADATA,	ALL,	BUNDLE_METADATA),
 };
 
 static	__checkReturn		efx_rc_t
@@ -2337,22 +2515,17 @@ ef10_nvram_partn_rw_start(
 	__in			uint32_t partn,
 	__out			size_t *chunk_sizep)
 {
-	uint32_t write_size = 0;
+	efx_nvram_info_t eni = { 0 };
 	efx_rc_t rc;
 
-	if ((rc = efx_mcdi_nvram_info(enp, partn, NULL, NULL,
-	    NULL, &write_size)) != 0)
+	if ((rc = ef10_nvram_partn_info(enp, partn, &eni)) != 0)
 		goto fail1;
 
 	if ((rc = ef10_nvram_partn_lock(enp, partn)) != 0)
 		goto fail2;
 
-	if (chunk_sizep != NULL) {
-		if (write_size == 0)
-			*chunk_sizep = EF10_NVRAM_CHUNK;
-		else
-			*chunk_sizep = write_size;
-	}
+	if (chunk_sizep != NULL)
+		*chunk_sizep = eni.eni_write_size;
 
 	return (0);
 
@@ -2385,4 +2558,4 @@ fail1:
 
 #endif	/* EFSYS_OPT_NVRAM */
 
-#endif	/* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */
+#endif	/* EFX_OPTS_EF10() */

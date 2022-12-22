@@ -20,6 +20,8 @@
 
 #define dout_subsys ceph_subsys_
 
+using std::map;
+using std::string;
 
 namespace ceph {
 
@@ -52,8 +54,7 @@ int ResolvHWrapper::res_search(const char *hostname, int cls,
 DNSResolver::~DNSResolver()
 {
 #ifdef HAVE_RES_NQUERY
-  list<res_state>::iterator iter;
-  for (iter = states.begin(); iter != states.end(); ++iter) {
+  for (auto iter = states.begin(); iter != states.end(); ++iter) {
     struct __res_state *s = *iter;
     delete s;
   }
@@ -338,7 +339,7 @@ int DNSResolver::resolve_srv_hosts(CephContext *cct, const string& service_name,
 
     auto rdata = ns_rr_rdata(rr);
     uint16_t priority = ns_get16(rdata); rdata += NS_INT16SZ;
-    rdata += NS_INT16SZ;	// weight
+    uint16_t weight = ns_get16(rdata); rdata += NS_INT16SZ;
     uint16_t port = ns_get16(rdata); rdata += NS_INT16SZ;
     // FIPS zeroization audit 20191115: this memset is not security related.
     memset(full_target, 0, sizeof(full_target));
@@ -362,7 +363,7 @@ int DNSResolver::resolve_srv_hosts(CephContext *cct, const string& service_name,
 	return -EINVAL;
       }
       target = target.substr(0, end);
-      (*srv_hosts)[target] = {priority, addr};
+      (*srv_hosts)[target] = {priority, weight, addr};
     }
   }
   return 0;

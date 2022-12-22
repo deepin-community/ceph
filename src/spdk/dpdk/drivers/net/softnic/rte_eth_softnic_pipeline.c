@@ -15,17 +15,17 @@
 #include <rte_port_source_sink.h>
 #include <rte_port_fd.h>
 #include <rte_port_sched.h>
+#include <rte_port_sym_crypto.h>
 
 #include <rte_table_acl.h>
 #include <rte_table_array.h>
 #include <rte_table_hash.h>
+#include <rte_table_hash_func.h>
 #include <rte_table_lpm.h>
 #include <rte_table_lpm_ipv6.h>
 #include <rte_table_stub.h>
 
 #include "rte_eth_softnic_internals.h"
-
-#include "hash_func.h"
 
 #ifndef PIPELINE_MSGQ_SIZE
 #define PIPELINE_MSGQ_SIZE                                 64
@@ -43,17 +43,52 @@ softnic_pipeline_init(struct pmd_internals *p)
 	return 0;
 }
 
+static void
+softnic_pipeline_table_free(struct softnic_table *table)
+{
+	for ( ; ; ) {
+		struct rte_flow *flow;
+
+		flow = TAILQ_FIRST(&table->flows);
+		if (flow == NULL)
+			break;
+
+		TAILQ_REMOVE(&table->flows, flow, node);
+		free(flow);
+	}
+
+	for ( ; ; ) {
+		struct softnic_table_meter_profile *mp;
+
+		mp = TAILQ_FIRST(&table->meter_profiles);
+		if (mp == NULL)
+			break;
+
+		TAILQ_REMOVE(&table->meter_profiles, mp, node);
+		free(mp);
+	}
+}
+
 void
 softnic_pipeline_free(struct pmd_internals *p)
 {
 	for ( ; ; ) {
 		struct pipeline *pipeline;
+		uint32_t table_id;
 
 		pipeline = TAILQ_FIRST(&p->pipeline_list);
 		if (pipeline == NULL)
 			break;
 
 		TAILQ_REMOVE(&p->pipeline_list, pipeline, node);
+
+		for (table_id = 0; table_id < pipeline->n_tables; table_id++) {
+			struct softnic_table *table =
+				&pipeline->table[table_id];
+
+			softnic_pipeline_table_free(table);
+		}
+
 		rte_ring_free(pipeline->msgq_req);
 		rte_ring_free(pipeline->msgq_rsp);
 		rte_pipeline_free(pipeline->p);
@@ -71,6 +106,19 @@ softnic_pipeline_disable_all(struct pmd_internals *p)
 			softnic_thread_pipeline_disable(p,
 				pipeline->thread_id,
 				pipeline->name);
+}
+
+uint32_t
+softnic_pipeline_thread_count(struct pmd_internals *p, uint32_t thread_id)
+{
+	struct pipeline *pipeline;
+	uint32_t count = 0;
+
+	TAILQ_FOREACH(pipeline, &p->pipeline_list, node)
+		if ((pipeline->enabled) && (pipeline->thread_id == thread_id))
+			count++;
+
+	return count;
 }
 
 struct pipeline *
@@ -160,6 +208,7 @@ softnic_pipeline_create(struct pmd_internals *softnic,
 	/* Node fill in */
 	strlcpy(pipeline->name, name, sizeof(pipeline->name));
 	pipeline->p = p;
+	memcpy(&pipeline->params, params, sizeof(*params));
 	pipeline->n_ports_in = 0;
 	pipeline->n_ports_out = 0;
 	pipeline->n_tables = 0;
@@ -189,6 +238,7 @@ softnic_pipeline_port_in_create(struct pmd_internals *softnic,
 		struct rte_port_sched_reader_params sched;
 		struct rte_port_fd_reader_params fd;
 		struct rte_port_source_params source;
+		struct rte_port_sym_crypto_reader_params cryptodev;
 	} pp;
 
 	struct pipeline *pipeline;
@@ -213,7 +263,7 @@ softnic_pipeline_port_in_create(struct pmd_internals *softnic,
 		return -1;
 
 	ap = NULL;
-	if (params->action_profile_name) {
+	if (strlen(params->action_profile_name)) {
 		ap = softnic_port_in_action_profile_find(softnic,
 			params->action_profile_name);
 		if (ap == NULL)
@@ -306,6 +356,23 @@ softnic_pipeline_port_in_create(struct pmd_internals *softnic,
 		break;
 	}
 
+	case PORT_IN_CRYPTODEV:
+	{
+		struct softnic_cryptodev *cryptodev;
+
+		cryptodev = softnic_cryptodev_find(softnic, params->dev_name);
+		if (cryptodev == NULL)
+			return -1;
+
+		pp.cryptodev.cryptodev_id = cryptodev->dev_id;
+		pp.cryptodev.queue_id = params->cryptodev.queue_id;
+		pp.cryptodev.f_callback = params->cryptodev.f_callback;
+		pp.cryptodev.arg_callback = params->cryptodev.arg_callback;
+		p.ops = &rte_port_sym_crypto_reader_ops;
+		p.arg_create = &pp.cryptodev;
+		break;
+	}
+
 	default:
 		return -1;
 	}
@@ -392,15 +459,18 @@ softnic_pipeline_port_out_create(struct pmd_internals *softnic,
 		struct rte_port_sched_writer_params sched;
 		struct rte_port_fd_writer_params fd;
 		struct rte_port_sink_params sink;
+		struct rte_port_sym_crypto_writer_params cryptodev;
 	} pp;
 
 	union {
 		struct rte_port_ethdev_writer_nodrop_params ethdev;
 		struct rte_port_ring_writer_nodrop_params ring;
 		struct rte_port_fd_writer_nodrop_params fd;
+		struct rte_port_sym_crypto_writer_nodrop_params cryptodev;
 	} pp_nodrop;
 
 	struct pipeline *pipeline;
+	struct softnic_port_out *port_out;
 	uint32_t port_id;
 	int status;
 
@@ -526,6 +596,40 @@ softnic_pipeline_port_out_create(struct pmd_internals *softnic,
 		break;
 	}
 
+	case PORT_OUT_CRYPTODEV:
+	{
+		struct softnic_cryptodev *cryptodev;
+
+		cryptodev = softnic_cryptodev_find(softnic, params->dev_name);
+		if (cryptodev == NULL)
+			return -1;
+
+		if (params->cryptodev.queue_id >= cryptodev->n_queues)
+			return -1;
+
+		pp.cryptodev.cryptodev_id = cryptodev->dev_id;
+		pp.cryptodev.queue_id = params->cryptodev.queue_id;
+		pp.cryptodev.tx_burst_sz = params->burst_size;
+		pp.cryptodev.crypto_op_offset = params->cryptodev.op_offset;
+
+		pp_nodrop.cryptodev.cryptodev_id = cryptodev->dev_id;
+		pp_nodrop.cryptodev.queue_id = params->cryptodev.queue_id;
+		pp_nodrop.cryptodev.tx_burst_sz = params->burst_size;
+		pp_nodrop.cryptodev.n_retries = params->retry;
+		pp_nodrop.cryptodev.crypto_op_offset =
+				params->cryptodev.op_offset;
+
+		if (params->retry == 0) {
+			p.ops = &rte_port_sym_crypto_writer_ops;
+			p.arg_create = &pp.cryptodev;
+		} else {
+			p.ops = &rte_port_sym_crypto_writer_nodrop_ops;
+			p.arg_create = &pp_nodrop.cryptodev;
+		}
+
+		break;
+	}
+
 	default:
 		return -1;
 	}
@@ -542,6 +646,8 @@ softnic_pipeline_port_out_create(struct pmd_internals *softnic,
 		return -1;
 
 	/* Pipeline */
+	port_out = &pipeline->port_out[pipeline->n_ports_out];
+	memcpy(&port_out->params, params, sizeof(*params));
 	pipeline->n_ports_out++;
 
 	return 0;
@@ -554,7 +660,7 @@ static const struct rte_acl_field_def table_acl_field_format_ipv4[] = {
 		.size = sizeof(uint8_t),
 		.field_index = 0,
 		.input_index = 0,
-		.offset = offsetof(struct ipv4_hdr, next_proto_id),
+		.offset = offsetof(struct rte_ipv4_hdr, next_proto_id),
 	},
 
 	/* Source IP address (IPv4) */
@@ -563,7 +669,7 @@ static const struct rte_acl_field_def table_acl_field_format_ipv4[] = {
 		.size = sizeof(uint32_t),
 		.field_index = 1,
 		.input_index = 1,
-		.offset = offsetof(struct ipv4_hdr, src_addr),
+		.offset = offsetof(struct rte_ipv4_hdr, src_addr),
 	},
 
 	/* Destination IP address (IPv4) */
@@ -572,7 +678,7 @@ static const struct rte_acl_field_def table_acl_field_format_ipv4[] = {
 		.size = sizeof(uint32_t),
 		.field_index = 2,
 		.input_index = 2,
-		.offset = offsetof(struct ipv4_hdr, dst_addr),
+		.offset = offsetof(struct rte_ipv4_hdr, dst_addr),
 	},
 
 	/* Source Port */
@@ -581,8 +687,8 @@ static const struct rte_acl_field_def table_acl_field_format_ipv4[] = {
 		.size = sizeof(uint16_t),
 		.field_index = 3,
 		.input_index = 3,
-		.offset = sizeof(struct ipv4_hdr) +
-			offsetof(struct tcp_hdr, src_port),
+		.offset = sizeof(struct rte_ipv4_hdr) +
+			offsetof(struct rte_tcp_hdr, src_port),
 	},
 
 	/* Destination Port */
@@ -591,8 +697,8 @@ static const struct rte_acl_field_def table_acl_field_format_ipv4[] = {
 		.size = sizeof(uint16_t),
 		.field_index = 4,
 		.input_index = 3,
-		.offset = sizeof(struct ipv4_hdr) +
-			offsetof(struct tcp_hdr, dst_port),
+		.offset = sizeof(struct rte_ipv4_hdr) +
+			offsetof(struct rte_tcp_hdr, dst_port),
 	},
 };
 
@@ -603,7 +709,7 @@ static const struct rte_acl_field_def table_acl_field_format_ipv6[] = {
 		.size = sizeof(uint8_t),
 		.field_index = 0,
 		.input_index = 0,
-		.offset = offsetof(struct ipv6_hdr, proto),
+		.offset = offsetof(struct rte_ipv6_hdr, proto),
 	},
 
 	/* Source IP address (IPv6) */
@@ -612,7 +718,7 @@ static const struct rte_acl_field_def table_acl_field_format_ipv6[] = {
 		.size = sizeof(uint32_t),
 		.field_index = 1,
 		.input_index = 1,
-		.offset = offsetof(struct ipv6_hdr, src_addr[0]),
+		.offset = offsetof(struct rte_ipv6_hdr, src_addr[0]),
 	},
 
 	[2] = {
@@ -620,7 +726,7 @@ static const struct rte_acl_field_def table_acl_field_format_ipv6[] = {
 		.size = sizeof(uint32_t),
 		.field_index = 2,
 		.input_index = 2,
-		.offset = offsetof(struct ipv6_hdr, src_addr[4]),
+		.offset = offsetof(struct rte_ipv6_hdr, src_addr[4]),
 	},
 
 	[3] = {
@@ -628,7 +734,7 @@ static const struct rte_acl_field_def table_acl_field_format_ipv6[] = {
 		.size = sizeof(uint32_t),
 		.field_index = 3,
 		.input_index = 3,
-		.offset = offsetof(struct ipv6_hdr, src_addr[8]),
+		.offset = offsetof(struct rte_ipv6_hdr, src_addr[8]),
 	},
 
 	[4] = {
@@ -636,7 +742,7 @@ static const struct rte_acl_field_def table_acl_field_format_ipv6[] = {
 		.size = sizeof(uint32_t),
 		.field_index = 4,
 		.input_index = 4,
-		.offset = offsetof(struct ipv6_hdr, src_addr[12]),
+		.offset = offsetof(struct rte_ipv6_hdr, src_addr[12]),
 	},
 
 	/* Destination IP address (IPv6) */
@@ -645,7 +751,7 @@ static const struct rte_acl_field_def table_acl_field_format_ipv6[] = {
 		.size = sizeof(uint32_t),
 		.field_index = 5,
 		.input_index = 5,
-		.offset = offsetof(struct ipv6_hdr, dst_addr[0]),
+		.offset = offsetof(struct rte_ipv6_hdr, dst_addr[0]),
 	},
 
 	[6] = {
@@ -653,7 +759,7 @@ static const struct rte_acl_field_def table_acl_field_format_ipv6[] = {
 		.size = sizeof(uint32_t),
 		.field_index = 6,
 		.input_index = 6,
-		.offset = offsetof(struct ipv6_hdr, dst_addr[4]),
+		.offset = offsetof(struct rte_ipv6_hdr, dst_addr[4]),
 	},
 
 	[7] = {
@@ -661,7 +767,7 @@ static const struct rte_acl_field_def table_acl_field_format_ipv6[] = {
 		.size = sizeof(uint32_t),
 		.field_index = 7,
 		.input_index = 7,
-		.offset = offsetof(struct ipv6_hdr, dst_addr[8]),
+		.offset = offsetof(struct rte_ipv6_hdr, dst_addr[8]),
 	},
 
 	[8] = {
@@ -669,7 +775,7 @@ static const struct rte_acl_field_def table_acl_field_format_ipv6[] = {
 		.size = sizeof(uint32_t),
 		.field_index = 8,
 		.input_index = 8,
-		.offset = offsetof(struct ipv6_hdr, dst_addr[12]),
+		.offset = offsetof(struct rte_ipv6_hdr, dst_addr[12]),
 	},
 
 	/* Source Port */
@@ -678,8 +784,8 @@ static const struct rte_acl_field_def table_acl_field_format_ipv6[] = {
 		.size = sizeof(uint16_t),
 		.field_index = 9,
 		.input_index = 9,
-		.offset = sizeof(struct ipv6_hdr) +
-			offsetof(struct tcp_hdr, src_port),
+		.offset = sizeof(struct rte_ipv6_hdr) +
+			offsetof(struct rte_tcp_hdr, src_port),
 	},
 
 	/* Destination Port */
@@ -688,8 +794,8 @@ static const struct rte_acl_field_def table_acl_field_format_ipv6[] = {
 		.size = sizeof(uint16_t),
 		.field_index = 10,
 		.input_index = 9,
-		.offset = sizeof(struct ipv6_hdr) +
-			offsetof(struct tcp_hdr, dst_port),
+		.offset = sizeof(struct rte_ipv6_hdr) +
+			offsetof(struct rte_tcp_hdr, dst_port),
 	},
 };
 
@@ -730,7 +836,7 @@ softnic_pipeline_table_create(struct pmd_internals *softnic,
 		return -1;
 
 	ap = NULL;
-	if (params->action_profile_name) {
+	if (strlen(params->action_profile_name)) {
 		ap = softnic_table_action_profile_find(softnic,
 			params->action_profile_name);
 		if (ap == NULL)
@@ -797,28 +903,28 @@ softnic_pipeline_table_create(struct pmd_internals *softnic,
 
 		switch (params->match.hash.key_size) {
 		case  8:
-			f_hash = hash_default_key8;
+			f_hash = rte_table_hash_crc_key8;
 			break;
 		case 16:
-			f_hash = hash_default_key16;
+			f_hash = rte_table_hash_crc_key16;
 			break;
 		case 24:
-			f_hash = hash_default_key24;
+			f_hash = rte_table_hash_crc_key24;
 			break;
 		case 32:
-			f_hash = hash_default_key32;
+			f_hash = rte_table_hash_crc_key32;
 			break;
 		case 40:
-			f_hash = hash_default_key40;
+			f_hash = rte_table_hash_crc_key40;
 			break;
 		case 48:
-			f_hash = hash_default_key48;
+			f_hash = rte_table_hash_crc_key48;
 			break;
 		case 56:
-			f_hash = hash_default_key56;
+			f_hash = rte_table_hash_crc_key56;
 			break;
 		case 64:
-			f_hash = hash_default_key64;
+			f_hash = rte_table_hash_crc_key64;
 			break;
 		default:
 			return -1;
@@ -960,7 +1066,51 @@ softnic_pipeline_table_create(struct pmd_internals *softnic,
 	memcpy(&table->params, params, sizeof(*params));
 	table->ap = ap;
 	table->a = action;
+	TAILQ_INIT(&table->flows);
+	TAILQ_INIT(&table->meter_profiles);
+	memset(&table->dscp_table, 0, sizeof(table->dscp_table));
 	pipeline->n_tables++;
 
 	return 0;
+}
+
+int
+softnic_pipeline_port_out_find(struct pmd_internals *softnic,
+		const char *pipeline_name,
+		const char *name,
+		uint32_t *port_id)
+{
+	struct pipeline *pipeline;
+	uint32_t i;
+
+	if (softnic == NULL ||
+			pipeline_name == NULL ||
+			name == NULL ||
+			port_id == NULL)
+		return -1;
+
+	pipeline = softnic_pipeline_find(softnic, pipeline_name);
+	if (pipeline == NULL)
+		return -1;
+
+	for (i = 0; i < pipeline->n_ports_out; i++)
+		if (strcmp(pipeline->port_out[i].params.dev_name, name) == 0) {
+			*port_id = i;
+			return 0;
+		}
+
+	return -1;
+}
+
+struct softnic_table_meter_profile *
+softnic_pipeline_table_meter_profile_find(struct softnic_table *table,
+	uint32_t meter_profile_id)
+{
+	struct softnic_table_meter_profile *mp;
+
+	TAILQ_FOREACH(mp, &table->meter_profiles, node)
+		if (mp->meter_profile_id == meter_profile_id)
+			return mp;
+
+	return NULL;
 }

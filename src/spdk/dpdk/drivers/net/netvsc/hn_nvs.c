@@ -54,7 +54,7 @@ static int hn_nvs_req_send(struct hn_data *hv,
 }
 
 static int
-hn_nvs_execute(struct hn_data *hv,
+__hn_nvs_execute(struct hn_data *hv,
 	       void *req, uint32_t reqlen,
 	       void *resp, uint32_t resplen,
 	       uint32_t type)
@@ -62,6 +62,7 @@ hn_nvs_execute(struct hn_data *hv,
 	struct vmbus_channel *chan = hn_primary_chan(hv);
 	char buffer[NVS_RESPSIZE_MAX];
 	const struct hn_nvs_hdr *hdr;
+	uint64_t xactid;
 	uint32_t len;
 	int ret;
 
@@ -77,7 +78,7 @@ hn_nvs_execute(struct hn_data *hv,
 
  retry:
 	len = sizeof(buffer);
-	ret = rte_vmbus_chan_recv(chan, buffer, &len, NULL);
+	ret = rte_vmbus_chan_recv(chan, buffer, &len, &xactid);
 	if (ret == -EAGAIN) {
 		rte_delay_us(HN_CHAN_INTERVAL_US);
 		goto retry;
@@ -88,7 +89,20 @@ hn_nvs_execute(struct hn_data *hv,
 		return ret;
 	}
 
+	if (len < sizeof(*hdr)) {
+		PMD_DRV_LOG(ERR, "response missing NVS header");
+		return -EINVAL;
+	}
+
 	hdr = (struct hn_nvs_hdr *)buffer;
+
+	/* Silently drop received packets while waiting for response */
+	if (hdr->type == NVS_TYPE_RNDIS) {
+		hn_nvs_ack_rxbuf(chan, xactid);
+		--hv->rxbuf_outstanding;
+		goto retry;
+	}
+
 	if (hdr->type != type) {
 		PMD_DRV_LOG(ERR, "unexpected NVS resp %#x, expect %#x",
 			    hdr->type, type);
@@ -106,6 +120,29 @@ hn_nvs_execute(struct hn_data *hv,
 
 	/* All pass! */
 	return 0;
+}
+
+
+/*
+ * Execute one control command and get the response.
+ * Only one command can be active on a channel at once
+ * Unlike BSD, DPDK does not have an interrupt context
+ * so the polling is required to wait for response.
+ */
+static int
+hn_nvs_execute(struct hn_data *hv,
+	       void *req, uint32_t reqlen,
+	       void *resp, uint32_t resplen,
+	       uint32_t type)
+{
+	struct hn_rx_queue *rxq = hv->primary;
+	int ret;
+
+	rte_spinlock_lock(&rxq->ring_lock);
+	ret = __hn_nvs_execute(hv, req, reqlen, resp, resplen, type);
+	rte_spinlock_unlock(&rxq->ring_lock);
+
+	return ret;
 }
 
 static int
@@ -279,14 +316,13 @@ hn_nvs_conn_chim(struct hn_data *hv)
 			       NVS_TYPE_CHIM_CONNRESP);
 	if (error) {
 		PMD_DRV_LOG(ERR, "exec nvs chim conn failed");
-		goto cleanup;
+		return error;
 	}
 
 	if (resp.status != NVS_STATUS_OK) {
 		PMD_DRV_LOG(ERR, "nvs chim conn failed: %x",
 			    resp.status);
-		error = -EIO;
-		goto cleanup;
+		return -EIO;
 	}
 
 	sectsz = resp.sectsz;
@@ -295,7 +331,8 @@ hn_nvs_conn_chim(struct hn_data *hv)
 		PMD_DRV_LOG(NOTICE,
 			    "invalid chimney sending buffer section size: %u",
 			    sectsz);
-		return 0;
+		error = -EINVAL;
+		goto cleanup;
 	}
 
 	hv->chim_szmax = sectsz;
@@ -303,11 +340,6 @@ hn_nvs_conn_chim(struct hn_data *hv)
 
 	PMD_DRV_LOG(INFO, "send buffer %lu section size:%u, count:%u",
 		    len, hv->chim_szmax, hv->chim_cnt);
-
-	if (len % hv->chim_szmax != 0) {
-		PMD_DRV_LOG(NOTICE,
-			    "chimney sending sections are not properly aligned");
-	}
 
 	/* Done! */
 	return 0;
@@ -328,12 +360,12 @@ hn_nvs_conf_ndis(struct hn_data *hv, unsigned int mtu)
 
 	memset(&conf, 0, sizeof(conf));
 	conf.type = NVS_TYPE_NDIS_CONF;
-	conf.mtu = mtu + ETHER_HDR_LEN;
+	conf.mtu = mtu + RTE_ETHER_HDR_LEN;
 	conf.caps = NVS_NDIS_CONF_VLAN;
 
-	/* TODO enable SRIOV */
-	//if (hv->nvs_ver >= NVS_VERSION_5)
-	//	conf.caps |= NVS_NDIS_CONF_SRIOV;
+	/* enable SRIOV */
+	if (hv->nvs_ver >= NVS_VERSION_5)
+		conf.caps |= NVS_NDIS_CONF_SRIOV;
 
 	/* NOTE: No response. */
 	error = hn_nvs_req_send(hv, &conf, sizeof(conf));
@@ -537,10 +569,19 @@ void
 hn_nvs_set_datapath(struct hn_data *hv, uint32_t path)
 {
 	struct hn_nvs_datapath dp;
+	int error;
+
+	PMD_DRV_LOG(DEBUG, "set datapath %s",
+		    path ? "VF" : "Synthetic");
 
 	memset(&dp, 0, sizeof(dp));
 	dp.type = NVS_TYPE_SET_DATAPATH;
 	dp.active_path = path;
 
-	hn_nvs_req_send(hv, &dp, sizeof(dp));
+	error = hn_nvs_req_send(hv, &dp, sizeof(dp));
+	if (error) {
+		PMD_DRV_LOG(ERR,
+			    "send set datapath failed: %d",
+			    error);
+	}
 }

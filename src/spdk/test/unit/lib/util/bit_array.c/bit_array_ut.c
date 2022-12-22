@@ -36,18 +36,7 @@
 #include "spdk_cunit.h"
 
 #include "util/bit_array.c"
-
-void *
-spdk_dma_realloc(void *buf, size_t size, size_t align, uint64_t *phys_addr)
-{
-	return realloc(buf, size);
-}
-
-void
-spdk_dma_free(void *buf)
-{
-	free(buf);
-}
+#include "common/lib/test_env.c"
 
 static void
 test_1bit(void)
@@ -289,32 +278,92 @@ test_count(void)
 	spdk_bit_array_free(&ba);
 }
 
+#define TEST_MASK_SIZE 128
+#define TEST_BITS_NUM (TEST_MASK_SIZE * 8 - 3)
+static void
+test_mask_store_load(void)
+{
+	struct spdk_bit_array *ba;
+	uint8_t mask[TEST_MASK_SIZE] = { 0 };
+	uint32_t i;
+
+	ba = spdk_bit_array_create(TEST_BITS_NUM);
+
+	/* Check if stored mask is consistent with bit array mask */
+	spdk_bit_array_set(ba, 0);
+	spdk_bit_array_set(ba, TEST_BITS_NUM / 2);
+	spdk_bit_array_set(ba, TEST_BITS_NUM - 1);
+
+	spdk_bit_array_store_mask(ba, mask);
+
+	for (i = 0; i < TEST_BITS_NUM; i++) {
+		if (i == 0 || i == TEST_BITS_NUM / 2 || i == TEST_BITS_NUM - 1) {
+			CU_ASSERT((mask[i / 8] & (1U << (i % 8))));
+		} else {
+			CU_ASSERT(!(mask[i / 8] & (1U << (i % 8))));
+		}
+	}
+
+	/* Check if loaded mask is consistent with bit array mask */
+	memset(mask, 0, TEST_MASK_SIZE);
+	mask[0] = 1;
+	mask[TEST_MASK_SIZE - 1] = 1U << 4;
+
+	spdk_bit_array_load_mask(ba, mask);
+
+	CU_ASSERT(spdk_bit_array_get(ba, 0));
+	CU_ASSERT(spdk_bit_array_get(ba, TEST_BITS_NUM - 1));
+
+	spdk_bit_array_clear(ba, 0);
+	spdk_bit_array_clear(ba, TEST_BITS_NUM - 1);
+
+	for (i = 0; i < TEST_BITS_NUM; i++) {
+		CU_ASSERT(!spdk_bit_array_get(ba, i));
+	}
+
+	spdk_bit_array_free(&ba);
+}
+
+static void
+test_mask_clear(void)
+{
+	struct spdk_bit_array *ba;
+	uint32_t i;
+
+	ba = spdk_bit_array_create(TEST_BITS_NUM);
+
+	for (i = 0; i < TEST_BITS_NUM; i++) {
+		spdk_bit_array_set(ba, i);
+	}
+
+	spdk_bit_array_clear_mask(ba);
+
+	for (i = 0; i < TEST_BITS_NUM; i++) {
+		CU_ASSERT(!spdk_bit_array_get(ba, i));
+	}
+
+	spdk_bit_array_free(&ba);
+}
+
 int
 main(int argc, char **argv)
 {
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	if (CU_initialize_registry() != CUE_SUCCESS) {
-		return CU_get_error();
-	}
+	CU_set_error_action(CUEA_ABORT);
+	CU_initialize_registry();
 
 	suite = CU_add_suite("bit_array", NULL, NULL);
-	if (suite == NULL) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
 
-	if (
-		CU_add_test(suite, "test_1bit", test_1bit) == NULL ||
-		CU_add_test(suite, "test_64bit", test_64bit) == NULL ||
-		CU_add_test(suite, "test_find", test_find) == NULL ||
-		CU_add_test(suite, "test_resize", test_resize) == NULL ||
-		CU_add_test(suite, "test_errors", test_errors) == NULL ||
-		CU_add_test(suite, "test_count", test_count) == NULL) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
+	CU_ADD_TEST(suite, test_1bit);
+	CU_ADD_TEST(suite, test_64bit);
+	CU_ADD_TEST(suite, test_find);
+	CU_ADD_TEST(suite, test_resize);
+	CU_ADD_TEST(suite, test_errors);
+	CU_ADD_TEST(suite, test_count);
+	CU_ADD_TEST(suite, test_mask_store_load);
+	CU_ADD_TEST(suite, test_mask_clear);
 
 	CU_basic_set_mode(CU_BRM_VERBOSE);
 

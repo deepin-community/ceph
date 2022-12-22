@@ -1,3 +1,6 @@
 version=3
-opts="uversionmangle=s/-/~/,dversionmangle=s/\+dfsg\d*$//" \
+opts=repacksuffix=+ds,\
+repack,compression=xz,\
+uversionmangle=s/-/~/,\
+dversionmangle=s/\+(debian|dfsg|ds|deb)(\.\d+)?$// \
  http://download.ceph.com/tarballs/ceph-(\d.*)\.tar\.gz

@@ -229,7 +229,7 @@ int do_export_diff(librbd::Image& image, const char *fromsnapname,
   if (strcmp(path, "-") == 0)
     fd = STDOUT_FILENO;
   else
-    fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0644);
+    fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0644);
   if (fd < 0)
     return -errno;
 
@@ -308,7 +308,6 @@ int execute_diff(const po::variables_map &vm,
   return 0;
 }
 
-Shell::SwitchArguments switched_arguments({at::WHOLE_OBJECT});
 Shell::Action action_diff(
   {"export-diff"}, {}, "Export incremental diff to file.", "",
   &get_arguments_diff, &execute_diff);
@@ -565,7 +564,7 @@ static int do_export(librbd::Image& image, const char *path, bool no_progress,
   if (to_stdout) {
     fd = STDOUT_FILENO;
   } else {
-    fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0644);
+    fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0644);
     if (fd < 0) {
       return -errno;
     }

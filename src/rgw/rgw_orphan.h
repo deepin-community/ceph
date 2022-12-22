@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 /*
  * Ceph - scalable distributed file system
@@ -13,14 +13,13 @@
  * 
  */
 
-#ifndef CEPH_RGW_ORPHAN_H
-#define CEPH_RGW_ORPHAN_H
+#pragma once
 
 #include "common/config.h"
 #include "common/Formatter.h"
 #include "common/errno.h"
 
-#include "rgw_rados.h"
+#include "rgw_sal.h"
 
 #define dout_subsys ceph_subsys_rgw
 
@@ -124,17 +123,17 @@ struct RGWOrphanSearchState {
 WRITE_CLASS_ENCODER(RGWOrphanSearchState)
 
 class RGWOrphanStore {
-  RGWRados *store;
+  rgw::sal::RGWRadosStore *store;
   librados::IoCtx ioctx;
 
   string oid;
 
 public:
-  explicit RGWOrphanStore(RGWRados *_store) : store(_store), oid(RGW_ORPHAN_INDEX_OID) {}
+  explicit RGWOrphanStore(rgw::sal::RGWRadosStore *_store) : store(_store), oid(RGW_ORPHAN_INDEX_OID) {}
 
   librados::IoCtx& get_ioctx() { return ioctx; }
 
-  int init();
+  int init(const DoutPrefixProvider *dpp);
 
   int read_job(const string& job_name, RGWOrphanSearchState& state);
   int write_job(const string& job_name, const RGWOrphanSearchState& state);
@@ -142,13 +141,13 @@ public:
   int list_jobs(map<string,RGWOrphanSearchState> &job_list);
 
 
-  int store_entries(const string& oid, const map<string, bufferlist>& entries);
+  int store_entries(const DoutPrefixProvider *dpp, const string& oid, const map<string, bufferlist>& entries);
   int read_entries(const string& oid, const string& marker, map<string, bufferlist> *entries, bool *truncated);
 };
 
 
 class RGWOrphanSearch {
-  RGWRados *store;
+  rgw::sal::RGWRadosStore *store;
 
   RGWOrphanStore orphan_store;
 
@@ -173,20 +172,20 @@ class RGWOrphanSearch {
     list<string>::iterator end;
   };
 
-  int log_oids(map<int, string>& log_shards, map<int, list<string> >& oids);
+  int log_oids(const DoutPrefixProvider *dpp, map<int, string>& log_shards, map<int, list<string> >& oids);
 
 #define RGW_ORPHANSEARCH_HASH_PRIME 7877
   int orphan_shard(const string& str) {
     return ceph_str_hash_linux(str.c_str(), str.size()) % RGW_ORPHANSEARCH_HASH_PRIME % search_info.num_shards;
   }
 
-  int handle_stat_result(map<int, list<string> >& oids, RGWRados::Object::Stat::Result& result);
-  int pop_and_handle_stat_op(map<int, list<string> >& oids, std::deque<RGWRados::Object::Stat>& ops);
+  int handle_stat_result(const DoutPrefixProvider *dpp, map<int, list<string> >& oids, RGWRados::Object::Stat::Result& result);
+  int pop_and_handle_stat_op(const DoutPrefixProvider *dpp, map<int, list<string> >& oids, std::deque<RGWRados::Object::Stat>& ops);
 
 
   int remove_index(map<int, string>& index);
 public:
-  RGWOrphanSearch(RGWRados *_store, int _max_ios, uint64_t _stale_secs) : store(_store), orphan_store(store), max_concurrent_ios(_max_ios), stale_secs(_stale_secs) {}
+  RGWOrphanSearch(rgw::sal::RGWRadosStore *_store, int _max_ios, uint64_t _stale_secs) : store(_store), orphan_store(store), max_concurrent_ios(_max_ios), stale_secs(_stale_secs) {}
 
   int save_state() {
     RGWOrphanSearchState state;
@@ -195,17 +194,17 @@ public:
     return orphan_store.write_job(search_info.job_name, state);
   }
 
-  int init(const string& job_name, RGWOrphanSearchInfo *info, bool _detailed_mode=false);
+  int init(const DoutPrefixProvider *dpp, const string& job_name, RGWOrphanSearchInfo *info, bool _detailed_mode=false);
 
   int create(const string& job_name, int num_shards);
 
-  int build_all_oids_index();
-  int build_buckets_instance_index();
-  int build_linked_oids_for_bucket(const string& bucket_instance_id, map<int, list<string> >& oids);
-  int build_linked_oids_index();
-  int compare_oid_indexes();
+  int build_all_oids_index(const DoutPrefixProvider *dpp);
+  int build_buckets_instance_index(const DoutPrefixProvider *dpp);
+  int build_linked_oids_for_bucket(const DoutPrefixProvider *dpp, const string& bucket_instance_id, map<int, list<string> >& oids);
+  int build_linked_oids_index(const DoutPrefixProvider *dpp);
+  int compare_oid_indexes(const DoutPrefixProvider *dpp);
 
-  int run();
+  int run(const DoutPrefixProvider *dpp);
   int finish();
 };
 
@@ -252,39 +251,55 @@ class RGWRadosList {
     p.first->second.filter_keys.insert(obj_key);
   }
 
-  RGWRados *store;
+  rgw::sal::RGWRadosStore* store;
 
   uint16_t max_concurrent_ios;
   uint64_t stale_secs;
   std::string tenant_name;
 
-  int handle_stat_result(RGWRados::Object::Stat::Result& result,
+  bool include_rgw_obj_name;
+  std::string field_separator;
+
+  int handle_stat_result(const DoutPrefixProvider *dpp, 
+                         RGWRados::Object::Stat::Result& result,
+			 std::string& bucket_name,
+			 rgw_obj_key& obj_key,
 			 std::set<string>& obj_oids);
-  int pop_and_handle_stat_op(RGWObjectCtx& obj_ctx,
+  int pop_and_handle_stat_op(const DoutPrefixProvider *dpp,
+                             RGWObjectCtx& obj_ctx,
 			     std::deque<RGWRados::Object::Stat>& ops);
 
 public:
 
-  RGWRadosList(RGWRados *_store,
+  RGWRadosList(rgw::sal::RGWRadosStore* _store,
 	       int _max_ios,
 	       uint64_t _stale_secs,
 	       const std::string& _tenant_name) :
     store(_store),
     max_concurrent_ios(_max_ios),
     stale_secs(_stale_secs),
-    tenant_name(_tenant_name)
+    tenant_name(_tenant_name),
+    include_rgw_obj_name(false)
   {}
 
-  int process_bucket(const std::string& bucket_instance_id,
+  int process_bucket(const DoutPrefixProvider *dpp, 
+                     const std::string& bucket_instance_id,
 		     const std::string& prefix,
 		     const std::set<rgw_obj_key>& entries_filter);
 
-  int do_incomplete_multipart(RGWRados* store, RGWBucketInfo& bucket_info);
+  int do_incomplete_multipart(const DoutPrefixProvider *dpp, 
+                              rgw::sal::RGWRadosStore* store,
+			      RGWBucketInfo& bucket_info);
 
   int build_linked_oids_index();
 
-  int run(const std::string& bucket_id);
-  int run();
-}; // class RGWRadosList
+  int run(const DoutPrefixProvider *dpp, const std::string& bucket_id);
+  int run(const DoutPrefixProvider *dpp);
 
-#endif
+  // if there's a non-empty field separator, that means we'll display
+  // bucket and object names
+  void set_field_separator(const std::string& fs) {
+    field_separator = fs;
+    include_rgw_obj_name = !field_separator.empty();
+  }
+}; // class RGWRadosList

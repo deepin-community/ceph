@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 
 import configparser
 import re
@@ -7,36 +7,36 @@ import json
 from collections import OrderedDict
 
 bdev_dict = OrderedDict()
-bdev_dict["set_bdev_options"] = []
-bdev_dict["construct_split_vbdev"] = []
-bdev_dict["set_bdev_nvme_options"] = []
-bdev_dict["construct_nvme_bdev"] = []
-bdev_dict["set_bdev_nvme_hotplug"] = []
-bdev_dict["construct_malloc_bdev"] = []
-bdev_dict["construct_aio_bdev"] = []
-bdev_dict["construct_pmem_bdev"] = []
-bdev_dict["construct_virtio_dev"] = []
+bdev_dict["bdev_set_options"] = []
+bdev_dict["bdev_split_create"] = []
+bdev_dict["bdev_nvme_set_options"] = []
+bdev_dict["bdev_nvme_attach_controller"] = []
+bdev_dict["bdev_nvme_set_hotplug"] = []
+bdev_dict["bdev_malloc_create"] = []
+bdev_dict["bdev_aio_create"] = []
+bdev_dict["bdev_pmem_create"] = []
+bdev_dict["bdev_virtio_attach_controller"] = []
 
 vhost_dict = OrderedDict()
-vhost_dict["construct_vhost_scsi_controller"] = []
-vhost_dict["construct_vhost_blk_controller"] = []
-vhost_dict["construct_vhost_nvme_controller"] = []
+vhost_dict["vhost_create_scsi_controller"] = []
+vhost_dict["vhost_create_blk_controller"] = []
+vhost_dict["vhost_create_nvme_controller"] = []
 
 iscsi_dict = OrderedDict()
-iscsi_dict["set_iscsi_options"] = []
-iscsi_dict["add_portal_group"] = []
-iscsi_dict["add_initiator_group"] = []
-iscsi_dict["construct_target_node"] = []
+iscsi_dict["iscsi_set_options"] = []
+iscsi_dict["iscsi_create_portal_group"] = []
+iscsi_dict["iscsi_create_initiator_group"] = []
+iscsi_dict["iscsi_create_target_node"] = []
 
 nvmf_dict = OrderedDict()
-nvmf_dict["set_nvmf_target_config"] = []
-nvmf_dict["set_nvmf_target_options"] = []
-nvmf_dict["construct_nvmf_subsystem"] = []
+nvmf_dict["nvmf_set_config"] = []
+nvmf_dict["nvmf_set_max_subsystems"] = []
+nvmf_dict["subsystems"] = []
 
 
 # dictionary with new config that will be written to new json config file
 subsystem = {
-    "copy": None,
+    "accel": None,
     "interface": None,
     "net_framework": None,
     "bdev": bdev_dict,
@@ -61,7 +61,7 @@ no_yes_map = {"no": False, "No": False, "Yes": True, "yes": True}
 
 def generate_new_json_config():
     json_subsystem = [
-        {'subsystem': "copy", 'config': None},
+        {'subsystem': "accel", 'config': None},
         {"subsystem": "interface", "config": None},
         {"subsystem": "net_framework", "config": None},
         {"subsystem": "bdev", "config": []},
@@ -154,7 +154,7 @@ def get_bdev_options_json(config, section):
     for option in config.options("Bdev"):
         set_param(params, option, config.get("Bdev", option))
 
-    return [{"params": to_json_params(params), "method": "set_bdev_options"}]
+    return [{"params": to_json_params(params), "method": "bdev_set_options"}]
 
 
 def get_aio_bdev_json(config, section):
@@ -163,8 +163,10 @@ def get_aio_bdev_json(config, section):
     for option in config.options("AIO"):
         if option == "AIO":
             value = config.get("AIO", option).split("\n")
+    if value is None:
+        return aio_json
     for item in value:
-        items = re.findall("\S+", item)
+        items = re.findall(r"\S+", item)
         params = {}
         params['filename'] = items[0]
         params['name'] = items[1]
@@ -172,7 +174,7 @@ def get_aio_bdev_json(config, section):
             params['block_size'] = int(items[2])
         aio_json.append({
             "params": params,
-            "method": "construct_aio_bdev"
+            "method": "bdev_aio_create"
         })
 
     return aio_json
@@ -194,7 +196,7 @@ def get_malloc_bdev_json(config, section):
                 "num_blocks": params[1][3] * 1024 * 1024 / params[2][3],
                 "name": "Malloc%s" % lun
             },
-            "method": "construct_malloc_bdev"
+            "method": "bdev_malloc_create"
         })
 
     return malloc_json
@@ -206,6 +208,7 @@ def get_nvme_bdev_json(config, section):
         ["TimeoutuSec", "timeout_us", int, 0],
         ["AdminPollRate", "nvme_adminq_poll_period_us", int, 1000000],
         ["ActionOnTimeout", "action_on_timeout", str, "none"],
+        ["IOPollRate", "nvme_ioq_poll_period_us", int, 0],
         ["HotplugEnable", "enable", bool, False],
         ["AdminPollRate", "period_us", int, 1000]
     ]
@@ -213,12 +216,12 @@ def get_nvme_bdev_json(config, section):
     for option in config.options("Nvme"):
         value = config.get("Nvme", option)
         if "TransportID" == option:
-            entry = re.findall("\S+", value)
+            entry = re.findall(r"\S+", value)
             nvme_name = entry[-1]
-            trtype = re.findall("trtype:\S+", value)
+            trtype = re.findall(r"trtype:\S+", value)
             if trtype:
                 trtype = trtype[0].replace("trtype:", "").replace("\"", "")
-            traddr = re.findall("traddr:\S+", value)
+            traddr = re.findall(r"traddr:\S+", value)
             if traddr:
                 traddr = traddr[0].replace("traddr:", "").replace("\"", "")
             nvme_json.append({
@@ -227,19 +230,19 @@ def get_nvme_bdev_json(config, section):
                     "name": nvme_name,
                     "traddr": traddr
                 },
-                "method": "construct_nvme_bdev"
+                "method": "bdev_nvme_attach_controller"
             })
         else:
             set_param(params, option, value)
     params[3][3] = params[3][3].lower()
-    params[5][3] = params[5][3] * 100
+    params[6][3] = params[6][3] * 100
     nvme_json.append({
-        "params": to_json_params(params[4:6]),
-        "method": "set_bdev_nvme_hotplug"
+        "params": to_json_params(params[5:7]),
+        "method": "bdev_nvme_set_hotplug"
     })
     nvme_json.append({
-        "params": to_json_params(params[0:4]),
-        "method": "set_bdev_nvme_options"
+        "params": to_json_params(params[0:5]),
+        "method": "bdev_nvme_set_options"
     })
     return nvme_json
 
@@ -249,13 +252,13 @@ def get_pmem_bdev_json(config, section):
     for option in config.options(section):
         if "Blk" == option:
             for value in config.get(section, option).split("\n"):
-                items = re.findall("\S+", value)
+                items = re.findall(r"\S+", value)
                 pmem_json.append({
                     "params": {
                         "name": items[1],
                         "pmem_file": items[0]
                     },
-                    "method": "construct_pmem_bdev"
+                    "method": "bdev_pmem_create"
                 })
 
     return pmem_json
@@ -270,7 +273,7 @@ def get_split_bdev_json(config, section):
     if value and not isinstance(value, list):
         value = [value]
     for split in value:
-        items = re.findall("\S+", split)
+        items = re.findall(r"\S+", split)
         split_size_mb = 0
         base_bdev = items[0]
         split_count = int(items[1])
@@ -282,7 +285,7 @@ def get_split_bdev_json(config, section):
                 "split_size_mb": split_size_mb,
                 "split_count": split_count
             },
-            "method": "construct_split_vbdev"
+            "method": "bdev_split_create"
         })
 
     return split_json
@@ -291,11 +294,6 @@ def get_split_bdev_json(config, section):
 def get_nvmf_options_json(config, section):
     params = [
         ["AcceptorPollRate", "acceptor_poll_rate", int, 10000],
-        ["MaxQueuesPerSession", "max_qpairs_per_ctrlr", int, 64],
-        ["MaxQueueDepth", "max_queue_depth", int, 128],
-        ["IncapsuleDataSize", "in_capsule_data_size", int, 4096],
-        ["MaxIOSize", "max_io_size", int, 131072],
-        ["IOUnitSize", "io_unit_size", int, 131072],
         ["MaxSubsystems", "max_subsystems", int, 1024]
     ]
     for option in config.options("Nvmf"):
@@ -303,22 +301,25 @@ def get_nvmf_options_json(config, section):
     nvmf_json = []
     nvmf_json.append({
         "params": to_json_params([params[0]]),
-        "method": "set_nvmf_target_config"
+        "method": "nvmf_set_config"
     })
     nvmf_json.append({
         "params": to_json_params(params[1:7]),
-        "method": "set_nvmf_target_options"
+        "method": "nvmf_set_max_subsystems"
     })
 
     return nvmf_json
 
 
 def get_nvmf_subsystem_json(config, section):
+    nvmf_subsystem_methods = []
     params = [
-        ["NQN", "nqn", str, ""],
+        # Last items are default values if given entry is not set
         ["Host", "hosts", list, []],
-        ["AllowAnyHost", "allow_any_host", bool, True],
-        ["SN", "serial_number", str, ""],
+        ["NQN", "nqn", str, ""],
+        ["AllowAnyHost", "allow_any_host", bool, False],
+        ["SN", "serial_number", str, "00000000000000000000"],
+        ["MN", "model_number", str, "SPDK bdev Controller"],
         ["MaxNamespaces", "max_namespaces", str, ""],
     ]
     listen_address = []
@@ -331,7 +332,7 @@ def get_nvmf_subsystem_json(config, section):
             set_param(params, option, value)
             continue
         if "Listen" == option:
-            items = re.findall("\S+", value)
+            items = re.findall(r"\S+", value)
             adrfam = "IPv4"
             if len(items[1].split(":")) > 2:
                 adrfam = "IPv6"
@@ -344,7 +345,7 @@ def get_nvmf_subsystem_json(config, section):
             })
         if "Namespace" == option:
             for item in value.split("\n"):
-                items = re.findall("\S+", item)
+                items = re.findall(r"\S+", item)
                 if len(items) == 2:
                     nsid = items[1]
                 else:
@@ -353,18 +354,43 @@ def get_nvmf_subsystem_json(config, section):
                     "nsid": int(nsid),
                     "bdev_name": items[0],
                 })
-    parameters = to_json_params(params[0:4])
-    parameters['listen_addresses'] = listen_address
-    parameters['namespaces'] = namespaces
-    nvmf_subsystem = {
+    # Get parameters: nqn, allow_any_host, serial_number
+    # for nvmf_create_subsystem rpc method
+    parameters = to_json_params(params[1:5])
+    nvmf_subsystem_methods.append({
         "params": parameters,
-        "method": "construct_nvmf_subsystem"
-    }
+        "method": "nvmf_create_subsystem"
+    })
+    for listen in listen_address:
+        nvmf_subsystem_methods.append({
+            "params": {
+                "listen_address": listen,
+                "nqn": parameters['nqn']
+            },
+            "method": "nvmf_subsystem_add_listener"
+        })
+    for host in to_json_params([params[0]])['hosts']:
+        nvmf_subsystem_methods.append({
+            "params": {
+                "host": host,
+                "nqn": parameters['nqn']
+            },
+            "method": "nvmf_subsystem_add_host"
+        })
+    for namespace in namespaces:
+        nvmf_subsystem_methods.append({
+            "params": {
+                "namespace": namespace,
+                "nqn": parameters['nqn']
+            },
+            "method": "nvmf_subsystem_add_ns"
+        })
 
-    if params[4][3]:
-        nvmf_subsystem['params']['max_namespaces'] = int(params[4][3])
+    # Define max_namespaces if it is set in old config
+    if params[5][3]:
+        nvmf_subsystem_methods[0]['params']['max_namespaces'] = int(params[5][3])
 
-    return [nvmf_subsystem]
+    return nvmf_subsystem_methods
 
 
 def get_vhost_scsi_json(config, section):
@@ -380,7 +406,7 @@ def get_vhost_scsi_json(config, section):
             set_param(params, option, value)
         if "Target" == option:
             for item in value.split("\n"):
-                items = re.findall("\S+", item)
+                items = re.findall(r"\S+", item)
                 targets.append({
                     "scsi_target_num": int(items[0]),
                     "ctrlr": params[0][3],
@@ -388,12 +414,12 @@ def get_vhost_scsi_json(config, section):
                 })
     vhost_scsi_json.append({
         "params": to_json_params(params),
-        "method": "construct_vhost_scsi_controller"
+        "method": "vhost_create_scsi_controller"
     })
     for target in targets:
         vhost_scsi_json.append({
             "params": target,
-            "method": "add_vhost_scsi_lun"
+            "method": "vhost_scsi_controller_add_target"
         })
 
     return vhost_scsi_json
@@ -408,7 +434,7 @@ def get_vhost_blk_json(config, section):
     ]
     for option in config.options(section):
         set_param(params, option, config.get(section, option))
-    return [{"method": "construct_vhost_blk_controller",
+    return [{"method": "vhost_create_blk_controller",
             "params": to_json_params(params)}]
 
 
@@ -426,7 +452,7 @@ def get_vhost_nvme_json(config, section):
     vhost_nvme_json = []
     vhost_nvme_json.append({
         "params": to_json_params(params[:3]),
-        "method": "construct_vhost_nvme_controller"
+        "method": "vhost_create_nvme_controller"
     })
     for namespace in params[3][3]:
         vhost_nvme_json.append({
@@ -434,7 +460,7 @@ def get_vhost_nvme_json(config, section):
                 "ctrlr": params[0][3],
                 "bdev_name": namespace,
             },
-            "method": "add_vhost_nvme_ns"
+            "method": "vhost_nvme_controller_add_ns"
         })
 
     return vhost_nvme_json
@@ -463,7 +489,7 @@ def get_virtio_user_json(config, section):
 
     return [{
         "params": to_json_params(params),
-        "method": "construct_virtio_dev"
+        "method": "bdev_virtio_attach_controller"
     }]
 
 
@@ -483,14 +509,13 @@ def get_iscsi_options_json(config, section):
         ['ImmediateData', 'immediate_data', bool, True],
         ['ErrorRecoveryLevel', 'error_recovery_level', int, 0],
         ['NopInInterval', 'nop_in_interval', int, 30],
-        ['MinConnectionsPerCore', 'min_connections_per_core', int, 4],
         ['DefaultTime2Wait', 'default_time2wait', int, 2],
         ['QueueDepth', 'max_queue_depth', int, 64],
         ['', 'first_burst_length', int, 8192]
     ]
     for option in config.options(section):
         set_param(params, option, config.get(section, option))
-    return [{"method": "set_iscsi_options", "params": to_json_params(params)}]
+    return [{"method": "iscsi_set_options", "params": to_json_params(params)}]
 
 
 def get_iscsi_portal_group_json(config, name):
@@ -499,13 +524,11 @@ def get_iscsi_portal_group_json(config, name):
     for option in config.options(name):
         if "Portal" == option:
             for value in config.get(name, option).split("\n"):
-                items = re.findall("\S+", value)
+                items = re.findall(r"\S+", value)
                 portal = {'host': items[1].rsplit(":", 1)[0]}
                 if "@" in items[1]:
                     portal['port'] =\
                         items[1].rsplit(":", 1)[1].split("@")[0]
-                    portal['cpumask'] =\
-                        items[1].rsplit(":", 1)[1].split("@")[1]
                 else:
                     portal['port'] = items[1].rsplit(":", 1)[1]
                 portals.append(portal)
@@ -513,9 +536,9 @@ def get_iscsi_portal_group_json(config, name):
     portal_group_json.append({
         "params": {
             "portals": portals,
-            "tag": int(re.findall('\d+', name)[0])
+            "tag": int(re.findall(r'\d+', name)[0])
         },
-        "method": "add_portal_group"
+        "method": "iscsi_create_portal_group"
     })
 
     return portal_group_json
@@ -533,10 +556,10 @@ def get_iscsi_initiator_group_json(config, name):
     initiator_group_json = {
         "params": {
             "initiators": initiators,
-            "tag": int(re.findall('\d+', name)[0]),
+            "tag": int(re.findall(r'\d+', name)[0]),
             "netmasks": netmasks
         },
-        "method": "add_initiator_group"
+        "method": "iscsi_create_initiator_group"
     }
 
     return [initiator_group_json]
@@ -562,13 +585,13 @@ def get_iscsi_target_node_json(config, section):
         if "TargetAlias" == option:
             alias_name = value.replace("\"", "")
         if "Mapping" == option:
-            items = re.findall("\S+", value)
+            items = re.findall(r"\S+", value)
             pg_ig_maps.append({
-                "ig_tag": int(re.findall('\d+', items[1])[0]),
-                "pg_tag": int(re.findall('\d+', items[0])[0])
+                "ig_tag": int(re.findall(r'\d+', items[1])[0]),
+                "pg_tag": int(re.findall(r'\d+', items[0])[0])
             })
         if "AuthMethod" == option:
-            items = re.findall("\S+", value)
+            items = re.findall(r"\S+", value)
             for item in items:
                 if "CHAP" == item:
                     require_chap = True
@@ -583,10 +606,10 @@ def get_iscsi_target_node_json(config, section):
                     require_chap = False
                     mutual_chap = False
         if "AuthGroup" == option:  # AuthGroup1
-            items = re.findall("\S+", value)
-            chap_group = int(re.findall('\d+', items[0])[0])
+            items = re.findall(r"\S+", value)
+            chap_group = int(re.findall(r'\d+', items[0])[0])
         if "UseDigest" == option:
-            items = re.findall("\S+", value)
+            items = re.findall(r"\S+", value)
             for item in items:
                 if "Header" == item:
                     header_digest = True
@@ -596,7 +619,7 @@ def get_iscsi_target_node_json(config, section):
                     header_digest = False
                     data_digest = False
 
-        if re.match("LUN\d+", option):
+        if re.match(r"LUN\d+", option):
             luns.append({"lun_id": len(luns),
                          "bdev_name": value})
         if "QueueDepth" == option:
@@ -616,7 +639,7 @@ def get_iscsi_target_node_json(config, section):
 
     target_json = {
         "params": params,
-        "method": "construct_target_node"
+        "method": "iscsi_create_target_node"
     }
 
     return [target_json]
@@ -639,10 +662,10 @@ if __name__ == "__main__":
             config.add_section(section)
 
     for section in config.sections():
-        match = re.match("(Bdev|Nvme|Malloc|VirtioUser\d+|Split|Pmem|AIO|"
-                         "iSCSI|PortalGroup\d+|InitiatorGroup\d+|"
-                         "TargetNode\d+|Nvmf|Subsystem\d+|VhostScsi\d+|"
-                         "VhostBlk\d+|VhostNvme\d+)", section)
+        match = re.match(r'(Bdev|Nvme|Malloc|VirtioUser\d+|Split|Pmem|AIO|'
+                         r'iSCSI|PortalGroup\d+|InitiatorGroup\d+|'
+                         r'TargetNode\d+|Nvmf|Subsystem\d+|VhostScsi\d+|'
+                         r'VhostBlk\d+|VhostNvme\d+)', section)
         if match:
             match_section = ''.join(letter for letter in match.group(0)
                                     if not letter.isdigit())
@@ -680,15 +703,18 @@ if __name__ == "__main__":
                 items = get_iscsi_target_node_json(config, section)
             for item in items:
                 if match_section == "VhostScsi":
-                    section_to_subsystem[match_section][
-                        "construct_vhost_scsi_controller"].append(item)
+                    section_to_subsystem[match_section]["vhost_create_scsi_controller"].append(item)
                 elif match_section == "VhostNvme":
-                    section_to_subsystem[match_section][
-                        "construct_vhost_nvme_controller"].append(item)
+                    section_to_subsystem[match_section]["vhost_create_nvme_controller"].append(item)
+                elif match_section == "Subsystem":
+                    section_to_subsystem[match_section]["subsystems"].append(item)
                 else:
                     section_to_subsystem[match_section][
                         item['method']].append(item)
         elif section == "Global":
+            pass
+        elif section == "Ioat":
+            # Ioat doesn't support JSON config yet.
             pass
         elif section == "VirtioPci":
             print("Please use spdk target flags.")

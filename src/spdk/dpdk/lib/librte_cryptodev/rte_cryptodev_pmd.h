@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2015-2016 Intel Corporation.
+ * Copyright(c) 2015-2020 Intel Corporation.
  */
 
 #ifndef _RTE_CRYPTODEV_PMD_H_
@@ -61,7 +61,6 @@ struct rte_cryptodev_global {
 	struct rte_cryptodev_data *data[RTE_CRYPTO_MAX_DEVS];
 	/**< Device private data */
 	uint8_t nb_devs;		/**< Number of devices found */
-	uint8_t max_devs;		/**< Max number of devices */
 };
 
 /* Cryptodev driver, containing the driver ID */
@@ -70,9 +69,6 @@ struct cryptodev_driver {
 	const struct rte_driver *driver;
 	uint8_t id;
 };
-
-/** pointer to global crypto devices data structure. */
-extern struct rte_cryptodev_global *rte_cryptodev_globals;
 
 /**
  * Get the rte_cryptodev structure device pointer for the device. Assumes a
@@ -191,13 +187,12 @@ typedef void (*cryptodev_info_get_t)(struct rte_cryptodev *dev,
  * @param	qp_id		Queue Pair Index
  * @param	qp_conf		Queue configuration structure
  * @param	socket_id	Socket Index
- * @param	session_pool	Pointer to device session mempool
  *
  * @return	Returns 0 on success.
  */
 typedef int (*cryptodev_queue_pair_setup_t)(struct rte_cryptodev *dev,
 		uint16_t qp_id,	const struct rte_cryptodev_qp_conf *qp_conf,
-		int socket_id, struct rte_mempool *session_pool);
+		int socket_id);
 
 /**
  * Release memory resources allocated by given queue pair.
@@ -211,15 +206,6 @@ typedef int (*cryptodev_queue_pair_setup_t)(struct rte_cryptodev *dev,
  */
 typedef int (*cryptodev_queue_pair_release_t)(struct rte_cryptodev *dev,
 		uint16_t qp_id);
-
-/**
- * Get number of available queue pairs of a device.
- *
- * @param	dev	Crypto device pointer
- *
- * @return	Returns number of queue pairs on success.
- */
-typedef uint32_t (*cryptodev_queue_pair_count_t)(struct rte_cryptodev *dev);
 
 /**
  * Create a session mempool to allocate sessions from
@@ -313,6 +299,23 @@ typedef void (*cryptodev_sym_free_session_t)(struct rte_cryptodev *dev,
  */
 typedef void (*cryptodev_asym_free_session_t)(struct rte_cryptodev *dev,
 		struct rte_cryptodev_asym_session *sess);
+/**
+ * Perform actual crypto processing (encrypt/digest or auth/decrypt)
+ * on user provided data.
+ *
+ * @param	dev	Crypto device pointer
+ * @param	sess	Cryptodev session structure
+ * @param	ofs	Start and stop offsets for auth and cipher operations
+ * @param	vec	Vectorized operation descriptor
+ *
+ * @return
+ *  - Returns number of successfully processed packets.
+ *
+ */
+typedef uint32_t (*cryptodev_sym_cpu_crypto_process_t)
+	(struct rte_cryptodev *dev, struct rte_cryptodev_sym_session *sess,
+	union rte_crypto_sym_ofs ofs, struct rte_crypto_sym_vec *vec);
+
 
 /** Crypto device operations function pointer table */
 struct rte_cryptodev_ops {
@@ -332,8 +335,6 @@ struct rte_cryptodev_ops {
 	/**< Set up a device queue pair. */
 	cryptodev_queue_pair_release_t queue_pair_release;
 	/**< Release a queue pair. */
-	cryptodev_queue_pair_count_t queue_pair_count;
-	/**< Get count of the queue pairs. */
 
 	cryptodev_sym_get_session_private_size_t sym_session_get_size;
 	/**< Return private session. */
@@ -347,6 +348,8 @@ struct rte_cryptodev_ops {
 	/**< Clear a Crypto sessions private data. */
 	cryptodev_asym_free_session_t asym_session_clear;
 	/**< Clear a Crypto sessions private data. */
+	cryptodev_sym_cpu_crypto_process_t sym_cpu_process;
+	/**< process input data synchronously (cpu-crypto). */
 };
 
 
@@ -479,14 +482,23 @@ RTE_INIT(init_ ##driver_id)\
 static inline void *
 get_sym_session_private_data(const struct rte_cryptodev_sym_session *sess,
 		uint8_t driver_id) {
-	return sess->sess_private_data[driver_id];
+	if (unlikely(sess->nb_drivers <= driver_id))
+		return NULL;
+
+	return sess->sess_data[driver_id].data;
 }
 
 static inline void
 set_sym_session_private_data(struct rte_cryptodev_sym_session *sess,
 		uint8_t driver_id, void *private_data)
 {
-	sess->sess_private_data[driver_id] = private_data;
+	if (unlikely(sess->nb_drivers <= driver_id)) {
+		CDEV_LOG_ERR("Set private data for driver %u not allowed\n",
+				driver_id);
+		return;
+	}
+
+	sess->sess_data[driver_id].data = private_data;
 }
 
 static inline void *

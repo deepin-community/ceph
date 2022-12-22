@@ -537,18 +537,20 @@ tap_flow_create_eth(const struct rte_flow_item *item, void *data)
 	if (!flow)
 		return 0;
 	msg = &flow->msg;
-	if (!is_zero_ether_addr(&mask->dst)) {
-		tap_nlattr_add(&msg->nh, TCA_FLOWER_KEY_ETH_DST, ETHER_ADDR_LEN,
+	if (!rte_is_zero_ether_addr(&mask->dst)) {
+		tap_nlattr_add(&msg->nh, TCA_FLOWER_KEY_ETH_DST,
+			RTE_ETHER_ADDR_LEN,
 			   &spec->dst.addr_bytes);
 		tap_nlattr_add(&msg->nh,
-			   TCA_FLOWER_KEY_ETH_DST_MASK, ETHER_ADDR_LEN,
+			   TCA_FLOWER_KEY_ETH_DST_MASK, RTE_ETHER_ADDR_LEN,
 			   &mask->dst.addr_bytes);
 	}
-	if (!is_zero_ether_addr(&mask->src)) {
-		tap_nlattr_add(&msg->nh, TCA_FLOWER_KEY_ETH_SRC, ETHER_ADDR_LEN,
-			   &spec->src.addr_bytes);
+	if (!rte_is_zero_ether_addr(&mask->src)) {
+		tap_nlattr_add(&msg->nh, TCA_FLOWER_KEY_ETH_SRC,
+			RTE_ETHER_ADDR_LEN,
+			&spec->src.addr_bytes);
 		tap_nlattr_add(&msg->nh,
-			   TCA_FLOWER_KEY_ETH_SRC_MASK, ETHER_ADDR_LEN,
+			   TCA_FLOWER_KEY_ETH_SRC_MASK, RTE_ETHER_ADDR_LEN,
 			   &mask->src.addr_bytes);
 	}
 	return 0;
@@ -1378,7 +1380,7 @@ tap_flow_create(struct rte_eth_dev *dev,
 			NULL, "priority value too big");
 		goto fail;
 	}
-	flow = rte_malloc(__func__, sizeof(struct rte_flow), 0);
+	flow = rte_zmalloc(__func__, sizeof(struct rte_flow), 0);
 	if (!flow) {
 		rte_flow_error_set(error, ENOMEM, RTE_FLOW_ERROR_TYPE_HANDLE,
 				   NULL, "cannot allocate memory for rte_flow");
@@ -1414,7 +1416,7 @@ tap_flow_create(struct rte_eth_dev *dev,
 	 * to the local pmd->if_index.
 	 */
 	if (pmd->remote_if_index) {
-		remote_flow = rte_malloc(__func__, sizeof(struct rte_flow), 0);
+		remote_flow = rte_zmalloc(__func__, sizeof(struct rte_flow), 0);
 		if (!remote_flow) {
 			rte_flow_error_set(
 				error, ENOMEM, RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
@@ -1567,6 +1569,7 @@ tap_flow_isolate(struct rte_eth_dev *dev,
 		 struct rte_flow_error *error __rte_unused)
 {
 	struct pmd_internals *pmd = dev->data->dev_private;
+	struct pmd_process_private *process_private = dev->process_private;
 
 	/* normalize 'set' variable to contain 0 or 1 values */
 	if (set)
@@ -1580,7 +1583,7 @@ tap_flow_isolate(struct rte_eth_dev *dev,
 	 * If netdevice is there, setup appropriate flow rules immediately.
 	 * Otherwise it will be set when bringing up the netdevice (tun_alloc).
 	 */
-	if (!pmd->rxq[0].fd)
+	if (!process_private->rxq_fds[0])
 		return 0;
 	if (set) {
 		struct rte_flow *remote_flow;
@@ -1690,7 +1693,7 @@ int tap_flow_implicit_create(struct pmd_internals *pmd,
 		}
 	};
 
-	remote_flow = rte_malloc(__func__, sizeof(struct rte_flow), 0);
+	remote_flow = rte_zmalloc(__func__, sizeof(struct rte_flow), 0);
 	if (!remote_flow) {
 		TAP_LOG(ERR, "Cannot allocate memory for rte_flow");
 		goto fail;
@@ -1810,7 +1813,7 @@ tap_flow_implicit_flush(struct pmd_internals *pmd, struct rte_flow_error *error)
 #define KEY_IDX_OFFSET (3 * MAX_RSS_KEYS)
 #define SEC_NAME_CLS_Q "cls_q"
 
-const char *sec_name[SEC_MAX] = {
+static const char *sec_name[SEC_MAX] = {
 	[SEC_L3_L4] = "l3_l4",
 };
 
@@ -1893,7 +1896,7 @@ static int rss_enable(struct pmd_internals *pmd,
 			return -ENOTSUP;
 		}
 
-		rss_flow = rte_malloc(__func__, sizeof(struct rte_flow), 0);
+		rss_flow = rte_zmalloc(__func__, sizeof(struct rte_flow), 0);
 		if (!rss_flow) {
 			TAP_LOG(ERR,
 				"Cannot allocate memory for rte_flow");

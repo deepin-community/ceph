@@ -1,5 +1,5 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;  Copyright(c) 2011-2018 Intel Corporation All rights reserved.
+;  Copyright(c) 2011-2019 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
 ;  modification, are permitted provided that the following conditions
@@ -111,9 +111,12 @@
 ; throughout the code, one tab and two tab indentations are used. one tab is for GHASH part, two tabs is for AES part.
 ;
 
-%include "os.asm"
-%include "reg_sizes.asm"
-%include "gcm_defines.asm"
+%include "include/os.asm"
+%include "include/reg_sizes.asm"
+%include "include/clear_regs.asm"
+%include "include/gcm_defines.asm"
+%include "include/gcm_keys_sse_avx.asm"
+%include "include/memcpy.asm"
 
 %ifndef GCM128_MODE
 %ifndef GCM192_MODE
@@ -123,18 +126,24 @@
 %endif
 %endif
 
+%ifdef NO_AESNI
+%define SSE sse_no_aesni
+%else
+%define SSE sse
+%endif
+
 %ifdef GCM128_MODE
-%define FN_NAME(x,y) aes_gcm_ %+ x %+ _128 %+ y %+ sse
+%define FN_NAME(x,y) aes_gcm_ %+ x %+ _128 %+ y %+ SSE
 %define NROUNDS 9
 %endif
 
 %ifdef GCM192_MODE
-%define FN_NAME(x,y) aes_gcm_ %+ x %+ _192 %+ y %+ sse
+%define FN_NAME(x,y) aes_gcm_ %+ x %+ _192 %+ y %+ SSE
 %define NROUNDS 11
 %endif
 
 %ifdef GCM256_MODE
-%define FN_NAME(x,y) aes_gcm_ %+ x %+ _256 %+ y %+ sse
+%define FN_NAME(x,y) aes_gcm_ %+ x %+ _256 %+ y %+ SSE
 %define NROUNDS 13
 %endif
 
@@ -361,57 +370,212 @@ default rel
 ; Input: The input data (A_IN), that data's length (A_LEN), and the hash key (HASH_KEY).
 ; Output: The hash of the data (AAD_HASH).
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-%macro	CALC_AAD_HASH	14
-%define	%%A_IN		%1
-%define	%%A_LEN		%2
-%define	%%AAD_HASH	%3
-%define	%%HASH_KEY	%4
-%define	%%XTMP1		%5	; xmm temp reg 5
-%define	%%XTMP2		%6
-%define	%%XTMP3		%7
-%define	%%XTMP4		%8
-%define	%%XTMP5		%9	; xmm temp reg 5
-%define	%%T1		%10	; temp reg 1
-%define	%%T2		%11
-%define	%%T3		%12
-%define	%%T4		%13
-%define	%%T5		%14	; temp reg 5
+%macro  CALC_AAD_HASH   15
+%define %%A_IN          %1
+%define %%A_LEN         %2
+%define %%AAD_HASH      %3
+%define %%GDATA_KEY     %4
+%define %%XTMP0         %5      ; xmm temp reg 5
+%define %%XTMP1         %6      ; xmm temp reg 5
+%define %%XTMP2         %7
+%define %%XTMP3         %8
+%define %%XTMP4         %9
+%define %%XTMP5         %10     ; xmm temp reg 5
+%define %%T1            %11     ; temp reg 1
+%define %%T2            %12
+%define %%T3            %13
+%define %%T4            %14
+%define %%T5            %15     ; temp reg 5
 
 
-	mov	%%T1, %%A_IN		; T1 = AAD
-	mov	%%T2, %%A_LEN		; T2 = aadLen
-	pxor	%%AAD_HASH, %%AAD_HASH
+        mov     %%T1, %%A_IN            ; T1 = AAD
+        mov     %%T2, %%A_LEN           ; T2 = aadLen
+        pxor    %%AAD_HASH, %%AAD_HASH
 
-	cmp	%%T2, 16
-	jl	%%_get_small_AAD_block
+%%_get_AAD_loop128:
+        cmp     %%T2, 128
+        jl      %%_exit_AAD_loop128
 
-%%_get_AAD_loop16:
+        movdqu          %%XTMP0, [%%T1 + 16*0]
+        pshufb          %%XTMP0, [rel SHUF_MASK]
 
-	movdqu	%%XTMP1, [%%T1]
-	;byte-reflect the AAD data
-	pshufb	%%XTMP1, [SHUF_MASK]
-	pxor	%%AAD_HASH, %%XTMP1
-	GHASH_MUL	%%AAD_HASH, %%HASH_KEY, %%XTMP1, %%XTMP2, %%XTMP3, %%XTMP4, %%XTMP5
+        pxor            %%XTMP0, %%AAD_HASH
 
-	sub	%%T2, 16
-	je	%%_CALC_AAD_done
+        movdqu          %%XTMP5, [%%GDATA_KEY + HashKey_8]
+        movdqa          %%XTMP1, %%XTMP0
+        movdqa          %%XTMP2, %%XTMP0
+        movdqa          %%XTMP3, %%XTMP0
+        movdqa          %%XTMP4, %%XTMP0
+        pclmulqdq       %%XTMP1, %%XTMP5, 0x11                 ; %%T1 = a1*b1
+        pclmulqdq       %%XTMP2, %%XTMP5, 0x00                 ; %%T2 = a0*b0
+        pclmulqdq       %%XTMP3, %%XTMP5, 0x01                 ; %%T3 = a1*b0
+        pclmulqdq       %%XTMP4, %%XTMP5, 0x10                 ; %%T4 = a0*b1
+        pxor            %%XTMP3, %%XTMP4                       ; %%T3 = a1*b0 + a0*b1
 
-	add	%%T1, 16
-	cmp	%%T2, 16
-	jge	%%_get_AAD_loop16
+%assign i 1
+%assign j 7
+%rep 7
+        movdqu          %%XTMP0, [%%T1 + 16*i]
+        pshufb          %%XTMP0, [rel SHUF_MASK]
+
+        movdqu          %%XTMP5, [%%GDATA_KEY + HashKey_ %+ j]
+        movdqa          %%XTMP4, %%XTMP0
+        pclmulqdq       %%XTMP4, %%XTMP5, 0x11                          ; %%T1 = T1 + a1*b1
+        pxor            %%XTMP1, %%XTMP4
+
+        movdqa          %%XTMP4, %%XTMP0
+        pclmulqdq       %%XTMP4, %%XTMP5, 0x00                          ; %%T2 = T2 + a0*b0
+        pxor            %%XTMP2, %%XTMP4
+
+        movdqa          %%XTMP4, %%XTMP0
+        pclmulqdq       %%XTMP4, %%XTMP5, 0x01                          ; %%T3 = T3 + a1*b0 + a0*b1
+        pxor            %%XTMP3, %%XTMP4
+        movdqa          %%XTMP4, %%XTMP0
+        pclmulqdq       %%XTMP4, %%XTMP5, 0x10
+        pxor            %%XTMP3, %%XTMP4
+%assign i (i + 1)
+%assign j (j - 1)
+%endrep
+
+        movdqa          %%XTMP4, %%XTMP3
+        pslldq          %%XTMP4, 8                                      ; shift-L 2 DWs
+        psrldq          %%XTMP3, 8                                      ; shift-R 2 DWs
+        pxor            %%XTMP2, %%XTMP4
+        pxor            %%XTMP1, %%XTMP3                                ; accumulate the results in %%T1(M):%%T2(L)
+
+        ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+        ;first phase of the reduction
+        movdqa          %%XTMP5, [rel POLY2]
+        movdqa          %%XTMP0, %%XTMP5
+        pclmulqdq       %%XTMP0, %%XTMP2, 0x01
+        pslldq          %%XTMP0, 8                                      ; shift-L xmm2 2 DWs
+        pxor            %%XTMP2, %%XTMP0                                ; first phase of the reduction complete
+
+        ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+        ;second phase of the reduction
+        movdqa          %%XTMP3, %%XTMP5
+        pclmulqdq       %%XTMP3, %%XTMP2, 0x00
+        psrldq          %%XTMP3, 4                                      ; shift-R 1 DW (Shift-R only 1-DW to obtain 2-DWs shift-R)
+
+        movdqa          %%XTMP4, %%XTMP5
+        pclmulqdq       %%XTMP4, %%XTMP2, 0x10
+        pslldq          %%XTMP4, 4                                      ; shift-L 1 DW (Shift-L 1-DW to obtain result with no shifts)
+
+        pxor            %%XTMP4, %%XTMP3                                ; second phase of the reduction complete
+        ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+        movdqa          %%AAD_HASH, %%XTMP1
+        pxor            %%AAD_HASH, %%XTMP4                             ; the result is in %%T1
+
+        sub     %%T2, 128
+        je      %%_CALC_AAD_done
+
+        add     %%T1, 128
+        jmp     %%_get_AAD_loop128
+
+%%_exit_AAD_loop128:
+        cmp     %%T2, 16
+        jl      %%_get_small_AAD_block
+
+        ;; calculate hash_key position to start with
+        mov     %%T3, %%T2
+        and     %%T3, -16       ; 1 to 7 blocks possible here
+        neg     %%T3
+        add     %%T3, HashKey_1 + 16
+        lea     %%T3, [%%GDATA_KEY + %%T3]
+
+        movdqu          %%XTMP0, [%%T1]
+        pshufb          %%XTMP0, [rel SHUF_MASK]
+
+        pxor            %%XTMP0, %%AAD_HASH
+
+        movdqu          %%XTMP5, [%%T3]
+        movdqa          %%XTMP1, %%XTMP0
+        movdqa          %%XTMP2, %%XTMP0
+        movdqa          %%XTMP3, %%XTMP0
+        movdqa          %%XTMP4, %%XTMP0
+        pclmulqdq       %%XTMP1, %%XTMP5, 0x11                 ; %%T1 = a1*b1
+        pclmulqdq       %%XTMP2, %%XTMP5, 0x00                 ; %%T2 = a0*b0
+        pclmulqdq       %%XTMP3, %%XTMP5, 0x01                 ; %%T3 = a1*b0
+        pclmulqdq       %%XTMP4, %%XTMP5, 0x10                 ; %%T4 = a0*b1
+        pxor            %%XTMP3, %%XTMP4                       ; %%T3 = a1*b0 + a0*b1
+
+        add     %%T3, 16        ; move to next hashkey
+        add     %%T1, 16        ; move to next data block
+        sub     %%T2, 16
+        cmp     %%T2, 16
+        jl      %%_AAD_reduce
+
+%%_AAD_blocks:
+        movdqu          %%XTMP0, [%%T1]
+        pshufb          %%XTMP0, [rel SHUF_MASK]
+
+        movdqu          %%XTMP5, [%%T3]
+        movdqa          %%XTMP4, %%XTMP0
+        pclmulqdq       %%XTMP4, %%XTMP5, 0x11                 ; %%T1 = T1 + a1*b1
+        pxor            %%XTMP1, %%XTMP4
+
+        movdqa          %%XTMP4, %%XTMP0
+        pclmulqdq       %%XTMP4, %%XTMP5, 0x00                 ; %%T2 = T2 + a0*b0
+        pxor            %%XTMP2, %%XTMP4
+
+        movdqa          %%XTMP4, %%XTMP0
+        pclmulqdq       %%XTMP4, %%XTMP5, 0x01                 ; %%T3 = T3 + a1*b0 + a0*b1
+        pxor            %%XTMP3, %%XTMP4
+        movdqa          %%XTMP4, %%XTMP0
+        pclmulqdq       %%XTMP4, %%XTMP5, 0x10
+        pxor            %%XTMP3, %%XTMP4
+
+        add     %%T3, 16        ; move to next hashkey
+        add     %%T1, 16
+        sub     %%T2, 16
+        cmp     %%T2, 16
+        jl      %%_AAD_reduce
+        jmp     %%_AAD_blocks
+
+%%_AAD_reduce:
+        movdqa          %%XTMP4, %%XTMP3
+        pslldq          %%XTMP4, 8                             ; shift-L 2 DWs
+        psrldq          %%XTMP3, 8                             ; shift-R 2 DWs
+        pxor            %%XTMP2, %%XTMP4
+        pxor            %%XTMP1, %%XTMP3                       ; accumulate the results in %%T1(M):%%T2(L)
+
+        ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+        ;first phase of the reduction
+        movdqa          %%XTMP5, [rel POLY2]
+        movdqa          %%XTMP0, %%XTMP5
+        pclmulqdq       %%XTMP0, %%XTMP2, 0x01
+        pslldq          %%XTMP0, 8                             ; shift-L xmm2 2 DWs
+        pxor            %%XTMP2, %%XTMP0                       ; first phase of the reduction complete
+
+        ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+        ;second phase of the reduction
+        movdqa          %%XTMP3, %%XTMP5
+        pclmulqdq       %%XTMP3, %%XTMP2, 0x00
+        psrldq          %%XTMP3, 4                             ; shift-R 1 DW (Shift-R only 1-DW to obtain 2-DWs shift-R)
+
+        movdqa          %%XTMP4, %%XTMP5
+        pclmulqdq       %%XTMP4, %%XTMP2, 0x10
+        pslldq          %%XTMP4, 4                             ; shift-L 1 DW (Shift-L 1-DW to obtain result with no shifts)
+
+        pxor            %%XTMP4, %%XTMP3                       ; second phase of the reduction complete
+        ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+        movdqa          %%AAD_HASH, %%XTMP1
+        pxor            %%AAD_HASH, %%XTMP4                    ; the result is in %%T1
+
+        or      %%T2, %%T2
+        je      %%_CALC_AAD_done
 
 %%_get_small_AAD_block:
-	READ_SMALL_DATA_INPUT	%%XTMP1, %%T1, %%T2, %%T3, %%T4, %%T5
-	;byte-reflect the AAD data
-	pshufb	%%XTMP1, [SHUF_MASK]
-	pxor	%%AAD_HASH, %%XTMP1
-	GHASH_MUL	%%AAD_HASH, %%HASH_KEY, %%XTMP1, %%XTMP2, %%XTMP3, %%XTMP4, %%XTMP5
+        movdqu          %%XTMP0, [%%GDATA_KEY + HashKey]
+        READ_SMALL_DATA_INPUT   %%XTMP1, %%T1, %%T2, %%T3, %%T4, %%T5
+        ;byte-reflect the AAD data
+        pshufb          %%XTMP1, [rel SHUF_MASK]
+        pxor            %%AAD_HASH, %%XTMP1
+        GHASH_MUL       %%AAD_HASH, %%XTMP0, %%XTMP1, %%XTMP2, %%XTMP3, %%XTMP4, %%XTMP5
 
 %%_CALC_AAD_done:
 
 %endmacro ; CALC_AAD_HASH
-
-
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; PARTIAL_BLOCK: Handles encryption/decryption and the tag partial blocks between update calls.
@@ -666,10 +830,13 @@ movdqu  %%T_key, [%%GDATA_KEY+16*j]				; encrypt with last (14th) key round (12 
         movdqa  %%T3, %%XMM8
 
         cmp     %%LENGTH, 128
-        jl      %%_initial_blocks_done                  ; no need for precomputed constants
+        jl      %%_initial_blocks_done
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-; Haskey_i_k holds XORed values of the low and high parts of the Haskey_i
+; Prepare 8 counter blocks and perform rounds of AES cipher on them, load plain/cipher text and store cipher/plain text.
+; Keep 8 cipher text blocks for further GHASH computations (XMM1 - XMM8)
+; - combine current GHASH value into block 0 (XMM1)
+
                 paddd   %%CTR, [ONE]                   ; INCR Y0
                 movdqa  %%XMM1, %%CTR
                 pshufb  %%XMM1, [SHUF_MASK]             ; perform a 16Byte swap
@@ -1517,6 +1684,10 @@ movdqu  %%T_key, [%%GDATA_KEY+16*j]				; encrypt with last (14th) key round (12 
 
 %macro FUNC_RESTORE 0
 
+%ifdef SAFE_DATA
+        clear_scratch_gps_asm
+        clear_scratch_xmms_sse_asm
+%endif
 %ifidn __OUTPUT_FORMAT__, win64
         movdqu xmm15  , [rsp + LOCAL_STORAGE + 9*16]
         movdqu xmm14  , [rsp + LOCAL_STORAGE + 8*16]
@@ -1553,12 +1724,8 @@ movdqu  %%T_key, [%%GDATA_KEY+16*j]				; encrypt with last (14th) key round (12 
 %define %%A_IN		%4
 %define %%A_LEN		%5
 %define %%AAD_HASH	xmm0
-%define %%SUBHASH	xmm1
 
-
-        movdqu  %%SUBHASH, [%%GDATA_KEY + HashKey]
-
-	CALC_AAD_HASH %%A_IN, %%A_LEN, %%AAD_HASH, %%SUBHASH, xmm2, xmm3, xmm4, xmm5, xmm6, r10, r11, r12, r13, rax
+	CALC_AAD_HASH %%A_IN, %%A_LEN, %%AAD_HASH, %%GDATA_KEY, xmm1, xmm2, xmm3, xmm4, xmm5, xmm6, r10, r11, r12, r13, rax
 	pxor	xmm2, xmm3
 	mov	r10, %%A_LEN
 
@@ -1881,6 +2048,11 @@ movdqu  %%T_key, [%%GDATA_KEY+16*j]				; encrypt with last (14th) key round (12 
         cmp     r11, 12
         je      %%_T_12
 
+        cmp     r11, 8
+        je      %%_T_8
+
+        simd_store_sse r10, xmm9, r11, r12, rax
+        jmp     %%_return_T_done
 %%_T_8:
         movq    rax, xmm9
         mov     [r10], rax
@@ -1892,11 +2064,18 @@ movdqu  %%T_key, [%%GDATA_KEY+16*j]				; encrypt with last (14th) key round (12 
         movd    eax, xmm9
         mov     [r10 + 8], eax
         jmp     %%_return_T_done
-
 %%_T_16:
         movdqu  [r10], xmm9
 
 %%_return_T_done:
+
+%ifdef SAFE_DATA
+        ;; Clear sensitive data from context structure
+        pxor    xmm0, xmm0
+        movdqu	[%%GDATA_CTX + AadHash], xmm0
+        movdqu  [%%GDATA_CTX + PBlockEncKey], xmm0
+%endif
+
 %endmacro ;GCM_COMPLETE
 
 
@@ -1906,6 +2085,12 @@ movdqu  %%T_key, [%%GDATA_KEY+16*j]				; encrypt with last (14th) key round (12 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 MKGLOBAL(FN_NAME(precomp,_),function,)
 FN_NAME(precomp,_):
+
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_precomp
+%endif
 
         push    r12
         push    r13
@@ -1947,6 +2132,10 @@ FN_NAME(precomp,_):
 
         PRECOMPUTE  arg1, xmm6, xmm0, xmm1, xmm2, xmm3, xmm4, xmm5
 
+%ifdef SAFE_DATA
+        clear_scratch_gps_asm
+        clear_scratch_xmms_sse_asm
+%endif
 %ifidn __OUTPUT_FORMAT__, win64
        movdqu xmm6, [rsp + LOCAL_STORAGE + 0*16]
 %endif
@@ -1956,8 +2145,10 @@ FN_NAME(precomp,_):
         pop     r14
         pop     r13
         pop     r12
-ret
 
+exit_precomp:
+
+        ret
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;void   aes_gcm_init_128_sse / aes_gcm_init_192_sse / aes_gcm_init_256_sse (
@@ -1980,7 +2171,36 @@ FN_NAME(init,_):
 	movdqu	[rsp + 0*16], xmm6
 %endif
 
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_init
+
+        ;; Check context_data != NULL
+        cmp     arg2, 0
+        jz      exit_init
+
+        ;; Check IV != NULL
+        cmp     arg3, 0
+        jz      exit_init
+
+        ;; Check if aad_len == 0
+        cmp     arg5, 0
+        jz      skip_aad_check_init
+
+        ;; Check aad != NULL (aad_len != 0)
+        cmp     arg4, 0
+        jz      exit_init
+
+skip_aad_check_init:
+%endif
 	GCM_INIT arg1, arg2, arg3, arg4, arg5
+
+%ifdef SAFE_DATA
+        clear_scratch_gps_asm
+        clear_scratch_xmms_sse_asm
+%endif
+exit_init:
 
 %ifidn __OUTPUT_FORMAT__, win64
 	movdqu	xmm6 , [rsp + 0*16]
@@ -2006,15 +2226,39 @@ FN_NAME(enc,_update_):
 
 	FUNC_SAVE
 
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_update_enc
+
+        ;; Check context_data != NULL
+        cmp     arg2, 0
+        jz      exit_update_enc
+
+        ;; Check if plaintext_len == 0
+        cmp     arg5, 0
+        jz      skip_in_out_check_update_enc
+
+        ;; Check out != NULL (plaintext_len != 0)
+        cmp     arg3, 0
+        jz      exit_update_enc
+
+        ;; Check in != NULL (plaintext_len != 0)
+        cmp     arg4, 0
+        jz      exit_update_enc
+
+skip_in_out_check_update_enc:
+%endif
 	GCM_ENC_DEC arg1, arg2, arg3, arg4, arg5, ENC
 
+exit_update_enc:
 	FUNC_RESTORE
 
 	ret
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;void   aes_gcm_dec_256_update_sse / aes_gcm_dec_192_update_sse / aes_gcm_dec_256_update_sse
+;void   aes_gcm_dec_128_update_sse / aes_gcm_dec_192_update_sse / aes_gcm_dec_256_update_sse
 ;        const struct gcm_key_data *key_data,
 ;        struct gcm_context_data *context_data,
 ;        u8      *out,
@@ -2026,8 +2270,33 @@ FN_NAME(dec,_update_):
 
 	FUNC_SAVE
 
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_update_dec
+
+        ;; Check context_data != NULL
+        cmp     arg2, 0
+        jz      exit_update_dec
+
+        ;; Check if plaintext_len == 0
+        cmp     arg5, 0
+        jz      skip_in_out_check_update_dec
+
+        ;; Check out != NULL (plaintext_len != 0)
+        cmp     arg3, 0
+        jz      exit_update_dec
+
+        ;; Check in != NULL (plaintext_len != 0)
+        cmp     arg4, 0
+        jz      exit_update_dec
+
+skip_in_out_check_update_dec:
+%endif
+
 	GCM_ENC_DEC arg1, arg2, arg3, arg4, arg5, DEC
 
+exit_update_dec:
 	FUNC_RESTORE
 
 	ret
@@ -2043,6 +2312,26 @@ FN_NAME(dec,_update_):
 MKGLOBAL(FN_NAME(enc,_finalize_),function,)
 FN_NAME(enc,_finalize_):
 
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_enc_fin
+
+        ;; Check context_data != NULL
+        cmp     arg2, 0
+        jz      exit_enc_fin
+
+        ;; Check auth_tag != NULL
+        cmp     arg3, 0
+        jz      exit_enc_fin
+
+        ;; Check auth_tag_len == 0 or > 16
+        cmp     arg4, 0
+        jz      exit_enc_fin
+
+        cmp     arg4, 16
+        ja      exit_enc_fin
+%endif
 	push r12
 
 %ifidn __OUTPUT_FORMAT__, win64
@@ -2054,8 +2343,13 @@ FN_NAME(enc,_finalize_):
 	movdqu	[rsp + 3*16],xmm14
 	movdqu	[rsp + 4*16],xmm15
 %endif
+
 	GCM_COMPLETE	arg1, arg2, arg3, arg4, ENC
 
+%ifdef SAFE_DATA
+        clear_scratch_gps_asm
+        clear_scratch_xmms_sse_asm
+%endif
 %ifidn __OUTPUT_FORMAT__, win64
 	movdqu	xmm15  , [rsp + 4*16]
 	movdqu	xmm14  , [rsp+ 3*16]
@@ -2066,6 +2360,8 @@ FN_NAME(enc,_finalize_):
 %endif
 
 	pop r12
+
+exit_enc_fin:
         ret
 
 
@@ -2078,6 +2374,27 @@ FN_NAME(enc,_finalize_):
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 MKGLOBAL(FN_NAME(dec,_finalize_),function,)
 FN_NAME(dec,_finalize_):
+
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_dec_fin
+
+        ;; Check context_data != NULL
+        cmp     arg2, 0
+        jz      exit_dec_fin
+
+        ;; Check auth_tag != NULL
+        cmp     arg3, 0
+        jz      exit_dec_fin
+
+        ;; Check auth_tag_len == 0 or > 16
+        cmp     arg4, 0
+        jz      exit_dec_fin
+
+        cmp     arg4, 16
+        ja      exit_dec_fin
+%endif
 
 	push r12
 
@@ -2092,6 +2409,10 @@ FN_NAME(dec,_finalize_):
 %endif
 	GCM_COMPLETE	arg1, arg2, arg3, arg4, DEC
 
+%ifdef SAFE_DATA
+        clear_scratch_gps_asm
+        clear_scratch_xmms_sse_asm
+%endif
 %ifidn __OUTPUT_FORMAT__, win64
 	movdqu	xmm15  , [rsp + 4*16]
 	movdqu	xmm14  , [rsp+ 3*16]
@@ -2102,6 +2423,8 @@ FN_NAME(dec,_finalize_):
 %endif
 
 	pop r12
+
+exit_dec_fin:
         ret
 
 
@@ -2123,12 +2446,60 @@ FN_NAME(enc,_):
 
 	FUNC_SAVE
 
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_enc
+
+        ;; Check context_data != NULL
+        cmp     arg2, 0
+        jz      exit_enc
+
+        ;; Check IV != NULL
+        cmp     arg6, 0
+        jz      exit_enc
+
+        ;; Check auth_tag != NULL
+        cmp     arg9, 0
+        jz      exit_enc
+
+        ;; Check auth_tag_len == 0 or > 16
+        cmp     arg10, 0
+        jz      exit_enc
+
+        cmp     arg10, 16
+        ja      exit_enc
+
+        ;; Check if plaintext_len == 0
+        cmp     arg5, 0
+        jz      skip_in_out_check_enc
+
+        ;; Check out != NULL (plaintext_len != 0)
+        cmp     arg3, 0
+        jz      exit_enc
+
+        ;; Check in != NULL (plaintext_len != 0)
+        cmp     arg4, 0
+        jz      exit_enc
+
+skip_in_out_check_enc:
+        ;; Check if aad_len == 0
+        cmp     arg8, 0
+        jz      skip_aad_check_enc
+
+        ;; Check aad != NULL (aad_len != 0)
+        cmp     arg7, 0
+        jz      exit_enc
+
+skip_aad_check_enc:
+%endif
 	GCM_INIT arg1, arg2, arg6, arg7, arg8
 
 	GCM_ENC_DEC  arg1, arg2, arg3, arg4, arg5, ENC
 
 	GCM_COMPLETE arg1, arg2, arg9, arg10, ENC
 
+exit_enc:
 	FUNC_RESTORE
 
 	ret
@@ -2151,12 +2522,61 @@ FN_NAME(dec,_):
 
 	FUNC_SAVE
 
+%ifdef SAFE_PARAM
+        ;; Check key_data != NULL
+        cmp     arg1, 0
+        jz      exit_dec
+
+        ;; Check context_data != NULL
+        cmp     arg2, 0
+        jz      exit_dec
+
+        ;; Check IV != NULL
+        cmp     arg6, 0
+        jz      exit_dec
+
+        ;; Check auth_tag != NULL
+        cmp     arg9, 0
+        jz      exit_dec
+
+        ;; Check auth_tag_len == 0 or > 16
+        cmp     arg10, 0
+        jz      exit_dec
+
+        cmp     arg10, 16
+        ja      exit_dec
+
+        ;; Check if plaintext_len == 0
+        cmp     arg5, 0
+        jz      skip_in_out_check_dec
+
+        ;; Check out != NULL (plaintext_len != 0)
+        cmp     arg3, 0
+        jz      exit_dec
+
+        ;; Check in != NULL (plaintext_len != 0)
+        cmp     arg4, 0
+        jz      exit_dec
+
+skip_in_out_check_dec:
+        ;; Check if aad_len == 0
+        cmp     arg8, 0
+        jz      skip_aad_check_dec
+
+        ;; Check aad != NULL (aad_len != 0)
+        cmp     arg7, 0
+        jz      exit_dec
+
+skip_aad_check_dec:
+%endif
+
 	GCM_INIT arg1, arg2, arg6, arg7, arg8
 
 	GCM_ENC_DEC  arg1, arg2, arg3, arg4, arg5, DEC
 
 	GCM_COMPLETE arg1, arg2, arg9, arg10, DEC
 
+exit_dec:
 	FUNC_RESTORE
 
 	ret

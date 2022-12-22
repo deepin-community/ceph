@@ -4,63 +4,71 @@
 ABI and API Deprecation
 =======================
 
-See the :doc:`guidelines document for details of the ABI policy </contributing/versioning>`.
-API and ABI deprecation notices are to be posted here.
-
+See the guidelines document for details of the :doc:`ABI policy
+<../contributing/abi_policy>`. API and ABI deprecation notices are to be posted
+here.
 
 Deprecation Notices
 -------------------
 
-* eal: certain structures will change in EAL on account of upcoming external
-  memory support. Aside from internal changes leading to an ABI break, the
-  following externally visible changes will also be implemented:
+* meson: The minimum supported version of meson for configuring and building
+  DPDK will be increased to v0.47.1 (from 0.41) from DPDK 19.05 onwards. For
+  those users with a version earlier than 0.47.1, an updated copy of meson
+  can be got using the ``pip``, or ``pip3``, tool for downloading python
+  packages.
 
-  - ``rte_memseg_list`` will change to include a boolean flag indicating
-    whether a particular memseg list is externally allocated. This will have
-    implications for any users of memseg-walk-related functions, as they will
-    now have to skip externally allocated segments in most cases if the intent
-    is to only iterate over internal DPDK memory.
-  - ``socket_id`` parameter across the entire DPDK will gain additional meaning,
-    as some socket ID's will now be representing externally allocated memory. No
-    changes will be required for existing code as backwards compatibility will
-    be kept, and those who do not use this feature will not see these extra
-    socket ID's.
+* kvargs: The function ``rte_kvargs_process`` will get a new parameter
+  for returning key match count. It will ease handling of no-match case.
 
-* eal: both declaring and identifying devices will be streamlined in v18.11.
-  New functions will appear to query a specific port from buses, classes of
-  device and device drivers. Device declaration will be made coherent with the
-  new scheme of device identification.
-  As such, ``rte_devargs`` device representation will change.
+* eal: The function ``rte_eal_remote_launch`` will return new error codes
+  after read or write error on the pipe, instead of calling ``rte_panic``.
 
-  - The enum ``rte_devtype`` was used to identify a bus and will disappear.
-  - Functions previously deprecated will change or disappear:
+* eal: The ``rte_logs`` struct and global symbol will be made private to
+  remove it from the externally visible ABI and allow it to be updated in the
+  future.
 
-    + ``rte_eal_devargs_type_count``
+* rte_atomicNN_xxx: These APIs do not take memory order parameter. This does
+  not allow for writing optimized code for all the CPU architectures supported
+  in DPDK. DPDK will adopt C11 atomic operations semantics and provide wrappers
+  using C11 atomic built-ins. These wrappers must be used for patches that
+  need to be merged in 20.08 onwards. This change will not introduce any
+  performance degradation.
 
-* pci: Several exposed functions are misnamed.
-  The following functions are deprecated starting from v17.11 and are replaced:
+* rte_smp_*mb: These APIs provide full barrier functionality. However, many
+  use cases do not require full barriers. To support such use cases, DPDK will
+  adopt C11 barrier semantics and provide wrappers using C11 atomic built-ins.
+  These wrappers must be used for patches that need to be merged in 20.08
+  onwards. This change will not introduce any performance degradation.
 
-  - ``eal_parse_pci_BDF`` replaced by ``rte_pci_addr_parse``
-  - ``eal_parse_pci_DomBDF`` replaced by ``rte_pci_addr_parse``
-  - ``rte_eal_compare_pci_addr`` replaced by ``rte_pci_addr_cmp``
+* igb_uio: In the view of reducing the kernel dependency from the main tree,
+  as a first step, the Technical Board decided to move ``igb_uio``
+  kernel module to the dpdk-kmods repository in the /linux/igb_uio/ directory
+  in 20.11.
+  Minutes of Technical Board Meeting of `2019-11-06
+  <https://mails.dpdk.org/archives/dev/2019-November/151763.html>`_.
 
-* mbuf: The opaque ``mbuf->hash.sched`` field will be updated to support generic
-  definition in line with the ethdev TM and MTR APIs. Currently, this field
-  is defined in librte_sched in a non-generic way. The new generic format
-  will contain: queue ID, traffic class, color. Field size will not change.
+* lib: will fix extending some enum/define breaking the ABI. There are multiple
+  samples in DPDK that enum/define terminated with a ``.*MAX.*`` value which is
+  used by iterators, and arrays holding these values are sized with this
+  ``.*MAX.*`` value. So extending this enum/define increases the ``.*MAX.*``
+  value which increases the size of the array and depending on how/where the
+  array is used this may break the ABI.
+  ``RTE_ETH_FLOW_MAX`` is one sample of the mentioned case, adding a new flow
+  type will break the ABI because of ``flex_mask[RTE_ETH_FLOW_MAX]`` array
+  usage in following public struct hierarchy:
+  ``rte_eth_fdir_flex_conf -> rte_fdir_conf -> rte_eth_conf (in the middle)``.
+  Need to identify this kind of usages and fix in 20.11, otherwise this blocks
+  us extending existing enum/define.
+  One solution can be using a fixed size array instead of ``.*MAX.*`` value.
 
-* mbuf: the macro ``RTE_MBUF_INDIRECT()`` will be removed in v18.08 or later and
-  replaced with ``RTE_MBUF_CLONED()`` which is already added in v18.05. As
-  ``EXT_ATTACHED_MBUF`` is newly introduced in v18.05, ``RTE_MBUF_INDIRECT()``
-  can no longer be mutually exclusive with ``RTE_MBUF_DIRECT()`` if the new
-  experimental API ``rte_pktmbuf_attach_extbuf()`` is used. Removal of the macro
-  is to fix this semantic inconsistency.
-
-* ethdev: In v18.11 ``DEV_RX_OFFLOAD_CRC_STRIP`` offload flag will be removed, default
-  behavior without any flag will be changed to CRC strip.
-  To keep CRC ``DEV_RX_OFFLOAD_KEEP_CRC`` flag is required.
-  ``KEEP_CRC``: Keep CRC in packet
-  No flag: Strip CRC from packet
+* ethdev: Split the ``struct eth_dev_ops`` struct to hide it as much as possible
+  will be done in 20.11.
+  Currently the ``struct eth_dev_ops`` struct is accessible by the application
+  because some inline functions, like ``rte_eth_tx_descriptor_status()``,
+  access the struct directly.
+  The struct will be separate in two, the ops used by inline functions will be
+  moved next to Rx/Tx burst functions, rest of the ``struct eth_dev_ops`` struct
+  will be moved to header file for drivers to hide it from applications.
 
 * ethdev: the legacy filter API, including
   ``rte_eth_dev_filter_supported()``, ``rte_eth_dev_filter_ctrl()`` as well
@@ -70,28 +78,63 @@ Deprecation Notices
   Target release for removal of the legacy API will be defined once most
   PMDs have switched to rte_flow.
 
-* ethdev: In v18.11 ``rte_eth_dev_attach()`` and ``rte_eth_dev_detach()``
-  will be removed.
-  Hotplug functions ``rte_eal_hotplug_add()`` and ``rte_eal_hotplug_remove()``
-  should be used instread.
-  Function ``rte_eth_dev_get_port_by_name()`` may be used to find
-  identifier of the added port.
+* ethdev: Update API functions returning ``void`` to return ``int`` with
+  negative errno values to indicate various error conditions (e.g.
+  invalid port ID, unsupported operation, failed operation):
 
-* eal: In v18.11 ``rte_eal_dev_attach()`` and ``rte_eal_dev_detach()``
-  will be removed.
-  Hotplug functions ``rte_eal_hotplug_add()`` and ``rte_eal_hotplug_remove()``
-  should be used directly.
+  - ``rte_eth_dev_stop``
+  - ``rte_eth_dev_close``
 
-* pdump: As we changed to use generic IPC, some changes in APIs and structure
-  are expected in subsequent release.
+* ethdev: New offload flags ``DEV_RX_OFFLOAD_FLOW_MARK`` will be added in 19.11.
+  This will allow application to enable or disable PMDs from updating
+  ``rte_mbuf::hash::fdir``.
+  This scheme will allow PMDs to avoid writes to ``rte_mbuf`` fields on Rx and
+  thereby improve Rx performance if application wishes do so.
+  In 19.11 PMDs will still update the field even when the offload is not
+  enabled.
 
-  - ``rte_pdump_set_socket_dir`` will be removed;
-  - The parameter, ``path``, of ``rte_pdump_init`` will be removed;
-  - The enum ``rte_pdump_socktype`` will be removed.
+* ethdev: ``rx_descriptor_done`` dev_ops and ``rte_eth_rx_descriptor_done``
+  will be deprecated in 20.11 and will be removed in 21.11.
+  Existing ``rte_eth_rx_descriptor_status`` and ``rte_eth_tx_descriptor_status``
+  APIs can be used as replacement.
 
-* ethdev: flow API function ``rte_flow_copy()`` will be deprecated in v18.11
-  in favor of ``rte_flow_conv()`` (which will appear in that version) and
-  subsequently removed for v19.02.
+* traffic manager: All traffic manager API's in ``rte_tm.h`` were mistakenly made
+  ABI stable in the v19.11 release. The TM maintainer and other contributors have
+  agreed to keep the TM APIs as experimental in expectation of additional spec
+  improvements. Therefore, all APIs in ``rte_tm.h`` will be marked back as
+  experimental in v20.11 DPDK release. For more details, please see `the thread
+  <https://mails.dpdk.org/archives/dev/2020-April/164970.html>`_.
 
-  This is due to a lack of flexibility and reliance on a type unusable with
-  C++ programs (struct rte_flow_desc).
+* cryptodev: support for using IV with all sizes is added, J0 still can
+  be used but only when IV length in following structs ``rte_crypto_auth_xform``,
+  ``rte_crypto_aead_xform`` is set to zero. When IV length is greater or equal
+  to one it means it represents IV, when is set to zero it means J0 is used
+  directly, in this case 16 bytes of J0 need to be passed.
+
+* sched: To allow more traffic classes, flexible mapping of pipe queues to
+  traffic classes, and subport level configuration of pipes and queues
+  changes will be made to macros, data structures and API functions defined
+  in "rte_sched.h". These changes are aligned to improvements suggested in the
+  RFC https://mails.dpdk.org/archives/dev/2018-November/120035.html.
+
+* metrics: The function ``rte_metrics_init`` will have a non-void return
+  in order to notify errors instead of calling ``rte_exit``.
+
+* power: ``rte_power_set_env`` function will no longer return 0 on attempt
+  to set new power environment if power environment was already initialized.
+  In this case the function will return -1 unless the environment is unset first
+  (using ``rte_power_unset_env``). Other function usage scenarios will not change.
+
+* python: Since the beginning of 2020, Python 2 has officially reached
+  end-of-support: https://www.python.org/doc/sunset-python-2/.
+  Python 2 support will be completely removed in 20.11.
+  In 20.08, explicit deprecation warnings will be displayed when running
+  scripts with Python 2.
+
+* pci: Remove ``RTE_KDRV_NONE`` based device driver probing.
+  In order to optimize the DPDK PCI enumeration management, ``RTE_KDRV_NONE``
+  based device driver probing will be removed in v20.08.
+  The legacy virtio is the only consumer of ``RTE_KDRV_NONE`` based device
+  driver probe scheme. The legacy virtio support will be available through
+  the existing VFIO/UIO based kernel driver scheme.
+  More details at https://patches.dpdk.org/patch/69351/

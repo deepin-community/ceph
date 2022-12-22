@@ -23,6 +23,7 @@
 
 #include <tuple>
 #include <utility>
+#include <cstddef>
 
 namespace seastar {
 
@@ -37,6 +38,7 @@ struct apply_helper<Func, Tuple, std::index_sequence<I...>> {
 };
 
 template <typename Func, typename... T>
+[[deprecated("use std::apply() instead")]]
 inline
 auto apply(Func&& func, std::tuple<T...>&& args) {
     using helper = apply_helper<Func, std::tuple<T...>&&, std::index_sequence_for<T...>>;
@@ -44,6 +46,7 @@ auto apply(Func&& func, std::tuple<T...>&& args) {
 }
 
 template <typename Func, typename... T>
+[[deprecated("use std::apply() instead")]]
 inline
 auto apply(Func&& func, std::tuple<T...>& args) {
     using helper = apply_helper<Func, std::tuple<T...>&, std::index_sequence_for<T...>>;
@@ -51,6 +54,7 @@ auto apply(Func&& func, std::tuple<T...>& args) {
 }
 
 template <typename Func, typename... T>
+[[deprecated("use std::apply() instead")]]
 inline
 auto apply(Func&& func, const std::tuple<T...>& args) {
     using helper = apply_helper<Func, const std::tuple<T...>&, std::index_sequence_for<T...>>;

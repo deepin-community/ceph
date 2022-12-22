@@ -2,6 +2,7 @@
  * Copyright(c) 2017 Intel Corporation
  */
 
+#include <rte_string_fns.h>
 #include <rte_compat.h>
 #include <rte_flow_classify.h>
 #include "rte_flow_classify_parse.h"
@@ -88,7 +89,7 @@ struct rte_flow_classify_rule {
 	void *entry_ptr; /* handle to the table entry for rule meta data */
 };
 
-int __rte_experimental
+int
 rte_flow_classify_validate(
 		   struct rte_flow_classifier *cls,
 		   const struct rte_flow_attr *attr,
@@ -247,8 +248,7 @@ rte_flow_classifier_check_params(struct rte_flow_classifier_params *params)
 	}
 
 	/* socket */
-	if ((params->socket_id < 0) ||
-	    (params->socket_id >= RTE_MAX_NUMA_NODES)) {
+	if (params->socket_id < 0) {
 		RTE_FLOW_CLASSIFY_LOG(ERR,
 			"%s: Incorrect value for parameter socket_id\n",
 			__func__);
@@ -258,7 +258,7 @@ rte_flow_classifier_check_params(struct rte_flow_classifier_params *params)
 	return 0;
 }
 
-struct rte_flow_classifier * __rte_experimental
+struct rte_flow_classifier *
 rte_flow_classifier_create(struct rte_flow_classifier_params *params)
 {
 	struct rte_flow_classifier *cls;
@@ -286,8 +286,7 @@ rte_flow_classifier_create(struct rte_flow_classifier_params *params)
 	}
 
 	/* Save input parameters */
-	snprintf(cls->name, RTE_FLOW_CLASSIFIER_MAX_NAME_SZ, "%s",
-			params->name);
+	strlcpy(cls->name, params->name, RTE_FLOW_CLASSIFIER_MAX_NAME_SZ);
 
 	cls->socket_id = params->socket_id;
 
@@ -301,7 +300,7 @@ rte_flow_classify_table_free(struct rte_cls_table *table)
 		table->ops.f_free(table->h_table);
 }
 
-int __rte_experimental
+int
 rte_flow_classifier_free(struct rte_flow_classifier *cls)
 {
 	uint32_t i;
@@ -373,7 +372,7 @@ rte_table_check_params(struct rte_flow_classifier *cls,
 	return 0;
 }
 
-int __rte_experimental
+int
 rte_flow_classify_table_create(struct rte_flow_classifier *cls,
 	struct rte_flow_classify_table_params *params)
 {
@@ -418,7 +417,6 @@ static struct rte_flow_classify_rule *
 allocate_acl_ipv4_5tuple_rule(struct rte_flow_classifier *cls)
 {
 	struct rte_flow_classify_rule *rule;
-	int log_level;
 
 	rule = malloc(sizeof(struct rte_flow_classify_rule));
 	if (!rule)
@@ -467,9 +465,7 @@ allocate_acl_ipv4_5tuple_rule(struct rte_flow_classifier *cls)
 			cls->ntuple_filter.dst_port_mask;
 	rule->rules.u.ipv4_5tuple.dst_port = cls->ntuple_filter.dst_port;
 
-	log_level = rte_log_get_level(librte_flow_classify_logtype);
-
-	if (log_level == RTE_LOG_DEBUG)
+	if (rte_log_can_log(librte_flow_classify_logtype, RTE_LOG_DEBUG))
 		print_acl_ipv4_key_add(&rule->u.key.key_add);
 
 	/* key delete values */
@@ -477,13 +473,13 @@ allocate_acl_ipv4_5tuple_rule(struct rte_flow_classifier *cls)
 	       &rule->u.key.key_add.field_value[PROTO_FIELD_IPV4],
 	       NUM_FIELDS_IPV4 * sizeof(struct rte_acl_field));
 
-	if (log_level == RTE_LOG_DEBUG)
+	if (rte_log_can_log(librte_flow_classify_logtype, RTE_LOG_DEBUG))
 		print_acl_ipv4_key_delete(&rule->u.key.key_del);
 
 	return rule;
 }
 
-struct rte_flow_classify_rule * __rte_experimental
+struct rte_flow_classify_rule *
 rte_flow_classify_table_entry_add(struct rte_flow_classifier *cls,
 		const struct rte_flow_attr *attr,
 		const struct rte_flow_item pattern[],
@@ -565,7 +561,7 @@ rte_flow_classify_table_entry_add(struct rte_flow_classifier *cls,
 	return NULL;
 }
 
-int __rte_experimental
+int
 rte_flow_classify_table_entry_delete(struct rte_flow_classifier *cls,
 		struct rte_flow_classify_rule *rule)
 {
@@ -643,7 +639,7 @@ action_apply(struct rte_flow_classifier *cls,
 	return ret;
 }
 
-int __rte_experimental
+int
 rte_flow_classifier_query(struct rte_flow_classifier *cls,
 		struct rte_mbuf **pkts,
 		const uint16_t nb_pkts,

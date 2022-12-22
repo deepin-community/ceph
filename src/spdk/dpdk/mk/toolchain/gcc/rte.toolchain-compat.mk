@@ -20,6 +20,25 @@ HOST_GCC_MINOR = $(shell echo __GNUC_MINOR__ | $(HOSTCC) -E -x c - | tail -n 1)
 HOST_GCC_PATCHLEVEL = $(shell echo __GNUC_PATCHLEVEL__ | $(HOSTCC) -E -x c - | tail -n 1)
 HOST_GCC_VERSION = $(HOST_GCC_MAJOR)$(HOST_GCC_MINOR)
 
+LD_VERSION = $(shell $(LD) -v)
+# disable AVX512F support for GCC & binutils 2.30 as a workaround for Bug 97
+ifeq ($(CONFIG_RTE_ARCH_X86), y)
+ifneq ($(filter 2.30%,$(LD_VERSION)),)
+FORCE_DISABLE_AVX512 := y
+# print warning only once for librte_eal
+ifneq ($(filter %librte_eal,$(CURDIR)),)
+$(warning AVX512 support disabled because of binutils 2.30. See Bug 97)
+endif
+endif
+ifneq ($(filter 2.31%,$(LD_VERSION)),)
+FORCE_DISABLE_AVX512 := y
+# print warning only once for librte_eal
+ifneq ($(filter %librte_eal,$(CURDIR)),)
+$(warning AVX512 support disabled because of binutils 2.31. See Bug 249)
+endif
+endif
+endif
+
 # if GCC is older than 4.x
 ifeq ($(shell test $(GCC_VERSION) -lt 40 && echo 1), 1)
 	MACHINE_CFLAGS =
@@ -69,6 +88,10 @@ else
 		MACHINE_CFLAGS := $(filter-out -march% -mtune% -msse%,$(MACHINE_CFLAGS))
 	endif
 
+	ifeq ($(shell test $(GCC_VERSION) -lt 74 && echo 1), 1)
+		CONFIG_RTE_ENABLE_LTO=n
+	endif
+
 	# Disable thunderx PMD for gcc < 4.7
 	ifeq ($(shell test $(GCC_VERSION) -lt 47 && echo 1), 1)
 		CONFIG_RTE_LIBRTE_THUNDERX_NICVF_PMD=d
@@ -79,11 +102,19 @@ else
 		CONFIG_RTE_LIBRTE_PMD_OPDL_EVENTDEV=d
 	endif
 
-	# Disable octeontx event PMD for gcc < 4.8.6
+	# Disable OCTEON drivers and libs for arm64 gcc < 4.8.6
+	ifeq ($(RTE_ARCH), arm64)
 	ifeq ($(shell test $(GCC_VERSION)$(GCC_PATCHLEVEL) -lt 486 && echo 1), 1)
 		CONFIG_RTE_LIBRTE_PMD_OCTEONTX_SSOVF=d
 		CONFIG_RTE_LIBRTE_OCTEONTX_MEMPOOL=d
 		CONFIG_RTE_LIBRTE_OCTEONTX_PMD=d
+		CONFIG_RTE_LIBRTE_PMD_OCTEONTX2_DMA_RAWDEV=d
+		CONFIG_RTE_LIBRTE_PMD_OCTEONTX2_EP_RAWDEV=d
+		CONFIG_RTE_LIBRTE_PMD_OCTEONTX2_EVENTDEV=d
+		CONFIG_RTE_LIBRTE_PMD_OCTEONTX2_CRYPTO=d
+		CONFIG_RTE_LIBRTE_OCTEONTX2_MEMPOOL=d
+		CONFIG_RTE_LIBRTE_OCTEONTX2_PMD=d
+	endif
 	endif
 
 endif

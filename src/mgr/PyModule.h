@@ -18,7 +18,7 @@
 #include <string>
 #include <vector>
 #include <boost/optional.hpp>
-#include "common/Mutex.h"
+#include "common/ceph_mutex.h"
 #include "Python.h"
 #include "Gil.h"
 #include "mon/MgrMap.h"
@@ -46,7 +46,7 @@ public:
 
 class PyModule
 {
-  mutable Mutex lock{"PyModule::lock"};
+  mutable ceph::mutex lock = ceph::make_mutex("PyModule::lock");
 private:
   const std::string module_name;
   std::string get_site_packages();
@@ -81,11 +81,15 @@ private:
   int load_commands();
   std::vector<ModuleCommand> commands;
 
+  int register_options(PyObject *cls);
   int load_options();
   std::map<std::string, MgrMap::ModuleOption> options;
 
+  int load_notify_types();
+  std::set<std::string> notify_types;
+
 public:
-  static std::string config_prefix;
+  static std::string mgr_store_prefix;
 
   SafeThreadState pMyThreadState;
   PyObject *pClass = nullptr;
@@ -108,13 +112,8 @@ public:
     const std::string& value);
 
   int load(PyThreadState *pMainThreadState);
-#if PY_MAJOR_VERSION >= 3
   static PyObject* init_ceph_logger();
   static PyObject* init_ceph_module();
-#else
-  static void init_ceph_logger();
-  static void init_ceph_module();
-#endif
 
   void set_enabled(const bool enabled_)
   {
@@ -156,6 +155,10 @@ public:
   bool is_loaded() const { std::lock_guard l(lock) ; return loaded; }
   bool is_always_on() const { std::lock_guard l(lock) ; return always_on; }
 
+  bool should_notify(const std::string& notify_type) const {
+    return notify_types.count(notify_type);
+  }
+
   const std::string &get_name() const {
     std::lock_guard l(lock) ; return module_name;
   }
@@ -171,7 +174,7 @@ typedef std::shared_ptr<PyModule> PyModuleRef;
 
 class PyModuleConfig {
 public:
-  mutable Mutex lock{"PyModuleConfig::lock"};
+  mutable ceph::mutex lock = ceph::make_mutex("PyModuleConfig::lock");
   std::map<std::string, std::string> config;
 
   PyModuleConfig();

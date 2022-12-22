@@ -33,26 +33,8 @@
 
 #include "spdk/stdinc.h"
 
-#include <linux/virtio_scsi.h>
-#include <linux/virtio_pci.h>
-#include <linux/virtio_config.h>
-
-#include <rte_config.h>
-#include <rte_memcpy.h>
-#include <rte_string_fns.h>
-#include <rte_memzone.h>
-#include <rte_malloc.h>
-#include <rte_atomic.h>
-#include <rte_branch_prediction.h>
-#include <rte_pci.h>
-#include <rte_common.h>
-#include <rte_errno.h>
-
-#include <rte_eal.h>
-#include <rte_dev.h>
-#include <rte_prefetch.h>
-
 #include "spdk/env.h"
+#include "spdk/util.h"
 #include "spdk/barrier.h"
 
 #include "spdk_internal/virtio.h"
@@ -133,21 +115,19 @@ virtio_init_queue(struct virtio_dev *dev, uint16_t vtpci_queue_idx)
 		return -EINVAL;
 	}
 
-	if (!rte_is_power_of_2(vq_size)) {
+	if (!spdk_u32_is_pow2(vq_size)) {
 		SPDK_ERRLOG("virtqueue %"PRIu16" size (%u) is not powerof 2\n",
 			    vtpci_queue_idx, vq_size);
 		return -EINVAL;
 	}
 
-	size = RTE_ALIGN_CEIL(sizeof(*vq) +
-			      vq_size * sizeof(struct vq_desc_extra),
-			      RTE_CACHE_LINE_SIZE);
+	size = sizeof(*vq) + vq_size * sizeof(struct vq_desc_extra);
 
-	vq = spdk_dma_zmalloc(size, RTE_CACHE_LINE_SIZE, NULL);
-	if (vq == NULL) {
+	if (posix_memalign((void **)&vq, SPDK_CACHE_LINE_SIZE, size)) {
 		SPDK_ERRLOG("can not allocate vq\n");
 		return -ENOMEM;
 	}
+	memset(vq, 0, size);
 	dev->vqs[vtpci_queue_idx] = vq;
 
 	vq->vdev = dev;
@@ -158,7 +138,7 @@ virtio_init_queue(struct virtio_dev *dev, uint16_t vtpci_queue_idx)
 	 * Reserve a memzone for vring elements
 	 */
 	size = vring_size(vq_size, VIRTIO_PCI_VRING_ALIGN);
-	vq->vq_ring_size = RTE_ALIGN_CEIL(size, VIRTIO_PCI_VRING_ALIGN);
+	vq->vq_ring_size = SPDK_ALIGN_CEIL(size, VIRTIO_PCI_VRING_ALIGN);
 	SPDK_DEBUGLOG(SPDK_LOG_VIRTIO_DEV, "vring_size: %u, rounded_vring_size: %u\n",
 		      size, vq->vq_ring_size);
 
@@ -167,7 +147,7 @@ virtio_init_queue(struct virtio_dev *dev, uint16_t vtpci_queue_idx)
 	rc = virtio_dev_backend_ops(dev)->setup_queue(dev, vq);
 	if (rc < 0) {
 		SPDK_ERRLOG("setup_queue failed\n");
-		spdk_dma_free(vq);
+		free(vq);
 		dev->vqs[vtpci_queue_idx] = NULL;
 		return rc;
 	}
@@ -200,11 +180,11 @@ virtio_free_queues(struct virtio_dev *dev)
 
 		virtio_dev_backend_ops(dev)->del_queue(dev, vq);
 
-		rte_free(vq);
+		free(vq);
 		dev->vqs[i] = NULL;
 	}
 
-	rte_free(dev->vqs);
+	free(dev->vqs);
 	dev->vqs = NULL;
 }
 
@@ -222,7 +202,7 @@ virtio_alloc_queues(struct virtio_dev *dev, uint16_t request_vq_num, uint16_t fi
 	}
 
 	assert(dev->vqs == NULL);
-	dev->vqs = rte_zmalloc(NULL, sizeof(struct virtqueue *) * nr_vq, 0);
+	dev->vqs = calloc(1, sizeof(struct virtqueue *) * nr_vq);
 	if (!dev->vqs) {
 		SPDK_ERRLOG("failed to allocate %"PRIu16" vqs\n", nr_vq);
 		return -ENOMEM;
@@ -386,7 +366,7 @@ virtqueue_dequeue_burst_rx(struct virtqueue *vq, void **rx_pkts,
 			   uint32_t *len, uint16_t num)
 {
 	struct vring_used_elem *uep;
-	struct virtio_req *cookie;
+	void *cookie;
 	uint16_t used_idx, desc_idx;
 	uint16_t i;
 
@@ -396,7 +376,7 @@ virtqueue_dequeue_burst_rx(struct virtqueue *vq, void **rx_pkts,
 		uep = &vq->vq_ring.used->ring[used_idx];
 		desc_idx = (uint16_t) uep->id;
 		len[i] = uep->len;
-		cookie = (struct virtio_req *)vq->vq_descx[desc_idx].cookie;
+		cookie = vq->vq_descx[desc_idx].cookie;
 
 		if (spdk_unlikely(cookie == NULL)) {
 			SPDK_WARNLOG("vring descriptor with no mbuf cookie at %"PRIu16"\n",
@@ -404,7 +384,8 @@ virtqueue_dequeue_burst_rx(struct virtqueue *vq, void **rx_pkts,
 			break;
 		}
 
-		rte_prefetch0(cookie);
+		__builtin_prefetch(cookie);
+
 		rx_pkts[i]  = cookie;
 		vq->vq_used_cons_idx++;
 		vq_ring_free_chain(vq, desc_idx);
@@ -535,7 +516,7 @@ virtqueue_req_add_iovs(struct virtqueue *vq, struct iovec *iovs, uint16_t iovcnt
 		if (!vq->vdev->is_hw) {
 			desc->addr  = (uintptr_t)iovs[i].iov_base;
 		} else {
-			desc->addr = spdk_vtophys(iovs[i].iov_base);
+			desc->addr = spdk_vtophys(iovs[i].iov_base, NULL);
 		}
 
 		desc->len = iovs[i].iov_len;
@@ -560,7 +541,7 @@ virtqueue_req_add_iovs(struct virtqueue *vq, struct iovec *iovs, uint16_t iovcnt
 	}
 }
 
-#define DESC_PER_CACHELINE (RTE_CACHE_LINE_SIZE / sizeof(struct vring_desc))
+#define DESC_PER_CACHELINE (SPDK_CACHE_LINE_SIZE / sizeof(struct vring_desc))
 uint16_t
 virtio_recv_pkts(struct virtqueue *vq, void **io, uint32_t *len, uint16_t nb_pkts)
 {
@@ -721,14 +702,12 @@ virtio_dev_backend_ops(struct virtio_dev *dev)
 void
 virtio_dev_dump_json_info(struct virtio_dev *hw, struct spdk_json_write_ctx *w)
 {
-	spdk_json_write_name(w, "virtio");
-	spdk_json_write_object_begin(w);
+	spdk_json_write_named_object_begin(w, "virtio");
 
-	spdk_json_write_name(w, "vq_count");
-	spdk_json_write_uint32(w, hw->max_queues);
+	spdk_json_write_named_uint32(w, "vq_count", hw->max_queues);
 
-	spdk_json_write_name(w, "vq_size");
-	spdk_json_write_uint32(w, virtio_dev_backend_ops(hw)->get_queue_size(hw, 0));
+	spdk_json_write_named_uint32(w, "vq_size",
+				     virtio_dev_backend_ops(hw)->get_queue_size(hw, 0));
 
 	virtio_dev_backend_ops(hw)->dump_json_info(hw, w);
 

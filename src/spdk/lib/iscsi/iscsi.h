@@ -39,27 +39,29 @@
 
 #include "spdk/bdev.h"
 #include "spdk/iscsi_spec.h"
-#include "spdk/event.h"
 #include "spdk/thread.h"
+#include "spdk/sock.h"
 
+#include "spdk/scsi.h"
 #include "iscsi/param.h"
-#include "iscsi/tgt_node.h"
 
 #include "spdk/assert.h"
+#include "spdk/dif.h"
 #include "spdk/util.h"
 
 #define SPDK_ISCSI_DEFAULT_NODEBASE "iqn.2016-06.io.spdk"
 
 #define DEFAULT_MAXR2T 4
-#define MAX_INITIATOR_NAME 256
-#define MAX_TARGET_NAME 256
+#define MAX_INITIATOR_PORT_NAME 256
+#define MAX_INITIATOR_NAME 223
+#define MAX_TARGET_NAME 223
 
 #define MAX_PORTAL 1024
 #define MAX_INITIATOR 256
 #define MAX_NETMASK 256
-#define MAX_SESSIONS 1024
-#define MAX_ISCSI_CONNECTIONS MAX_SESSIONS
-#define MAX_FIRSTBURSTLENGTH	16777215
+#define MAX_ISCSI_CONNECTIONS 1024
+#define MAX_PORTAL_ADDR 256
+#define MAX_PORTAL_PORT 32
 
 #define DEFAULT_PORT 3260
 #define DEFAULT_MAX_SESSIONS 128
@@ -67,7 +69,6 @@
 #define DEFAULT_MAXOUTSTANDINGR2T 1
 #define DEFAULT_DEFAULTTIME2WAIT 2
 #define DEFAULT_DEFAULTTIME2RETAIN 20
-#define DEFAULT_FIRSTBURSTLENGTH 8192
 #define DEFAULT_INITIALR2T true
 #define DEFAULT_IMMEDIATEDATA true
 #define DEFAULT_DATAPDUINORDER true
@@ -76,19 +77,12 @@
 #define DEFAULT_TIMEOUT 60
 #define MAX_NOPININTERVAL 60
 #define DEFAULT_NOPININTERVAL 30
-#define DEFAULT_CONNECTIONS_PER_LCORE 4
 
 /*
  * SPDK iSCSI target currently only supports 64KB as the maximum data segment length
  *  it can receive from initiators.  Other values may work, but no guarantees.
  */
 #define SPDK_ISCSI_MAX_RECV_DATA_SEGMENT_LENGTH  65536
-
-/*
- * SPDK iSCSI target will only send a maximum of SPDK_BDEV_LARGE_BUF_MAX_SIZE data segments, even if the
- * connection can support more.
- */
-#define SPDK_ISCSI_MAX_SEND_DATA_SEGMENT_LENGTH SPDK_BDEV_LARGE_BUF_MAX_SIZE
 
 /*
  * Defines maximum number of data out buffers each connection can have in
@@ -102,12 +96,6 @@
  *  SPDK_BDEV_SMALL_BUF_MAX_SIZE.
  */
 #define MAX_LARGE_DATAIN_PER_CONNECTION 64
-
-/*
- * Defines default maximum queue depth per connection and this can be
- * changed by configuration file.
- */
-#define DEFAULT_MAX_QUEUE_DEPTH	64
 
 #define SPDK_ISCSI_MAX_BURST_LENGTH	\
 		(SPDK_ISCSI_MAX_RECV_DATA_SEGMENT_LENGTH * MAX_DATA_OUT_PER_CONNECTION)
@@ -126,25 +114,23 @@
  */
 #define SPDK_ISCSI_MIN_FIRST_BURST_LENGTH	512
 
+#define SPDK_ISCSI_MAX_FIRST_BURST_LENGTH	16777215
+
+/*
+ * Defines default maximum queue depth per connection and this can be
+ * changed by configuration file.
+ */
+#define DEFAULT_MAX_QUEUE_DEPTH	64
+
+/** Defines how long we should wait for a logout request when the target
+ *   requests logout to the initiator asynchronously.
+ */
+#define ISCSI_LOGOUT_REQUEST_TIMEOUT 30 /* in seconds */
+
 /** Defines how long we should wait for a TCP close after responding to a
  *   logout request, before terminating the connection ourselves.
  */
 #define ISCSI_LOGOUT_TIMEOUT 5 /* in seconds */
-
-/* according to RFC1982 */
-#define SN32_CMPMAX (((uint32_t)1U) << (32 - 1))
-#define SN32_LT(S1,S2) \
-	(((uint32_t)(S1) != (uint32_t)(S2))				\
-	    && (((uint32_t)(S1) < (uint32_t)(S2)			\
-		    && ((uint32_t)(S2) - (uint32_t)(S1) < SN32_CMPMAX))	\
-		|| ((uint32_t)(S1) > (uint32_t)(S2)			\
-		    && ((uint32_t)(S1) - (uint32_t)(S2) > SN32_CMPMAX))))
-#define SN32_GT(S1,S2) \
-	(((uint32_t)(S1) != (uint32_t)(S2))				\
-	    && (((uint32_t)(S1) < (uint32_t)(S2)			\
-		    && ((uint32_t)(S2) - (uint32_t)(S1) > SN32_CMPMAX))	\
-		|| ((uint32_t)(S1) > (uint32_t)(S2)			\
-		    && ((uint32_t)(S1) - (uint32_t)(S2) < SN32_CMPMAX))))
 
 /* For spdk_iscsi_login_in related function use, we need to avoid the conflict
  * with other errors
@@ -158,13 +144,20 @@
 struct spdk_mobj {
 	struct spdk_mempool *mp;
 	void *buf;
-	size_t len;
-	uint64_t reserved; /* do not use */
 };
+
+/*
+ * Maximum number of SGL elements, i.e.,
+ * BHS, AHS, Header Digest, Data Segment and Data Digest.
+ */
+#define SPDK_ISCSI_MAX_SGL_DESCRIPTORS	(5)
+
+typedef void (*iscsi_conn_xfer_complete_cb)(void *cb_arg);
 
 struct spdk_iscsi_pdu {
 	struct iscsi_bhs bhs;
 	struct spdk_mobj *mobj;
+	bool is_rejected;
 	uint8_t *data_buf;
 	uint8_t *data;
 	uint8_t header_digest[ISCSI_DIGEST_LEN];
@@ -172,7 +165,7 @@ struct spdk_iscsi_pdu {
 	size_t data_segment_len;
 	int bhs_valid_bytes;
 	int ahs_valid_bytes;
-	int data_valid_bytes;
+	uint32_t data_valid_bytes;
 	int hdigest_valid_bytes;
 	int ddigest_valid_bytes;
 	int ref;
@@ -180,6 +173,20 @@ struct spdk_iscsi_pdu {
 	struct spdk_iscsi_task *task; /* data tied to a task buffer */
 	uint32_t cmd_sn;
 	uint32_t writev_offset;
+	uint32_t data_buf_len;
+	bool dif_insert_or_strip;
+	struct spdk_dif_ctx dif_ctx;
+	struct spdk_iscsi_conn *conn;
+
+	iscsi_conn_xfer_complete_cb		cb_fn;
+	void					*cb_arg;
+
+	/* The sock request ends with a 0 length iovec. Place the actual iovec immediately
+	 * after it. There is a static assert below to check if the compiler inserted
+	 * any unwanted padding */
+	int32_t						mapped_length;
+	struct spdk_sock_request			sock_req;
+	struct iovec					iov[SPDK_ISCSI_MAX_SGL_DESCRIPTORS];
 	TAILQ_ENTRY(spdk_iscsi_pdu)	tailq;
 
 
@@ -195,13 +202,15 @@ struct spdk_iscsi_pdu {
 		uint8_t data[32];
 	} sense;
 };
+SPDK_STATIC_ASSERT(offsetof(struct spdk_iscsi_pdu,
+			    sock_req) + sizeof(struct spdk_sock_request) == offsetof(struct spdk_iscsi_pdu, iov),
+		   "Compiler inserted padding between iov and sock_req");
 
 enum iscsi_connection_state {
 	ISCSI_CONN_STATE_INVALID = 0,
 	ISCSI_CONN_STATE_RUNNING = 1,
-	ISCSI_CONN_STATE_LOGGED_OUT = 2,
-	ISCSI_CONN_STATE_EXITING = 3,
-	ISCSI_CONN_STATE_EXITED = 4,
+	ISCSI_CONN_STATE_EXITING = 2,
+	ISCSI_CONN_STATE_EXITED = 3,
 };
 
 enum iscsi_chap_phase {
@@ -285,11 +294,11 @@ struct spdk_iscsi_sess {
 };
 
 struct spdk_iscsi_poll_group {
-	uint32_t					core;
 	struct spdk_poller				*poller;
 	struct spdk_poller				*nop_poller;
 	STAILQ_HEAD(connections, spdk_iscsi_conn)	connections;
 	struct spdk_sock_group				*sock_group;
+	TAILQ_ENTRY(spdk_iscsi_poll_group)		link;
 };
 
 struct spdk_iscsi_opts {
@@ -311,18 +320,19 @@ struct spdk_iscsi_opts {
 	bool ImmediateData;
 	uint32_t ErrorRecoveryLevel;
 	bool AllowDuplicateIsid;
-	uint32_t min_connections_per_core;
 };
 
 struct spdk_iscsi_globals {
 	char *authfile;
 	char *nodebase;
 	pthread_mutex_t mutex;
+	uint32_t refcnt;
 	TAILQ_HEAD(, spdk_iscsi_portal)		portal_head;
 	TAILQ_HEAD(, spdk_iscsi_portal_grp)	pg_head;
 	TAILQ_HEAD(, spdk_iscsi_init_grp)	ig_head;
 	TAILQ_HEAD(, spdk_iscsi_tgt_node)	target_head;
 	TAILQ_HEAD(, spdk_iscsi_auth_group)	auth_group_head;
+	TAILQ_HEAD(, spdk_iscsi_poll_group)	poll_group_head;
 
 	int32_t timeout;
 	int32_t nopininterval;
@@ -349,7 +359,6 @@ struct spdk_iscsi_globals {
 	struct spdk_mempool *task_pool;
 
 	struct spdk_iscsi_sess	**session;
-	struct spdk_iscsi_poll_group *poll_group;
 };
 
 #define ISCSI_SECURITY_NEGOTIATION_PHASE	0
@@ -357,8 +366,12 @@ struct spdk_iscsi_globals {
 #define ISCSI_NSG_RESERVED_CODE			2
 #define ISCSI_FULL_FEATURE_PHASE		3
 
+/* logout reason */
+#define ISCSI_LOGOUT_REASON_CLOSE_SESSION		0
+#define ISCSI_LOGOUT_REASON_CLOSE_CONNECTION		1
+#define ISCSI_LOGOUT_REASON_REMOVE_CONN_FOR_RECOVERY	2
+
 enum spdk_error_codes {
-	SPDK_SUCCESS		= 0,
 	SPDK_ISCSI_CONNECTION_FATAL	= -1,
 	SPDK_PDU_FATAL		= -2,
 };
@@ -375,7 +388,7 @@ enum spdk_error_codes {
 
 #define xstrdup(s) (s ? strdup(s) : (char *)NULL)
 
-extern struct spdk_iscsi_globals g_spdk_iscsi;
+extern struct spdk_iscsi_globals g_iscsi;
 extern struct spdk_iscsi_opts *g_spdk_iscsi_opts;
 
 struct spdk_iscsi_task;
@@ -386,63 +399,54 @@ typedef void (*spdk_iscsi_init_cb)(void *cb_arg, int rc);
 void spdk_iscsi_init(spdk_iscsi_init_cb cb_fn, void *cb_arg);
 typedef void (*spdk_iscsi_fini_cb)(void *arg);
 void spdk_iscsi_fini(spdk_iscsi_fini_cb cb_fn, void *cb_arg);
-void spdk_shutdown_iscsi_conns_done(void);
+void shutdown_iscsi_conns_done(void);
 void spdk_iscsi_config_text(FILE *fp);
 void spdk_iscsi_config_json(struct spdk_json_write_ctx *w);
 
-struct spdk_iscsi_opts *spdk_iscsi_opts_alloc(void);
-void spdk_iscsi_opts_free(struct spdk_iscsi_opts *opts);
-struct spdk_iscsi_opts *spdk_iscsi_opts_copy(struct spdk_iscsi_opts *src);
-void spdk_iscsi_opts_info_json(struct spdk_json_write_ctx *w);
-int spdk_iscsi_set_discovery_auth(bool disable_chap, bool require_chap,
-				  bool mutual_chap, int32_t chap_group);
-int spdk_iscsi_chap_get_authinfo(struct iscsi_chap_auth *auth, const char *authuser,
-				 int ag_tag);
-int spdk_iscsi_add_auth_group(int32_t tag, struct spdk_iscsi_auth_group **_group);
-struct spdk_iscsi_auth_group *spdk_iscsi_find_auth_group_by_tag(int32_t tag);
-void spdk_iscsi_delete_auth_group(struct spdk_iscsi_auth_group *group);
-int spdk_iscsi_auth_group_add_secret(struct spdk_iscsi_auth_group *group,
-				     const char *user, const char *secret,
-				     const char *muser, const char *msecret);
-int spdk_iscsi_auth_group_delete_secret(struct spdk_iscsi_auth_group *group,
-					const char *user);
-void spdk_iscsi_auth_groups_info_json(struct spdk_json_write_ctx *w);
+struct spdk_iscsi_opts *iscsi_opts_alloc(void);
+void iscsi_opts_free(struct spdk_iscsi_opts *opts);
+struct spdk_iscsi_opts *iscsi_opts_copy(struct spdk_iscsi_opts *src);
+void iscsi_opts_info_json(struct spdk_json_write_ctx *w);
+int iscsi_set_discovery_auth(bool disable_chap, bool require_chap,
+			     bool mutual_chap, int32_t chap_group);
+int iscsi_chap_get_authinfo(struct iscsi_chap_auth *auth, const char *authuser,
+			    int ag_tag);
+int iscsi_add_auth_group(int32_t tag, struct spdk_iscsi_auth_group **_group);
+struct spdk_iscsi_auth_group *iscsi_find_auth_group_by_tag(int32_t tag);
+void iscsi_delete_auth_group(struct spdk_iscsi_auth_group *group);
+int iscsi_auth_group_add_secret(struct spdk_iscsi_auth_group *group,
+				const char *user, const char *secret,
+				const char *muser, const char *msecret);
+int iscsi_auth_group_delete_secret(struct spdk_iscsi_auth_group *group,
+				   const char *user);
+void iscsi_auth_groups_info_json(struct spdk_json_write_ctx *w);
 
-void spdk_iscsi_send_nopin(struct spdk_iscsi_conn *conn);
-void spdk_iscsi_task_response(struct spdk_iscsi_conn *conn,
+void iscsi_task_response(struct spdk_iscsi_conn *conn,
+			 struct spdk_iscsi_task *task);
+int iscsi_build_iovs(struct spdk_iscsi_conn *conn, struct iovec *iovs, int iovcnt,
+		     struct spdk_iscsi_pdu *pdu, uint32_t *mapped_length);
+int iscsi_handle_incoming_pdus(struct spdk_iscsi_conn *conn);
+void iscsi_task_mgmt_response(struct spdk_iscsi_conn *conn,
 			      struct spdk_iscsi_task *task);
-int spdk_iscsi_execute(struct spdk_iscsi_conn *conn, struct spdk_iscsi_pdu *pdu);
-int spdk_iscsi_build_iovecs(struct spdk_iscsi_conn *conn,
-			    struct iovec *iovec, struct spdk_iscsi_pdu *pdu);
-int
-spdk_iscsi_read_pdu(struct spdk_iscsi_conn *conn, struct spdk_iscsi_pdu **_pdu);
-void spdk_iscsi_task_mgmt_response(struct spdk_iscsi_conn *conn,
-				   struct spdk_iscsi_task *task);
 
-int spdk_iscsi_conn_params_init(struct iscsi_param **params);
-int spdk_iscsi_sess_params_init(struct iscsi_param **params);
+void iscsi_free_sess(struct spdk_iscsi_sess *sess);
+void iscsi_clear_all_transfer_task(struct spdk_iscsi_conn *conn,
+				   struct spdk_scsi_lun *lun,
+				   struct spdk_iscsi_pdu *pdu);
+bool iscsi_del_transfer_task(struct spdk_iscsi_conn *conn, uint32_t CmdSN);
 
-void spdk_free_sess(struct spdk_iscsi_sess *sess);
-void spdk_clear_all_transfer_task(struct spdk_iscsi_conn *conn,
-				  struct spdk_scsi_lun *lun);
-void spdk_del_transfer_task(struct spdk_iscsi_conn *conn, uint32_t CmdSN);
-bool spdk_iscsi_is_deferred_free_pdu(struct spdk_iscsi_pdu *pdu);
-
-int spdk_iscsi_negotiate_params(struct spdk_iscsi_conn *conn,
-				struct iscsi_param **params_p, uint8_t *data,
-				int alloc_len, int data_len);
-int spdk_iscsi_copy_param2var(struct spdk_iscsi_conn *conn);
-
-void spdk_iscsi_task_cpl(struct spdk_scsi_task *scsi_task);
-void spdk_iscsi_task_mgmt_cpl(struct spdk_scsi_task *scsi_task);
+uint32_t iscsi_pdu_calc_header_digest(struct spdk_iscsi_pdu *pdu);
+uint32_t iscsi_pdu_calc_data_digest(struct spdk_iscsi_pdu *pdu);
 
 /* Memory management */
-void spdk_put_pdu(struct spdk_iscsi_pdu *pdu);
-struct spdk_iscsi_pdu *spdk_get_pdu(void);
-int spdk_iscsi_conn_handle_queued_datain_tasks(struct spdk_iscsi_conn *conn);
+void iscsi_put_pdu(struct spdk_iscsi_pdu *pdu);
+struct spdk_iscsi_pdu *iscsi_get_pdu(struct spdk_iscsi_conn *conn);
+void iscsi_op_abort_task_set(struct spdk_iscsi_task *task,
+			     uint8_t function);
+void iscsi_queue_task(struct spdk_iscsi_conn *conn, struct spdk_iscsi_task *task);
 
-static inline int
-spdk_get_immediate_data_buffer_size(void)
+static inline uint32_t
+iscsi_get_max_immediate_data_size(void)
 {
 	/*
 	 * Specify enough extra space in addition to FirstBurstLength to
@@ -451,17 +455,11 @@ spdk_get_immediate_data_buffer_size(void)
 	 *  take up much space and we need to make sure the worst-case scenario
 	 *  can be satisified by the size returned here.
 	 */
-	return g_spdk_iscsi.FirstBurstLength +
+	return g_iscsi.FirstBurstLength +
 	       ISCSI_DIGEST_LEN + /* data digest */
 	       ISCSI_DIGEST_LEN + /* header digest */
 	       8 +		   /* bidirectional AHS */
 	       52;		   /* extended CDB AHS (for a 64-byte CDB) */
-}
-
-static inline int
-spdk_get_data_out_buffer_size(void)
-{
-	return SPDK_ISCSI_MAX_RECV_DATA_SEGMENT_LENGTH;
 }
 
 #endif /* SPDK_ISCSI_H */

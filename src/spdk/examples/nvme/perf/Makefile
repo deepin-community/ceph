@@ -32,13 +32,18 @@
 #
 
 SPDK_ROOT_DIR := $(abspath $(CURDIR)/../../..)
-include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
 
 APP = perf
+
+include $(SPDK_ROOT_DIR)/mk/nvme.libtest.mk
 
 ifeq ($(OS),Linux)
 SYS_LIBS += -laio
 CFLAGS += -DHAVE_LIBAIO
 endif
 
-include $(SPDK_ROOT_DIR)/mk/nvme.libtest.mk
+install: $(APP)
+	$(INSTALL_EXAMPLE)
+
+uninstall:
+	$(UNINSTALL_EXAMPLE)

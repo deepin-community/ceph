@@ -50,7 +50,7 @@ struct offload_info {
     bool reassembled = false;
     uint16_t tso_seg_size = 0;
     // HW stripped VLAN header (CPU order)
-    compat::optional<uint16_t> vlan_tci;
+    std::optional<uint16_t> vlan_tci;
 };
 
 // Zero-copy friendly packet class
@@ -98,14 +98,14 @@ class packet final {
         uint16_t _nr_frags = 0;
         uint16_t _allocated_frags;
         offload_info _offload_info;
-        compat::optional<uint32_t> _rss_hash;
+        std::optional<uint32_t> _rss_hash;
         char _data[internal_data_size]; // only _frags[0] may use
         unsigned _headroom = internal_data_size; // in _data
         // FIXME: share _data/_frags space
 
         fragment _frags[];
 
-        impl(size_t nr_frags = default_nr_frags);
+        impl(size_t nr_frags = default_nr_frags) noexcept;
         impl(const impl&) = delete;
         impl(fragment frag, size_t nr_frags = default_nr_frags);
 
@@ -169,7 +169,8 @@ class packet final {
             deleter d = make_free_deleter(buf);
             std::copy(_frags[0].base, _frags[0].base + _frags[0].size, buf);
             _frags[0].base = buf;
-            _deleter.append(std::move(d));
+            d.append(std::move(_deleter));
+            _deleter = std::move(d);
             _headroom = internal_data_size;
         }
         void copy_internal_fragment_to(impl* to) {
@@ -181,10 +182,10 @@ class packet final {
                     to->_frags[0].base);
         }
     };
-    packet(std::unique_ptr<impl>&& impl) : _impl(std::move(impl)) {}
+    packet(std::unique_ptr<impl>&& impl) noexcept : _impl(std::move(impl)) {}
     std::unique_ptr<impl> _impl;
 public:
-    static packet from_static_data(const char* data, size_t len) {
+    static packet from_static_data(const char* data, size_t len) noexcept {
         return {fragment{const_cast<char*>(data), len}, deleter()};
     }
 
@@ -220,7 +221,7 @@ public:
     // append deleter
     packet(packet&& x, deleter d);
 
-    packet& operator=(packet&& x) {
+    packet& operator=(packet&& x) noexcept {
         if (this != &x) {
             this->~packet();
             new (this) packet(std::move(x));
@@ -273,10 +274,10 @@ public:
             _impl = impl::allocate_if_needed(std::move(_impl), extra);
         }
     }
-    compat::optional<uint32_t> rss_hash() {
+    std::optional<uint32_t> rss_hash() {
         return _impl->_rss_hash;
     }
-    compat::optional<uint32_t> set_rss_hash(uint32_t hash) {
+    std::optional<uint32_t> set_rss_hash(uint32_t hash) {
         return _impl->_rss_hash = hash;
     }
     // Call `func` for each fragment, avoiding data copies when possible
@@ -304,16 +305,16 @@ public:
     explicit operator bool() {
         return bool(_impl);
     }
-    static packet make_null_packet() {
+    static packet make_null_packet() noexcept {
         return net::packet(nullptr);
     }
 private:
     void linearize(size_t at_frag, size_t desired_size);
     bool allocate_headroom(size_t size);
 public:
-    class offload_info offload_info() const { return _impl->_offload_info; }
-    class offload_info& offload_info_ref() { return _impl->_offload_info; }
-    void set_offload_info(class offload_info oi) { _impl->_offload_info = oi; }
+    struct offload_info offload_info() const { return _impl->_offload_info; }
+    struct offload_info& offload_info_ref() { return _impl->_offload_info; }
+    void set_offload_info(struct offload_info oi) { _impl->_offload_info = oi; }
 };
 
 std::ostream& operator<<(std::ostream& os, const packet& p);
@@ -324,7 +325,7 @@ packet::packet(packet&& x) noexcept
 }
 
 inline
-packet::impl::impl(size_t nr_frags)
+packet::impl::impl(size_t nr_frags) noexcept
     : _len(0), _allocated_frags(nr_frags) {
 }
 

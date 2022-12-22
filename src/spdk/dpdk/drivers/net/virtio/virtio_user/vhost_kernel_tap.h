@@ -2,6 +2,10 @@
  * Copyright(c) 2016 Intel Corporation
  */
 
+#ifndef _VHOST_KERNEL_TAP_H
+#define _VHOST_KERNEL_TAP_H
+
+#include <stdbool.h>
 #include <sys/ioctl.h>
 
 /* TUN ioctls */
@@ -36,4 +40,8 @@
 #define PATH_NET_TUN	"/dev/net/tun"
 
 int vhost_kernel_open_tap(char **p_ifname, int hdr_size, int req_mq,
-			 const char *mac);
+			 const char *mac, uint64_t features);
+int vhost_kernel_tap_set_offload(int fd, uint64_t features);
+int vhost_kernel_tap_set_queue(int fd, bool attach);
+
+#endif

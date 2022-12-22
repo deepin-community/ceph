@@ -10,6 +10,7 @@ inc_dir = path + '/include'
 lib = cc.find_library('libmusdk', dirs : [lib_dir], required: false)
 if not lib.found()
 	build = false
+	reason = 'missing dependency, "libmusdk"'
 else
 	ext_deps += lib
 	includes += include_directories(inc_dir)
@@ -19,7 +20,9 @@ endif
 sources = files(
 	'mrvl_ethdev.c',
 	'mrvl_flow.c',
-	'mrvl_qos.c'
+	'mrvl_qos.c',
+	'mrvl_mtr.c',
+	'mrvl_tm.c'
 )
 
-deps += ['cfgfile']
+deps += ['cfgfile', 'common_mvep']

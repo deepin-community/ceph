@@ -28,14 +28,27 @@
 #include <iostream>
 #include <unordered_map>
 
-#include <seastar/core/future-util.hh>
+#include <seastar/core/seastar.hh>
 #include <seastar/core/scollectd_api.hh>
 #include <seastar/core/metrics_api.hh>
 #include <seastar/core/byteorder.hh>
+#include <seastar/core/print.hh>
 
 #include "core/scollectd-impl.hh"
 
 namespace seastar {
+
+void scollectd::type_instance_id::truncate(sstring& field, const char* field_desc) {
+    if (field.size() > max_collectd_field_text_len) {
+        auto suffix_len = std::ceil(std::log10(++_next_truncated_idx)) + 1;
+        sstring new_field(seastar::format(
+            "{}~{:d}", sstring(field.data(), max_collectd_field_text_len - suffix_len), _next_truncated_idx));
+
+        logger.warn("Truncating \"{}\" to {} chars: \"{}\" -> \"{}\"", field_desc, max_collectd_field_text_len, field,
+            new_field);
+        field = std::move(new_field);
+    }
+}
 
 bool scollectd::type_instance_id::operator<(
         const scollectd::type_instance_id& id2) const {
@@ -73,7 +86,7 @@ registration::registration(type_instance_id&& id)
 
 seastar::metrics::impl::metric_id to_metrics_id(const type_instance_id & id) {
     return seastar::metrics::impl::metric_id(id.plugin(), id.type_instance(),
-            {{seastar::metrics::shard_label.name(), seastar::metrics::impl::shard()}, {seastar::metrics::type_label.name(), id.type()}});
+            {{seastar::metrics::shard_label.name(), seastar::metrics::impl::shard()}});
 }
 
 
@@ -156,7 +169,7 @@ struct cpwriter {
         }
         sstring res = id.name();
         for (auto i : id.labels()) {
-            if (i.first != seastar::metrics::shard_label.name() && i.first != seastar::metrics::type_label.name()) {
+            if (i.first != seastar::metrics::shard_label.name()) {
                 res += "-" + i.second;
             }
         }
@@ -262,7 +275,7 @@ struct cpwriter {
         }
         return *this;
     }
-    cpwriter & put(const sstring & host, const seastar::metrics::impl::metric_id & id) {
+    cpwriter & put(const sstring & host, const seastar::metrics::impl::metric_id & id, const type_id& type) {
         const auto ts = std::chrono::system_clock::now().time_since_epoch();
         const auto lrts =
                 std::chrono::duration_cast<std::chrono::seconds>(ts).count();
@@ -276,8 +289,8 @@ struct cpwriter {
         // Optional
         put_cached(part_type::PluginInst,
                 id.instance_id() == per_cpu_plugin_instance ?
-                        to_sstring(engine().cpu_id()) : id.instance_id());
-        put_cached(part_type::Type, id.inherit_type());
+                        to_sstring(this_shard_id()) : id.instance_id());
+        put_cached(part_type::Type, type);
         // Optional
         put_cached(part_type::TypeInst, get_type_instance(id));
         return *this;
@@ -287,7 +300,7 @@ struct cpwriter {
             const type_instance_id & id, const value_list & v) {
         const auto ps = std::chrono::duration_cast<collectd_hres_duration>(
                         period).count();
-            put(host, to_metrics_id(id));
+            put(host, to_metrics_id(id), id.type());
             put(part_type::Values, v);
             if (ps != 0) {
                 put(part_type::IntervalHr, ps);
@@ -297,10 +310,11 @@ struct cpwriter {
 
     cpwriter & put(const sstring & host,
             const duration & period,
+            const type_id& type,
             const seastar::metrics::impl::metric_id & id, const seastar::metrics::impl::metric_value & v) {
         const auto ps = std::chrono::duration_cast<collectd_hres_duration>(
                 period).count();
-        put(host, id);
+        put(host, id, type);
         put(part_type::Values, v);
         if (ps != 0) {
             put(part_type::IntervalHr, ps);
@@ -334,7 +348,7 @@ future<> impl::send_metric(const type_instance_id & id,
 future<> impl::send_notification(const type_instance_id & id,
         const sstring & msg) {
     cpwriter out;
-    out.put(_host, to_metrics_id(id));
+    out.put(_host, to_metrics_id(id), id.type());
     out.put(part_type::Message, msg);
     return _chan.send(_addr, net::packet(out.data(), out.size()));
 }
@@ -344,7 +358,7 @@ void impl::start(const sstring & host, const ipv4_addr & addr, const duration pe
     _period = period;
     _addr = addr;
     _host = host;
-    _chan = engine().net().make_udp_channel();
+    _chan = make_udp_channel();
     _timer.set_callback(std::bind(&impl::run, this));
 
     // dogfood ourselves
@@ -365,7 +379,8 @@ void impl::start(const sstring & host, const ipv4_addr & addr, const duration pe
         sm::make_gauge("records", sm::description("number of records reported"), [this] {return values().size();}),
     });
 
-    send_notification(
+    // FIXME: future is discarded
+    (void)send_notification(
             type_instance_id("scollectd", per_cpu_plugin_instance,
                     "network"), "daemon started");
     arm();
@@ -387,7 +402,7 @@ void impl::run() {
     typedef size_t metric_family_id;
     typedef seastar::metrics::impl::value_vector::iterator value_iterator;
     typedef seastar::metrics::impl::metric_metadata_vector::iterator metadata_iterator;
-    typedef std::tuple<metric_family_id, metadata_iterator, value_iterator, cpwriter> context;
+    typedef std::tuple<metric_family_id, metadata_iterator, value_iterator, type_id, cpwriter> context;
 
     auto ctxt = make_lw_shared<context>();
     foreign_ptr<shared_ptr<seastar::metrics::impl::values_copy>> vals =  seastar::metrics::impl::get_values();
@@ -402,6 +417,7 @@ void impl::run() {
     if (values.size() > 0) {
         std::get<value_iterator>(*ctxt) = values[0].begin();
         std::get<metadata_iterator>(*ctxt) = metadata->at(0).metrics.begin();
+        std::get<type_id>(*ctxt) = metadata->at(0).mf.inherit_type;
     }
 
     auto stop_when = [ctxt, metadata]() {
@@ -427,7 +443,7 @@ void impl::run() {
                     continue;
                 }
                 auto m = out.mark();
-                out.put(_host, _period, md_iterator->id, *i);
+                out.put(_host, _period, std::get<type_id>(*ctxt), md_iterator->id, *i);
                 if (!out) {
                     out.reset(m);
                     out_of_space = true;
@@ -443,6 +459,7 @@ void impl::run() {
             if (mf < values.size()) {
                 i = values[mf].begin();
                 md_iterator = metadata->at(mf).metrics.begin();
+                std::get<type_id>(*ctxt) = metadata->at(mf).mf.inherit_type;
             }
         }
         if (out.empty()) {
@@ -466,7 +483,9 @@ void impl::run() {
                     }
                 });
     };
-    do_until(stop_when, send_packet).finally([this, vals = std::move(vals)]() mutable {
+    // No need to wait for future.
+    // The caller has to call impl::stop() to synchronize.
+    (void)do_until(stop_when, send_packet).finally([this, vals = std::move(vals)]() mutable {
         arm();
     });
 }
@@ -480,7 +499,7 @@ std::vector<type_instance_id> impl::get_instance_ids() const {
         // actually active ids
         for (auto i : v.second) {
             if (i.second) {
-                res.emplace_back(i.second->get_id());
+                res.emplace_back(i.second->get_id(), v.second.info().inherit_type);
             }
         }
     }
@@ -520,7 +539,8 @@ void configure(const boost::program_options::variables_map & opts) {
 
     // Now create send loops on each cpu
     for (unsigned c = 0; c < smp::count; c++) {
-        smp::submit_to(c, [=] () {
+        // FIXME: future is discarded
+        (void)smp::submit_to(c, [=] () {
             get_impl().start(host, addr, period);
         });
     }

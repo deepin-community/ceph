@@ -41,6 +41,8 @@
 #include "scsi/dev.c"
 #include "scsi/port.c"
 
+#include "spdk_internal/mock.h"
+
 /* Unit test bdev mockup */
 struct spdk_bdev {
 	char name[100];
@@ -50,6 +52,9 @@ static struct spdk_bdev g_bdevs[] = {
 	{"malloc0"},
 	{"malloc1"},
 };
+
+static struct spdk_scsi_port *g_initiator_port_with_pending_tasks = NULL;
+static struct spdk_scsi_port *g_initiator_port_with_pending_mgmt_tasks = NULL;
 
 const char *
 spdk_bdev_get_name(const struct spdk_bdev *bdev)
@@ -76,10 +81,9 @@ spdk_scsi_task_put(struct spdk_scsi_task *task)
 	free(task);
 }
 
-_spdk_scsi_lun *
-spdk_scsi_lun_construct(struct spdk_bdev *bdev,
-			void (*hotremove_cb)(const struct spdk_scsi_lun *, void *),
-			void *hotremove_ctx)
+struct spdk_scsi_lun *scsi_lun_construct(struct spdk_bdev *bdev,
+		void (*hotremove_cb)(const struct spdk_scsi_lun *, void *),
+		void *hotremove_ctx)
 {
 	struct spdk_scsi_lun *lun;
 
@@ -92,7 +96,7 @@ spdk_scsi_lun_construct(struct spdk_bdev *bdev,
 }
 
 void
-spdk_scsi_lun_destruct(struct spdk_scsi_lun *lun)
+scsi_lun_destruct(struct spdk_scsi_lun *lun)
 {
 	free(lun);
 }
@@ -111,39 +115,36 @@ spdk_bdev_get_by_name(const char *bdev_name)
 	return NULL;
 }
 
-int
-spdk_scsi_lun_task_mgmt_execute(struct spdk_scsi_task *task, enum spdk_scsi_task_func func)
-{
-	return 0;
-}
+DEFINE_STUB_V(scsi_lun_execute_mgmt_task,
+	      (struct spdk_scsi_lun *lun, struct spdk_scsi_task *task));
 
-void
-spdk_scsi_lun_execute_task(struct spdk_scsi_lun *lun, struct spdk_scsi_task *task)
-{
-}
+DEFINE_STUB_V(scsi_lun_execute_task,
+	      (struct spdk_scsi_lun *lun, struct spdk_scsi_task *task));
 
-int
-_spdk_scsi_lun_allocate_io_channel(struct spdk_scsi_lun *lun)
-{
-	return 0;
-}
+DEFINE_STUB(scsi_lun_allocate_io_channel, int,
+	    (struct spdk_scsi_lun *lun), 0);
 
-void
-_spdk_scsi_lun_free_io_channel(struct spdk_scsi_lun *lun)
+DEFINE_STUB_V(scsi_lun_free_io_channel, (struct spdk_scsi_lun *lun));
+
+bool
+scsi_lun_has_pending_mgmt_tasks(const struct spdk_scsi_lun *lun,
+				const struct spdk_scsi_port *initiator_port)
 {
+	return (g_initiator_port_with_pending_mgmt_tasks == initiator_port);
 }
 
 bool
-spdk_scsi_lun_has_pending_tasks(const struct spdk_scsi_lun *lun)
+scsi_lun_has_pending_tasks(const struct spdk_scsi_lun *lun,
+			   const struct spdk_scsi_port *initiator_port)
 {
-	return false;
+	return (g_initiator_port_with_pending_tasks == initiator_port);
 }
 
 static void
 dev_destruct_null_dev(void)
 {
 	/* pass null for the dev */
-	spdk_scsi_dev_destruct(NULL);
+	spdk_scsi_dev_destruct(NULL, NULL, NULL);
 }
 
 static void
@@ -154,7 +155,7 @@ dev_destruct_zero_luns(void)
 	/* No luns attached to the dev */
 
 	/* free the dev */
-	spdk_scsi_dev_destruct(&dev);
+	spdk_scsi_dev_destruct(&dev, NULL, NULL);
 }
 
 static void
@@ -166,7 +167,7 @@ dev_destruct_null_lun(void)
 	dev.lun[0] = NULL;
 
 	/* free the dev */
-	spdk_scsi_dev_destruct(&dev);
+	spdk_scsi_dev_destruct(&dev, NULL, NULL);
 }
 
 static void
@@ -181,7 +182,7 @@ dev_destruct_success(void)
 	CU_ASSERT(rc == 0);
 
 	/* free the dev */
-	spdk_scsi_dev_destruct(&dev);
+	spdk_scsi_dev_destruct(&dev, NULL, NULL);
 
 }
 
@@ -261,7 +262,7 @@ dev_construct_success(void)
 	CU_ASSERT_TRUE(dev != NULL);
 
 	/* free the dev */
-	spdk_scsi_dev_destruct(dev);
+	spdk_scsi_dev_destruct(dev, NULL, NULL);
 }
 
 static void
@@ -278,7 +279,7 @@ dev_construct_success_lun_zero_not_first(void)
 	CU_ASSERT_TRUE(dev != NULL);
 
 	/* free the dev */
-	spdk_scsi_dev_destruct(dev);
+	spdk_scsi_dev_destruct(dev, NULL, NULL);
 }
 
 static void
@@ -297,11 +298,12 @@ dev_queue_mgmt_task_success(void)
 
 	task = spdk_get_task(NULL);
 
-	spdk_scsi_dev_queue_mgmt_task(dev, task, SPDK_SCSI_TASK_FUNC_LUN_RESET);
+	task->function = SPDK_SCSI_TASK_FUNC_LUN_RESET;
+	spdk_scsi_dev_queue_mgmt_task(dev, task);
 
 	spdk_scsi_task_put(task);
 
-	spdk_scsi_dev_destruct(dev);
+	spdk_scsi_dev_destruct(dev, NULL, NULL);
 }
 
 static void
@@ -324,7 +326,7 @@ dev_queue_task_success(void)
 
 	spdk_scsi_task_put(task);
 
-	spdk_scsi_dev_destruct(dev);
+	spdk_scsi_dev_destruct(dev, NULL, NULL);
 }
 
 static void
@@ -341,7 +343,8 @@ dev_stop_success(void)
 	task_mgmt = spdk_get_task(NULL);
 
 	/* Enqueue the tasks into dev->task_mgmt_submit_queue */
-	spdk_scsi_dev_queue_mgmt_task(&dev, task_mgmt, SPDK_SCSI_TASK_FUNC_LUN_RESET);
+	task->function = SPDK_SCSI_TASK_FUNC_LUN_RESET;
+	spdk_scsi_dev_queue_mgmt_task(&dev, task_mgmt);
 
 	spdk_scsi_task_put(task);
 	spdk_scsi_task_put(task_mgmt);
@@ -588,7 +591,7 @@ dev_add_lun_success1(void)
 
 	CU_ASSERT_EQUAL(rc, 0);
 
-	spdk_scsi_dev_destruct(&dev);
+	spdk_scsi_dev_destruct(&dev, NULL, NULL);
 }
 
 static void
@@ -601,7 +604,34 @@ dev_add_lun_success2(void)
 
 	CU_ASSERT_EQUAL(rc, 0);
 
-	spdk_scsi_dev_destruct(&dev);
+	spdk_scsi_dev_destruct(&dev, NULL, NULL);
+}
+
+static void
+dev_check_pending_tasks(void)
+{
+	struct spdk_scsi_dev dev = {};
+	struct spdk_scsi_lun lun = {};
+	struct spdk_scsi_port initiator_port = {};
+
+	g_initiator_port_with_pending_tasks = NULL;
+	g_initiator_port_with_pending_mgmt_tasks = NULL;
+
+	CU_ASSERT(spdk_scsi_dev_has_pending_tasks(&dev, NULL) == false);
+
+	dev.lun[SPDK_SCSI_DEV_MAX_LUN - 1] = &lun;
+
+	CU_ASSERT(spdk_scsi_dev_has_pending_tasks(&dev, NULL) == true);
+	CU_ASSERT(spdk_scsi_dev_has_pending_tasks(&dev, &initiator_port) == false);
+
+	g_initiator_port_with_pending_tasks = &initiator_port;
+	CU_ASSERT(spdk_scsi_dev_has_pending_tasks(&dev, NULL) == true);
+	CU_ASSERT(spdk_scsi_dev_has_pending_tasks(&dev, &initiator_port) == true);
+
+	g_initiator_port_with_pending_tasks = NULL;
+	g_initiator_port_with_pending_mgmt_tasks = &initiator_port;
+	CU_ASSERT(spdk_scsi_dev_has_pending_tasks(&dev, NULL) == true);
+	CU_ASSERT(spdk_scsi_dev_has_pending_tasks(&dev, &initiator_port) == true);
 }
 
 int
@@ -610,67 +640,38 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	if (CU_initialize_registry() != CUE_SUCCESS) {
-		return CU_get_error();
-	}
+	CU_set_error_action(CUEA_ABORT);
+	CU_initialize_registry();
 
 	suite = CU_add_suite("dev_suite", NULL, NULL);
-	if (suite == NULL) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
 
-	if (
-		CU_add_test(suite, "destruct - null dev",
-			    dev_destruct_null_dev) == NULL
-		|| CU_add_test(suite, "destruct - zero luns", dev_destruct_zero_luns) == NULL
-		|| CU_add_test(suite, "destruct - null lun", dev_destruct_null_lun) == NULL
-		|| CU_add_test(suite, "destruct - success", dev_destruct_success) == NULL
-		|| CU_add_test(suite, "construct  - queue depth gt max depth",
-			       dev_construct_num_luns_zero) == NULL
-		|| CU_add_test(suite, "construct  - no lun0",
-			       dev_construct_no_lun_zero) == NULL
-		|| CU_add_test(suite, "construct  - null lun",
-			       dev_construct_null_lun) == NULL
-		|| CU_add_test(suite, "construct - name too long", dev_construct_name_too_long) == NULL
-		|| CU_add_test(suite, "construct  - success", dev_construct_success) == NULL
-		|| CU_add_test(suite, "construct - success - LUN zero not first",
-			       dev_construct_success_lun_zero_not_first) == NULL
-		|| CU_add_test(suite, "dev queue task mgmt - success",
-			       dev_queue_mgmt_task_success) == NULL
-		|| CU_add_test(suite, "dev queue task - success",
-			       dev_queue_task_success) == NULL
-		|| CU_add_test(suite, "dev stop - success", dev_stop_success) == NULL
-		|| CU_add_test(suite, "dev add port - max ports",
-			       dev_add_port_max_ports) == NULL
-		|| CU_add_test(suite, "dev add port - construct port failure 1",
-			       dev_add_port_construct_failure1) == NULL
-		|| CU_add_test(suite, "dev add port - construct port failure 2",
-			       dev_add_port_construct_failure2) == NULL
-		|| CU_add_test(suite, "dev add port - success 1",
-			       dev_add_port_success1) == NULL
-		|| CU_add_test(suite, "dev add port - success 2",
-			       dev_add_port_success2) == NULL
-		|| CU_add_test(suite, "dev add port - success 3",
-			       dev_add_port_success3) == NULL
-		|| CU_add_test(suite, "dev find port by id - num ports zero",
-			       dev_find_port_by_id_num_ports_zero) == NULL
-		|| CU_add_test(suite, "dev find port by id - different port id failure",
-			       dev_find_port_by_id_id_not_found_failure) == NULL
-		|| CU_add_test(suite, "dev find port by id - success",
-			       dev_find_port_by_id_success) == NULL
-		|| CU_add_test(suite, "dev add lun - bdev not found",
-			       dev_add_lun_bdev_not_found) == NULL
-		|| CU_add_test(suite, "dev add lun - no free lun id",
-			       dev_add_lun_no_free_lun_id) == NULL
-		|| CU_add_test(suite, "dev add lun - success 1",
-			       dev_add_lun_success1) == NULL
-		|| CU_add_test(suite, "dev add lun - success 2",
-			       dev_add_lun_success2) == NULL
-	) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
+	CU_ADD_TEST(suite, dev_destruct_null_dev);
+	CU_ADD_TEST(suite, dev_destruct_zero_luns);
+	CU_ADD_TEST(suite, dev_destruct_null_lun);
+	CU_ADD_TEST(suite, dev_destruct_success);
+	CU_ADD_TEST(suite, dev_construct_num_luns_zero);
+	CU_ADD_TEST(suite, dev_construct_no_lun_zero);
+	CU_ADD_TEST(suite, dev_construct_null_lun);
+	CU_ADD_TEST(suite, dev_construct_name_too_long);
+	CU_ADD_TEST(suite, dev_construct_success);
+	CU_ADD_TEST(suite, dev_construct_success_lun_zero_not_first);
+	CU_ADD_TEST(suite, dev_queue_mgmt_task_success);
+	CU_ADD_TEST(suite, dev_queue_task_success);
+	CU_ADD_TEST(suite, dev_stop_success);
+	CU_ADD_TEST(suite, dev_add_port_max_ports);
+	CU_ADD_TEST(suite, dev_add_port_construct_failure1);
+	CU_ADD_TEST(suite, dev_add_port_construct_failure2);
+	CU_ADD_TEST(suite, dev_add_port_success1);
+	CU_ADD_TEST(suite, dev_add_port_success2);
+	CU_ADD_TEST(suite, dev_add_port_success3);
+	CU_ADD_TEST(suite, dev_find_port_by_id_num_ports_zero);
+	CU_ADD_TEST(suite, dev_find_port_by_id_id_not_found_failure);
+	CU_ADD_TEST(suite, dev_find_port_by_id_success);
+	CU_ADD_TEST(suite, dev_add_lun_bdev_not_found);
+	CU_ADD_TEST(suite, dev_add_lun_no_free_lun_id);
+	CU_ADD_TEST(suite, dev_add_lun_success1);
+	CU_ADD_TEST(suite, dev_add_lun_success2);
+	CU_ADD_TEST(suite, dev_check_pending_tasks);
 
 	CU_basic_set_mode(CU_BRM_VERBOSE);
 	CU_basic_run_tests();

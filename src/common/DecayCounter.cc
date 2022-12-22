@@ -17,7 +17,7 @@
 
 #include "include/encoding.h"
 
-void DecayCounter::encode(bufferlist& bl) const
+void DecayCounter::encode(ceph::buffer::list& bl) const
 {
   decay();
   ENCODE_START(5, 4, bl);
@@ -25,7 +25,7 @@ void DecayCounter::encode(bufferlist& bl) const
   ENCODE_FINISH(bl);
 }
 
-void DecayCounter::decode(bufferlist::const_iterator &p)
+void DecayCounter::decode(ceph::buffer::list::const_iterator &p)
 {
   DECODE_START_LEGACY_COMPAT_LEN(5, 4, 4, p);
   if (struct_v < 2) {
@@ -47,7 +47,7 @@ void DecayCounter::decode(bufferlist::const_iterator &p)
   DECODE_FINISH(p);
 }
 
-void DecayCounter::dump(Formatter *f) const
+void DecayCounter::dump(ceph::Formatter *f) const
 {
   decay();
   f->dump_float("value", val);
@@ -58,7 +58,6 @@ void DecayCounter::generate_test_instances(std::list<DecayCounter*>& ls)
 {
   DecayCounter *counter = new DecayCounter();
   counter->val = 3.0;
-  counter->rate = DecayRate(2.0);
   ls.push_back(counter);
   counter = new DecayCounter();
   ls.push_back(counter);

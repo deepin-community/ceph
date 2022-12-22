@@ -10,7 +10,7 @@ This following section describes how to run iscsi from your cloned package.
 This guide starts by assuming that you can already build the standard SPDK distribution on your
 platform.
 
-Once built, the binary will be in `app/iscsi_tgt`.
+Once built, the binary will be in `build/bin`.
 
 If you want to kill the application by using signal, make sure use the SIGTERM, then the application
 will release all the shared memory resource before exit, the SIGKILL will make the shared memory
@@ -38,7 +38,7 @@ then run the iscsi_tgt application and pass it the configuration file using the 
 the target requires elevated privileges (root) to run.
 
 ~~~
-app/iscsi_tgt/iscsi_tgt -c /path/to/iscsi.conf
+build/bin/iscsi_tgt -c /path/to/iscsi.conf
 ~~~
 
 ### Assigning CPU Cores to the iSCSI Target {#iscsi_config_lcore}
@@ -80,36 +80,36 @@ In addition to the configuration file, the iSCSI target may also be configured v
 
 ### Portal groups
 
- - add_portal_group -- Add a portal group.
- - delete_portal_group -- Delete an existing portal group.
- - add_pg_ig_maps -- Add initiator group to portal group mappings to an existing iSCSI target node.
- - delete_pg_ig_maps -- Delete initiator group to portal group mappings from an existing iSCSI target node.
- - get_portal_groups -- Show information about all available portal groups.
+ - iscsi_create_portal_group -- Add a portal group.
+ - iscsi_delete_portal_group -- Delete an existing portal group.
+ - iscsi_target_node_add_pg_ig_maps -- Add initiator group to portal group mappings to an existing iSCSI target node.
+ - iscsi_target_node_remove_pg_ig_maps -- Delete initiator group to portal group mappings from an existing iSCSI target node.
+ - iscsi_get_portal_groups -- Show information about all available portal groups.
 
 ~~~
-python /path/to/spdk/scripts/rpc.py add_portal_group 1 10.0.0.1:3260
+/path/to/spdk/scripts/rpc.py iscsi_create_portal_group 1 10.0.0.1:3260
 ~~~
 
 ### Initiator groups
 
- - add_initiator_group -- Add an initiator group.
- - delete_initiator_group -- Delete an existing initiator group.
- - add_initiators_to_initiator_group -- Add initiators to an existing initiator group.
- - get_initiator_groups -- Show information about all available initiator groups.
+ - iscsi_create_initiator_group -- Add an initiator group.
+ - iscsi_delete_initiator_group -- Delete an existing initiator group.
+ - iscsi_initiator_group_add_initiators -- Add initiators to an existing initiator group.
+ - iscsi_get_initiator_groups -- Show information about all available initiator groups.
 
 ~~~
-python /path/to/spdk/scripts/rpc.py add_initiator_group 2 ANY 10.0.0.2/32
+/path/to/spdk/scripts/rpc.py iscsi_create_initiator_group 2 ANY 10.0.0.2/32
 ~~~
 
 ### Target nodes
 
- - construct_target_node -- Add a iSCSI target node.
- - delete_target_node -- Delete a iSCSI target node.
- - target_node_add_lun -- Add an LUN to an existing iSCSI target node.
- - get_target_nodes -- Show information about all available iSCSI target nodes.
+ - iscsi_create_target_node -- Add an iSCSI target node.
+ - iscsi_delete_target_node -- Delete an iSCSI target node.
+ - iscsi_target_node_add_lun -- Add a LUN to an existing iSCSI target node.
+ - iscsi_get_target_nodes -- Show information about all available iSCSI target nodes.
 
 ~~~
-python /path/to/spdk/scripts/rpc.py construct_target_node Target3 Target3_alias MyBdev:0 1:2 64 -d
+/path/to/spdk/scripts/rpc.py iscsi_create_target_node Target3 Target3_alias MyBdev:0 1:2 64 -d
 ~~~
 
 ## Configuring iSCSI Initiator {#iscsi_initiator}
@@ -218,7 +218,7 @@ echo "1024" > /sys/block/sdc/queue/nr_requests
 
 ### Example: Configure simple iSCSI Target with one portal and two LUNs
 
-Assuming we have one iSCSI Target server with portal at 10.0.0.1:3200, two LUNs (Malloc0 and Malloc),
+Assuming we have one iSCSI Target server with portal at 10.0.0.1:3200, two LUNs (Malloc0 and Malloc1),
  and accepting initiators on 10.0.0.2/32, like on diagram below:
 
 ![Sample iSCSI configuration](iscsi_example.svg)
@@ -227,33 +227,33 @@ Assuming we have one iSCSI Target server with portal at 10.0.0.1:3200, two LUNs 
 
 Start iscsi_tgt application:
 ```
-$ ./app/iscsi_tgt/iscsi_tgt
+./build/bin/iscsi_tgt
 ```
 
 Construct two 64MB Malloc block devices with 512B sector size "Malloc0" and "Malloc1":
 
 ```
-$ python ./scripts/rpc.py construct_malloc_bdev -b Malloc0 64 512
-$ python ./scripts/rpc.py construct_malloc_bdev -b Malloc1 64 512
+./scripts/rpc.py bdev_malloc_create -b Malloc0 64 512
+./scripts/rpc.py bdev_malloc_create -b Malloc1 64 512
 ```
 
 Create new portal group with id 1, and address 10.0.0.1:3260:
 
 ```
-$ python ./scripts/rpc.py add_portal_group 1 10.0.0.1:3260
+./scripts/rpc.py iscsi_create_portal_group 1 10.0.0.1:3260
 ```
 
 Create one initiator group with id 2 to accept any connection from 10.0.0.2/32:
 
 ```
-$ python ./scripts/rpc.py add_initiator_group 2 ANY 10.0.0.2/32
+./scripts/rpc.py iscsi_create_initiator_group 2 ANY 10.0.0.2/32
 ```
 
-Finaly construct one target using previously created bdevs as LUN0 (Malloc0) and LUN1 (Malloc1)
+Finally construct one target using previously created bdevs as LUN0 (Malloc0) and LUN1 (Malloc1)
 with a name "disk1" and alias "Data Disk1" using portal group 1 and initiator group 2.
 
 ```
-$ python ./scripts/rpc.py construct_target_node disk1 "Data Disk1" "Malloc0:0 Malloc1:1" 1:2 64 -d
+./scripts/rpc.py iscsi_create_target_node disk1 "Data Disk1" "Malloc0:0 Malloc1:1" 1:2 64 -d
 ```
 
 #### Configure initiator
@@ -268,7 +268,7 @@ $ iscsiadm -m discovery -t sendtargets -p 10.0.0.1
 Connect to the target
 
 ~~~
-$ iscsiadm -m node --login
+iscsiadm -m node --login
 ~~~
 
 At this point the iSCSI target should show up as SCSI disks.
@@ -304,159 +304,25 @@ sdd
 sde
 ~~~
 
-# Vector Packet Processing {#vpp}
-
-VPP (part of [Fast Data - Input/Output](https://fd.io/) project) is an extensible
-userspace framework providing networking functionality. It is build on idea of
-packet processing graph (see [What is VPP?](https://wiki.fd.io/view/VPP/What_is_VPP?)).
-
-A detailed instructions for **simplified steps 1-3** below, can be found on
-VPP [Quick Start Guide](https://wiki.fd.io/view/VPP).
-
-*SPDK supports VPP version 18.01.1.*
-
-##  1. Building VPP (optional) {#vpp_build}
-
-*Please skip this step if using already built packages.*
-
-Clone and checkout VPP
-~~~
-git clone https://gerrit.fd.io/r/vpp && cd vpp
-git checkout v18.01.1
-~~~
-
-Install VPP build dependencies
-~~~
-make install-dep
-~~~
-
-Build and create .rpm packages
-~~~
-make pkg-rpm
-~~~
-
-Alternatively, build and create .deb packages
-~~~
-make pkg-deb
-~~~
-
-Packages can be found in `vpp/build-root/` directory.
-
-For more in depth instructions please see Building section in
-[VPP documentation](https://wiki.fd.io/view/VPP/Pulling,_Building,_Running,_Hacking_and_Pushing_VPP_Code#Building)
-
-*Please note: VPP 18.01.1 does not support OpenSSL 1.1. It is suggested to install a compatibility package
-for compilation time.*
-~~~
-sudo dnf install -y --allowerasing compat-openssl10-devel
-~~~
-*Then reinstall latest OpenSSL devel package:*
-~~~
-sudo dnf install -y --allowerasing openssl-devel
-~~~
-
-## 2. Installing VPP {#vpp_install}
-
-Packages can be installed from distribution repository or built in previous step.
-Minimal set of packages consists of `vpp`, `vpp-lib` and `vpp-devel`.
-
-*Note: Please remove or modify /etc/sysctl.d/80-vpp.conf file with appropriate values
-dependent on number of hugepages that will be used on system.*
-
-## 3. Running VPP {#vpp_run}
-
-VPP takes over any network interfaces that were bound to userspace driver,
-for details please see DPDK guide on
-[Binding and Unbinding Network Ports to/from the Kernel Modules](http://dpdk.org/doc/guides/linux_gsg/linux_drivers.html#binding-and-unbinding-network-ports-to-from-the-kernel-modules).
-
-VPP is installed as service and disabled by default. To start VPP with default config:
-~~~
-sudo systemctl start vpp
-~~~
-
-Alternatively, use `vpp` binary directly
-~~~
-sudo vpp unix {cli-listen /run/vpp/cli.sock}
-~~~
-
-A usefull tool is `vppctl`, that allows to control running VPP instance.
-Either by entering VPP configuration prompt
-~~~
-sudo vppctl
-~~~
-
-Or, by sending single command directly. For example to display interfaces within VPP:
-~~~
-sudo vppctl show interface
-~~~
-
-### Example: Tap interfaces on single host
-
-For functional test purpose a virtual tap interface can be created,
-so no additional network hardware is required.
-This will allow network communication between SPDK iSCSI target using VPP end of tap
-and kernel iSCSI initiator using the kernel part of tap. A single host is used in this scenario.
-
-Create tap interface via VPP
-~~~
-    vppctl tap connect tap0
-    vppctl set interface state tapcli-0 up
-    vppctl set interface ip address tapcli-0 10.0.0.1/24
-    vppctl show int addr
-~~~
-
-Assign address on kernel interface
-~~~
-    sudo ip addr add 10.0.0.2/24 dev tap0
-    sudo ip link set tap0 up
-~~~
-
-To verify connectivity
-~~~
-    ping 10.0.0.1
-~~~
-
-## 4. Building SPDK with VPP {#vpp_built_into_spdk}
-
-Support for VPP can be built into SPDK by using configuration option.
-~~~
-configure --with-vpp
-~~~
-
-Alternatively, directory with built libraries can be pointed at
-and will be used for compilation instead of installed packages.
-~~~
-configure --with-vpp=/path/to/vpp/repo/build-root/vpp
-~~~
-
-## 5. Running SPDK with VPP {#vpp_running_with_spdk}
-
-VPP application has to be started before SPDK iSCSI target,
-in order to enable usage of network interfaces.
-After SPDK iSCSI target initialization finishes,
-interfaces configured within VPP will be available to be configured as portal addresses.
-Please refer to @ref iscsi_rpc.
-
-
 # iSCSI Hotplug {#iscsi_hotplug}
 
 At the iSCSI level, we provide the following support for Hotplug:
 
 1. bdev/nvme:
-At the bdev/nvme level, we start one hotplug monitor which will call
-spdk_nvme_probe() periodically to get the hotplug events. We provide the
-private attach_cb and remove_cb for spdk_nvme_probe(). For the attach_cb,
-we will create the block device base on the NVMe device attached, and for the
-remove_cb, we will unregister the block device, which will also notify the
-upper level stack (for iSCSI target, the upper level stack is scsi/lun) to
-handle the hot-remove event.
+  At the bdev/nvme level, we start one hotplug monitor which will call
+  spdk_nvme_probe() periodically to get the hotplug events. We provide the
+  private attach_cb and remove_cb for spdk_nvme_probe(). For the attach_cb,
+  we will create the block device base on the NVMe device attached, and for the
+  remove_cb, we will unregister the block device, which will also notify the
+  upper level stack (for iSCSI target, the upper level stack is scsi/lun) to
+  handle the hot-remove event.
 
 2. scsi/lun:
-When the LUN receive the hot-remove notification from block device layer,
-the LUN will be marked as removed, and all the IOs after this point will
-return with check condition status. Then the LUN starts one poller which will
-wait for all the commands which have already been submitted to block device to
-return back; after all the commands return back, the LUN will be deleted.
+  When the LUN receive the hot-remove notification from block device layer,
+  the LUN will be marked as removed, and all the IOs after this point will
+  return with check condition status. Then the LUN starts one poller which will
+  wait for all the commands which have already been submitted to block device to
+  return back; after all the commands return back, the LUN will be deleted.
 
 ## Known bugs and limitations {#iscsi_hotplug_bugs}
 

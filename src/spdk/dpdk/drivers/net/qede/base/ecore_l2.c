@@ -608,6 +608,9 @@ ecore_sp_update_accept_mode(struct ecore_hwfn *p_hwfn,
 		SET_FIELD(state, ETH_VPORT_RX_MODE_BCAST_ACCEPT_ALL,
 			  !!(accept_filter & ECORE_ACCEPT_BCAST));
 
+		SET_FIELD(state, ETH_VPORT_RX_MODE_ACCEPT_ANY_VNI,
+			  !!(accept_filter & ECORE_ACCEPT_ANY_VNI));
+
 		p_ramrod->rx_mode.state = OSAL_CPU_TO_LE16(state);
 		DP_VERBOSE(p_hwfn, ECORE_MSG_SP,
 			   "vport[%02x] p_ramrod->rx_mode.state = 0x%x\n",
@@ -781,6 +784,11 @@ ecore_sp_vport_update(struct ecore_hwfn *p_hwfn,
 		/* Return spq entry which is taken in ecore_sp_init_request()*/
 		ecore_spq_return_entry(p_hwfn, p_ent);
 		return rc;
+	}
+
+	if (p_params->update_ctl_frame_check) {
+		p_cmn->ctl_frame_mac_check_en = p_params->mac_chk_en;
+		p_cmn->ctl_frame_ethtype_check_en = p_params->ethtype_chk_en;
 	}
 
 	/* Update mcast bins for VFs, PF doesn't use this functionality */
@@ -1774,6 +1782,8 @@ static void __ecore_get_vport_tstats(struct ecore_hwfn *p_hwfn,
 		HILO_64_REGPAIR(tstats.mftag_filter_discard);
 	p_stats->common.mac_filter_discards +=
 		HILO_64_REGPAIR(tstats.eth_mac_filter_discard);
+	p_stats->common.gft_filter_drop +=
+		HILO_64_REGPAIR(tstats.eth_gft_drop_pkt);
 }
 
 static void __ecore_get_vport_ustats_addrlen(struct ecore_hwfn *p_hwfn,
@@ -2084,6 +2094,24 @@ void ecore_reset_vport_stats(struct ecore_dev *p_dev)
 	}
 }
 
+static enum gft_profile_type
+ecore_arfs_mode_to_hsi(enum ecore_filter_config_mode mode)
+{
+	if (mode == ECORE_FILTER_CONFIG_MODE_5_TUPLE)
+		return GFT_PROFILE_TYPE_4_TUPLE;
+
+	if (mode == ECORE_FILTER_CONFIG_MODE_IP_DEST)
+		return GFT_PROFILE_TYPE_IP_DST_ADDR;
+
+	if (mode == ECORE_FILTER_CONFIG_MODE_TUNN_TYPE)
+		return GFT_PROFILE_TYPE_TUNNEL_TYPE;
+
+	if (mode == ECORE_FILTER_CONFIG_MODE_IP_SRC)
+		return GFT_PROFILE_TYPE_IP_SRC_ADDR;
+
+	return GFT_PROFILE_TYPE_L4_DST_PORT;
+}
+
 void ecore_arfs_mode_configure(struct ecore_hwfn *p_hwfn,
 			       struct ecore_ptt *p_ptt,
 			       struct ecore_arfs_config_params *p_cfg_params)
@@ -2091,13 +2119,13 @@ void ecore_arfs_mode_configure(struct ecore_hwfn *p_hwfn,
 	if (OSAL_TEST_BIT(ECORE_MF_DISABLE_ARFS, &p_hwfn->p_dev->mf_bits))
 		return;
 
-	if (p_cfg_params->arfs_enable) {
+	if (p_cfg_params->mode != ECORE_FILTER_CONFIG_MODE_DISABLE) {
 		ecore_gft_config(p_hwfn, p_ptt, p_hwfn->rel_pf_id,
 				 p_cfg_params->tcp,
 				 p_cfg_params->udp,
 				 p_cfg_params->ipv4,
 				 p_cfg_params->ipv6,
-				 GFT_PROFILE_TYPE_4_TUPLE);
+				 ecore_arfs_mode_to_hsi(p_cfg_params->mode));
 		DP_VERBOSE(p_hwfn, ECORE_MSG_SP,
 			   "tcp = %s, udp = %s, ipv4 = %s, ipv6 =%s\n",
 			   p_cfg_params->tcp ? "Enable" : "Disable",
@@ -2107,16 +2135,14 @@ void ecore_arfs_mode_configure(struct ecore_hwfn *p_hwfn,
 	} else {
 		ecore_gft_disable(p_hwfn, p_ptt, p_hwfn->rel_pf_id);
 	}
-	DP_VERBOSE(p_hwfn, ECORE_MSG_SP, "Configured ARFS mode : %s\n",
-		   p_cfg_params->arfs_enable ? "Enable" : "Disable");
+	DP_VERBOSE(p_hwfn, ECORE_MSG_SP, "Configured ARFS mode : %d\n",
+		   (int)p_cfg_params->mode);
 }
 
 enum _ecore_status_t
 ecore_configure_rfs_ntuple_filter(struct ecore_hwfn *p_hwfn,
 				  struct ecore_spq_comp_cb *p_cb,
-				  dma_addr_t p_addr, u16 length,
-				  u16 qid, u8 vport_id,
-				  bool b_is_add)
+				  struct ecore_ntuple_filter_params *p_params)
 {
 	struct rx_update_gft_filter_data *p_ramrod = OSAL_NULL;
 	struct ecore_spq_entry *p_ent = OSAL_NULL;
@@ -2124,14 +2150,6 @@ ecore_configure_rfs_ntuple_filter(struct ecore_hwfn *p_hwfn,
 	u16 abs_rx_q_id = 0;
 	u8 abs_vport_id = 0;
 	enum _ecore_status_t rc = ECORE_NOTIMPL;
-
-	rc = ecore_fw_vport(p_hwfn, vport_id, &abs_vport_id);
-	if (rc != ECORE_SUCCESS)
-		return rc;
-
-	rc = ecore_fw_l2_queue(p_hwfn, qid, &abs_rx_q_id);
-	if (rc != ECORE_SUCCESS)
-		return rc;
 
 	/* Get SPQ entry */
 	OSAL_MEMSET(&init_data, 0, sizeof(init_data));
@@ -2154,35 +2172,49 @@ ecore_configure_rfs_ntuple_filter(struct ecore_hwfn *p_hwfn,
 
 	p_ramrod = &p_ent->ramrod.rx_update_gft;
 
-	DMA_REGPAIR_LE(p_ramrod->pkt_hdr_addr, p_addr);
-	p_ramrod->pkt_hdr_length = OSAL_CPU_TO_LE16(length);
+	DMA_REGPAIR_LE(p_ramrod->pkt_hdr_addr, p_params->addr);
+	p_ramrod->pkt_hdr_length = OSAL_CPU_TO_LE16(p_params->length);
 
-	p_ramrod->action_icid_valid = 0;
-	p_ramrod->action_icid = 0;
+	if (p_params->b_is_drop) {
+		p_ramrod->vport_id = OSAL_CPU_TO_LE16(ETH_GFT_TRASHCAN_VPORT);
+	} else {
+		rc = ecore_fw_vport(p_hwfn, p_params->vport_id,
+				    &abs_vport_id);
+		if (rc)
+			return rc;
 
-	p_ramrod->rx_qid_valid = 1;
-	p_ramrod->rx_qid = OSAL_CPU_TO_LE16(abs_rx_q_id);
+		if (p_params->qid != ECORE_RFS_NTUPLE_QID_RSS) {
+			rc = ecore_fw_l2_queue(p_hwfn, p_params->qid,
+					       &abs_rx_q_id);
+			if (rc)
+				return rc;
+
+			p_ramrod->rx_qid_valid = 1;
+			p_ramrod->rx_qid = OSAL_CPU_TO_LE16(abs_rx_q_id);
+		}
+
+		p_ramrod->vport_id = OSAL_CPU_TO_LE16((u16)abs_vport_id);
+	}
 
 	p_ramrod->flow_id_valid = 0;
 	p_ramrod->flow_id = 0;
 
-	p_ramrod->vport_id = OSAL_CPU_TO_LE16((u16)abs_vport_id);
-	p_ramrod->filter_action = b_is_add ? GFT_ADD_FILTER
-					   : GFT_DELETE_FILTER;
+	p_ramrod->filter_action = p_params->b_is_add ? GFT_ADD_FILTER
+						     : GFT_DELETE_FILTER;
 
 	DP_VERBOSE(p_hwfn, ECORE_MSG_SP,
 		   "V[%0x], Q[%04x] - %s filter from 0x%lx [length %04xb]\n",
 		   abs_vport_id, abs_rx_q_id,
-		   b_is_add ? "Adding" : "Removing",
-		   (unsigned long)p_addr, length);
+		   p_params->b_is_add ? "Adding" : "Removing",
+		   (unsigned long)p_params->addr, p_params->length);
 
 	return ecore_spq_post(p_hwfn, p_ent, OSAL_NULL);
 }
 
-int ecore_get_rxq_coalesce(struct ecore_hwfn *p_hwfn,
-			   struct ecore_ptt *p_ptt,
-			   struct ecore_queue_cid *p_cid,
-			   u16 *p_rx_coal)
+enum _ecore_status_t ecore_get_rxq_coalesce(struct ecore_hwfn *p_hwfn,
+					    struct ecore_ptt *p_ptt,
+					    struct ecore_queue_cid *p_cid,
+					    u16 *p_rx_coal)
 {
 	u32 coalesce, address, is_valid;
 	struct cau_sb_entry sb_entry;
@@ -2191,7 +2223,8 @@ int ecore_get_rxq_coalesce(struct ecore_hwfn *p_hwfn,
 
 	rc = ecore_dmae_grc2host(p_hwfn, p_ptt, CAU_REG_SB_VAR_MEMORY +
 				 p_cid->sb_igu_id * sizeof(u64),
-				 (u64)(osal_uintptr_t)&sb_entry, 2, 0);
+				 (u64)(osal_uintptr_t)&sb_entry, 2,
+				 OSAL_NULL /* default parameters */);
 	if (rc != ECORE_SUCCESS) {
 		DP_ERR(p_hwfn, "dmae_grc2host failed %d\n", rc);
 		return rc;
@@ -2213,10 +2246,10 @@ int ecore_get_rxq_coalesce(struct ecore_hwfn *p_hwfn,
 	return ECORE_SUCCESS;
 }
 
-int ecore_get_txq_coalesce(struct ecore_hwfn *p_hwfn,
-			   struct ecore_ptt *p_ptt,
-			   struct ecore_queue_cid *p_cid,
-			   u16 *p_tx_coal)
+enum _ecore_status_t ecore_get_txq_coalesce(struct ecore_hwfn *p_hwfn,
+					    struct ecore_ptt *p_ptt,
+					    struct ecore_queue_cid *p_cid,
+					    u16 *p_tx_coal)
 {
 	u32 coalesce, address, is_valid;
 	struct cau_sb_entry sb_entry;
@@ -2225,7 +2258,8 @@ int ecore_get_txq_coalesce(struct ecore_hwfn *p_hwfn,
 
 	rc = ecore_dmae_grc2host(p_hwfn, p_ptt, CAU_REG_SB_VAR_MEMORY +
 				 p_cid->sb_igu_id * sizeof(u64),
-				 (u64)(osal_uintptr_t)&sb_entry, 2, 0);
+				 (u64)(osal_uintptr_t)&sb_entry, 2,
+				 OSAL_NULL /* default parameters */);
 	if (rc != ECORE_SUCCESS) {
 		DP_ERR(p_hwfn, "dmae_grc2host failed %d\n", rc);
 		return rc;
@@ -2289,16 +2323,66 @@ ecore_eth_tx_queue_maxrate(struct ecore_hwfn *p_hwfn,
 			   struct ecore_ptt *p_ptt,
 			   struct ecore_queue_cid *p_cid, u32 rate)
 {
-	struct ecore_mcp_link_state *p_link;
+	u16 rl_id;
 	u8 vport;
 
 	vport = (u8)ecore_get_qm_vport_idx_rl(p_hwfn, p_cid->rel.queue_id);
-	p_link = &ECORE_LEADING_HWFN(p_hwfn->p_dev)->mcp_info->link_output;
 
 	DP_VERBOSE(p_hwfn, ECORE_MSG_LINK,
 		   "About to rate limit qm vport %d for queue %d with rate %d\n",
 		   vport, p_cid->rel.queue_id, rate);
 
-	return ecore_init_vport_rl(p_hwfn, p_ptt, vport, rate,
-				   p_link->speed);
+	rl_id = vport; /* The "rl_id" is set as the "vport_id" */
+	return ecore_init_global_rl(p_hwfn, p_ptt, rl_id, rate);
+}
+
+#define RSS_TSTORM_UPDATE_STATUS_MAX_POLL_COUNT    100
+#define RSS_TSTORM_UPDATE_STATUS_POLL_PERIOD_US    1
+
+enum _ecore_status_t
+ecore_update_eth_rss_ind_table_entry(struct ecore_hwfn *p_hwfn,
+				     u8 vport_id,
+				     u8 ind_table_index,
+				     u16 ind_table_value)
+{
+	struct eth_tstorm_rss_update_data update_data = { 0 };
+	void OSAL_IOMEM *addr = OSAL_NULL;
+	enum _ecore_status_t rc;
+	u8 abs_vport_id;
+	u32 cnt = 0;
+
+	OSAL_BUILD_BUG_ON(sizeof(update_data) != sizeof(u64));
+
+	rc = ecore_fw_vport(p_hwfn, vport_id, &abs_vport_id);
+	if (rc != ECORE_SUCCESS)
+		return rc;
+
+	addr = (u8 *)p_hwfn->regview + GTT_BAR0_MAP_REG_TSDM_RAM +
+	       TSTORM_ETH_RSS_UPDATE_OFFSET(p_hwfn->rel_pf_id);
+
+	*(u64 *)(&update_data) = DIRECT_REG_RD64(p_hwfn, addr);
+
+	for (cnt = 0; update_data.valid &&
+	     cnt < RSS_TSTORM_UPDATE_STATUS_MAX_POLL_COUNT; cnt++) {
+		OSAL_UDELAY(RSS_TSTORM_UPDATE_STATUS_POLL_PERIOD_US);
+		*(u64 *)(&update_data) = DIRECT_REG_RD64(p_hwfn, addr);
+	}
+
+	if (update_data.valid) {
+		DP_NOTICE(p_hwfn, true,
+			  "rss update valid status is not clear! valid=0x%x vport id=%d ind_Table_idx=%d ind_table_value=%d.\n",
+			  update_data.valid, vport_id, ind_table_index,
+			  ind_table_value);
+
+		return ECORE_AGAIN;
+	}
+
+	update_data.valid	    = 1;
+	update_data.ind_table_index = ind_table_index;
+	update_data.ind_table_value = ind_table_value;
+	update_data.vport_id	    = abs_vport_id;
+
+	DIRECT_REG_WR64(p_hwfn, addr, *(u64 *)(&update_data));
+
+	return ECORE_SUCCESS;
 }

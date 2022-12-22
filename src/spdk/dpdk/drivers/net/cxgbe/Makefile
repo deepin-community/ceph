@@ -9,14 +9,10 @@ include $(RTE_SDK)/mk/rte.vars.mk
 #
 LIB = librte_pmd_cxgbe.a
 
-CFLAGS += -I$(SRCDIR)/base/
-CFLAGS += -I$(SRCDIR)
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
 
 EXPORT_MAP := rte_pmd_cxgbe_version.map
-
-LIBABIVER := 1
 
 #
 # CFLAGS for gcc/clang
@@ -53,6 +49,9 @@ SRCS-$(CONFIG_RTE_LIBRTE_CXGBE_PMD) += cxgbe_filter.c
 SRCS-$(CONFIG_RTE_LIBRTE_CXGBE_PMD) += cxgbe_flow.c
 SRCS-$(CONFIG_RTE_LIBRTE_CXGBE_PMD) += t4_hw.c
 SRCS-$(CONFIG_RTE_LIBRTE_CXGBE_PMD) += clip_tbl.c
+SRCS-$(CONFIG_RTE_LIBRTE_CXGBE_PMD) += mps_tcam.c
+SRCS-$(CONFIG_RTE_LIBRTE_CXGBE_PMD) += l2t.c
+SRCS-$(CONFIG_RTE_LIBRTE_CXGBE_PMD) += smt.c
 SRCS-$(CONFIG_RTE_LIBRTE_CXGBE_PMD) += t4vf_hw.c
 
 include $(RTE_SDK)/mk/rte.lib.mk

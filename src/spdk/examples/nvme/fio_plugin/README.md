@@ -4,11 +4,7 @@ First, clone the fio source repository from https://github.com/axboe/fio
 
     git clone https://github.com/axboe/fio
 
-Then check out the fio 3.3:
-
-    cd fio && git checkout fio-3.3
-
-Finally, compile the code:
+Then check out the latest fio version and compile the code:
 
     make
 
@@ -40,7 +36,7 @@ To use the SPDK fio plugin with fio, specify the plugin binary using LD_PRELOAD 
 fio and set ioengine=spdk in the fio configuration file (see example_config.fio in the same
 directory as this README).
 
-    LD_PRELOAD=<path to spdk repo>/examples/nvme/fio_plugin/fio_plugin fio
+    LD_PRELOAD=<path to spdk repo>/build/fio/spdk_nvme fio
 
 To select NVMe devices, you pass an SPDK Transport Identifier string as the filename. These are in the
 form:
@@ -54,7 +50,6 @@ Specifically, for local PCIe NVMe devices it will look like this:
 And remote devices accessed via NVMe over Fabrics will look like this:
 
     filename=trtype=RDMA adrfam=IPv4 traddr=192.168.100.8 trsvcid=4420 ns=1
-
 
 **Note**: The specification of the PCIe address should not use the normal ':'
 and instead only use '.'. This is a limitation in fio - it splits filenames on
@@ -95,3 +90,18 @@ Blocksize should be set as the sum of data and metadata. For example, if data bl
 PI metadata is 8 Byte, then blocksize in fio configure file should be 520 Byte:
 
     bs=520
+
+The storage device may use a block format that requires separate metadata (DIX). In this scenario, the fio_plugin
+will automatically allocate an extra 4KiB buffer per I/O to hold this metadata. For some cases, such as 512 byte
+blocks with 32 metadata bytes per block and a 128KiB I/O size, 4KiB isn't large enough. In this case, the
+`md_per_io_size` option may be specified to increase the size of the metadata buffer.
+
+Expose two options 'apptag' and 'apptag_mask', users can change them in the configuration file when using
+application tag and application tag mask in end-to-end data protection.  Application tag and application
+tag mask are set to 0x1234 and 0xFFFF by default.
+
+# VMD (Optional)
+
+To enable VMD enumeration add enable_vmd flag in fio configuration file:
+
+    enable_vmd=1

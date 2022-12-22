@@ -114,6 +114,9 @@ struct ecore_hw_init_params {
 	/* Driver load parameters */
 	struct ecore_drv_load_params *p_drv_load_params;
 
+	/* Avoid engine affinity for RoCE/storage in case of CMT mode */
+	bool avoid_eng_affin;
+
 	/* SPQ block timeout in msec */
 	u32 spq_timeout_ms;
 };
@@ -271,6 +274,12 @@ struct ecore_hw_prepare_params {
 
 	/* Enable/disable request by ecore client for pacing */
 	bool b_en_pacing;
+
+	/* Indicates whether this PF serves a storage target */
+	bool b_is_target;
+
+	/* retry count for VF acquire on channel timeout */
+	u8 acquire_retry_cnt;
 };
 
 /**
@@ -328,6 +337,7 @@ struct ecore_eth_stats_common {
 	u64 rx_bcast_pkts;
 	u64 mftag_filter_discards;
 	u64 mac_filter_discards;
+	u64 gft_filter_drop;
 	u64 tx_ucast_bytes;
 	u64 tx_mcast_bytes;
 	u64 tx_bcast_bytes;
@@ -408,86 +418,6 @@ struct ecore_eth_stats {
 	};
 };
 
-enum ecore_dmae_address_type_t {
-	ECORE_DMAE_ADDRESS_HOST_VIRT,
-	ECORE_DMAE_ADDRESS_HOST_PHYS,
-	ECORE_DMAE_ADDRESS_GRC
-};
-
-/* value of flags If ECORE_DMAE_FLAG_RW_REPL_SRC flag is set and the
- * source is a block of length DMAE_MAX_RW_SIZE and the
- * destination is larger, the source block will be duplicated as
- * many times as required to fill the destination block. This is
- * used mostly to write a zeroed buffer to destination address
- * using DMA
- */
-#define ECORE_DMAE_FLAG_RW_REPL_SRC	0x00000001
-#define ECORE_DMAE_FLAG_VF_SRC		0x00000002
-#define ECORE_DMAE_FLAG_VF_DST		0x00000004
-#define ECORE_DMAE_FLAG_COMPLETION_DST	0x00000008
-
-struct ecore_dmae_params {
-	u32 flags; /* consists of ECORE_DMAE_FLAG_* values */
-	u8 src_vfid;
-	u8 dst_vfid;
-};
-
-/**
- * @brief ecore_dmae_host2grc - copy data from source addr to
- * dmae registers using the given ptt
- *
- * @param p_hwfn
- * @param p_ptt
- * @param source_addr
- * @param grc_addr (dmae_data_offset)
- * @param size_in_dwords
- * @param flags (one of the flags defined above)
- */
-enum _ecore_status_t
-ecore_dmae_host2grc(struct ecore_hwfn *p_hwfn,
-		    struct ecore_ptt *p_ptt,
-		    u64 source_addr,
-		    u32 grc_addr,
-		    u32 size_in_dwords,
-		    u32 flags);
-
-/**
- * @brief ecore_dmae_grc2host - Read data from dmae data offset
- * to source address using the given ptt
- *
- * @param p_ptt
- * @param grc_addr (dmae_data_offset)
- * @param dest_addr
- * @param size_in_dwords
- * @param flags - one of the flags defined above
- */
-enum _ecore_status_t
-ecore_dmae_grc2host(struct ecore_hwfn *p_hwfn,
-		    struct ecore_ptt *p_ptt,
-		    u32 grc_addr,
-		    dma_addr_t dest_addr,
-		    u32 size_in_dwords,
-		    u32 flags);
-
-/**
- * @brief ecore_dmae_host2host - copy data from to source address
- * to a destination address (for SRIOV) using the given ptt
- *
- * @param p_hwfn
- * @param p_ptt
- * @param source_addr
- * @param dest_addr
- * @param size_in_dwords
- * @param params
- */
-enum _ecore_status_t
-ecore_dmae_host2host(struct ecore_hwfn *p_hwfn,
-		     struct ecore_ptt *p_ptt,
-		     dma_addr_t source_addr,
-		     dma_addr_t dest_addr,
-		     u32 size_in_dwords,
-		     struct ecore_dmae_params *p_params);
-
 /**
  * @brief ecore_chain_alloc - Allocate and initialize a chain
  *
@@ -559,28 +489,79 @@ enum _ecore_status_t ecore_fw_rss_eng(struct ecore_hwfn *p_hwfn,
 				      u8 *dst_id);
 
 /**
- * @brief ecore_llh_add_mac_filter - configures a MAC filter in llh
+ * @brief ecore_llh_get_num_ppfid - Return the allocated number of LLH filter
+ *	banks that are allocated to the PF.
  *
- * @param p_hwfn
- * @param p_ptt
- * @param p_filter - MAC to add
+ * @param p_dev
+ *
+ * @return u8 - Number of LLH filter banks
  */
-enum _ecore_status_t ecore_llh_add_mac_filter(struct ecore_hwfn *p_hwfn,
-					  struct ecore_ptt *p_ptt,
-					  u8 *p_filter);
+u8 ecore_llh_get_num_ppfid(struct ecore_dev *p_dev);
+
+enum ecore_eng {
+	ECORE_ENG0,
+	ECORE_ENG1,
+	ECORE_BOTH_ENG,
+};
 
 /**
- * @brief ecore_llh_remove_mac_filter - removes a MAC filtre from llh
+ * @brief ecore_llh_get_l2_affinity_hint - Return the hint for the L2 affinity
  *
- * @param p_hwfn
- * @param p_ptt
- * @param p_filter - MAC to remove
+ * @param p_dev
+ *
+ * @return enum ecore_eng - L2 affintiy hint
  */
-void ecore_llh_remove_mac_filter(struct ecore_hwfn *p_hwfn,
-			     struct ecore_ptt *p_ptt,
-			     u8 *p_filter);
+enum ecore_eng ecore_llh_get_l2_affinity_hint(struct ecore_dev *p_dev);
 
-enum ecore_llh_port_filter_type_t {
+/**
+ * @brief ecore_llh_set_ppfid_affinity - Set the engine affinity for the given
+ *	LLH filter bank.
+ *
+ * @param p_dev
+ * @param ppfid - relative within the allocated ppfids ('0' is the default one).
+ * @param eng
+ *
+ * @return enum _ecore_status_t
+ */
+enum _ecore_status_t ecore_llh_set_ppfid_affinity(struct ecore_dev *p_dev,
+						  u8 ppfid, enum ecore_eng eng);
+
+/**
+ * @brief ecore_llh_set_roce_affinity - Set the RoCE engine affinity
+ *
+ * @param p_dev
+ * @param eng
+ *
+ * @return enum _ecore_status_t
+ */
+enum _ecore_status_t ecore_llh_set_roce_affinity(struct ecore_dev *p_dev,
+						 enum ecore_eng eng);
+
+/**
+ * @brief ecore_llh_add_mac_filter - Add a LLH MAC filter into the given filter
+ *	bank.
+ *
+ * @param p_dev
+ * @param ppfid - relative within the allocated ppfids ('0' is the default one).
+ * @param mac_addr - MAC to add
+ *
+ * @return enum _ecore_status_t
+ */
+enum _ecore_status_t ecore_llh_add_mac_filter(struct ecore_dev *p_dev, u8 ppfid,
+					      u8 mac_addr[ETH_ALEN]);
+
+/**
+ * @brief ecore_llh_remove_mac_filter - Remove a LLH MAC filter from the given
+ *	filter bank.
+ *
+ * @param p_dev
+ * @param ppfid - relative within the allocated ppfids ('0' is the default one).
+ * @param mac_addr - MAC to remove
+ */
+void ecore_llh_remove_mac_filter(struct ecore_dev *p_dev, u8 ppfid,
+				 u8 mac_addr[ETH_ALEN]);
+
+enum ecore_llh_prot_filter_type_t {
 	ECORE_LLH_FILTER_ETHERTYPE,
 	ECORE_LLH_FILTER_TCP_SRC_PORT,
 	ECORE_LLH_FILTER_TCP_DEST_PORT,
@@ -591,45 +572,52 @@ enum ecore_llh_port_filter_type_t {
 };
 
 /**
- * @brief ecore_llh_add_protocol_filter - configures a protocol filter in llh
+ * @brief ecore_llh_add_protocol_filter - Add a LLH protocol filter into the
+ *	given filter bank.
  *
- * @param p_hwfn
- * @param p_ptt
+ * @param p_dev
+ * @param ppfid - relative within the allocated ppfids ('0' is the default one).
+ * @param type - type of filters and comparing
  * @param source_port_or_eth_type - source port or ethertype to add
  * @param dest_port - destination port to add
- * @param type - type of filters and comparing
+ *
+ * @return enum _ecore_status_t
  */
 enum _ecore_status_t
-ecore_llh_add_protocol_filter(struct ecore_hwfn *p_hwfn,
-			      struct ecore_ptt *p_ptt,
-			      u16 source_port_or_eth_type,
-			      u16 dest_port,
-			      enum ecore_llh_port_filter_type_t type);
+ecore_llh_add_protocol_filter(struct ecore_dev *p_dev, u8 ppfid,
+			      enum ecore_llh_prot_filter_type_t type,
+			      u16 source_port_or_eth_type, u16 dest_port);
 
 /**
- * @brief ecore_llh_remove_protocol_filter - remove a protocol filter in llh
+ * @brief ecore_llh_remove_protocol_filter - Remove a LLH protocol filter from
+ *	the given filter bank.
  *
- * @param p_hwfn
- * @param p_ptt
+ * @param p_dev
+ * @param ppfid - relative within the allocated ppfids ('0' is the default one).
+ * @param type - type of filters and comparing
  * @param source_port_or_eth_type - source port or ethertype to add
  * @param dest_port - destination port to add
- * @param type - type of filters and comparing
  */
-void
-ecore_llh_remove_protocol_filter(struct ecore_hwfn *p_hwfn,
-				 struct ecore_ptt *p_ptt,
-				 u16 source_port_or_eth_type,
-				 u16 dest_port,
-				 enum ecore_llh_port_filter_type_t type);
+void ecore_llh_remove_protocol_filter(struct ecore_dev *p_dev, u8 ppfid,
+				      enum ecore_llh_prot_filter_type_t type,
+				      u16 source_port_or_eth_type,
+				      u16 dest_port);
 
 /**
- * @brief ecore_llh_clear_all_filters - removes all MAC filters from llh
+ * @brief ecore_llh_clear_ppfid_filters - Remove all LLH filters from the given
+ *	filter bank.
  *
- * @param p_hwfn
- * @param p_ptt
+ * @param p_dev
+ * @param ppfid - relative within the allocated ppfids ('0' is the default one).
  */
-void ecore_llh_clear_all_filters(struct ecore_hwfn *p_hwfn,
-			     struct ecore_ptt *p_ptt);
+void ecore_llh_clear_ppfid_filters(struct ecore_dev *p_dev, u8 ppfid);
+
+/**
+ * @brief ecore_llh_clear_all_filters - Remove all LLH filters
+ *
+ * @param p_dev
+ */
+void ecore_llh_clear_all_filters(struct ecore_dev *p_dev);
 
 /**
  * @brief ecore_llh_set_function_as_default - set function as default per port
@@ -701,4 +689,13 @@ ecore_set_queue_coalesce(struct ecore_hwfn *p_hwfn, u16 rx_coal,
 enum _ecore_status_t ecore_pglueb_set_pfid_enable(struct ecore_hwfn *p_hwfn,
 						  struct ecore_ptt *p_ptt,
 						  bool b_enable);
+
+/**
+ * @brief Whether FIP discovery fallback special mode is enabled or not.
+ *
+ * @param cdev
+ *
+ * @return true if device is in FIP special mode, false otherwise.
+ */
+bool ecore_is_mf_fip_special(struct ecore_dev *p_dev);
 #endif

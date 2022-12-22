@@ -18,8 +18,6 @@ LDLIBS += -lrte_bus_pci
 
 EXPORT_MAP := rte_pmd_qede_version.map
 
-LIBABIVER := 1
-
 #
 # OS
 #
@@ -105,6 +103,6 @@ SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += ecore_vf.c
 SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += qede_ethdev.c
 SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += qede_main.c
 SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += qede_rxtx.c
-SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += qede_fdir.c
+SRCS-$(CONFIG_RTE_LIBRTE_QEDE_PMD) += qede_filter.c
 
 include $(RTE_SDK)/mk/rte.lib.mk

@@ -8,7 +8,6 @@
 #include <boost/scoped_ptr.hpp>
 #include <gtest/gtest.h>
 
-#include "common/Mutex.h"
 #include "common/Cond.h"
 #include "common/errno.h"
 #include "include/stringify.h"
@@ -21,8 +20,6 @@ typedef boost::mt11213b gen_type;
 #include "common/debug.h"
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_
-
-#if GTEST_HAS_PARAM_TEST
 
 class AllocTest : public ::testing::TestWithParam<const char*> {
 
@@ -361,12 +358,7 @@ TEST_P(AllocTest, mempoolAccounting)
   ASSERT_EQ(mempool::bluestore_alloc::allocated_items(), items);
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
   Allocator,
   AllocTest,
   ::testing::Values("stupid", "bitmap", "avl", "hybrid"));
-
-#else
-
-TEST(DummyTest, ValueParameterizedTestsAreNotSupportedOnThisPlatform) {}
-#endif

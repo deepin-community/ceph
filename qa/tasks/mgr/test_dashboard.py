@@ -1,8 +1,10 @@
 import logging
+import ssl
+
 import requests
+from requests.adapters import HTTPAdapter
 
 from .mgr_test_case import MgrTestCase
-
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +39,12 @@ class TestDashboard(MgrTestCase):
         self.wait_until_true(_check_connection, timeout=30)
 
     def test_standby(self):
+        # skip this test if mgr_standby_modules=false
+        if self.mgr_cluster.mon_manager.raw_cluster_cmd(
+                "config", "get", "mgr", "mgr_standby_modules").strip() == "false":
+            log.info("Skipping test_standby since mgr_standby_modules=false")
+            return
+
         original_active_id = self.mgr_cluster.get_active_id()
         original_uri = self._get_uri("dashboard")
         log.info("Originally running manager '{}' at {}".format(
@@ -138,3 +146,32 @@ class TestDashboard(MgrTestCase):
             ))
 
         self.assertListEqual(failures, [])
+
+    def test_tls(self):
+        class CustomHTTPAdapter(HTTPAdapter):
+            def __init__(self, ssl_version):
+                self.ssl_version = ssl_version
+                super().__init__()
+
+            def init_poolmanager(self, *args, **kwargs):
+                kwargs['ssl_version'] = self.ssl_version
+                return super().init_poolmanager(*args, **kwargs)
+
+        uri = self._get_uri("dashboard")
+
+        # TLSv1
+        with self.assertRaises(requests.exceptions.SSLError):
+            session = requests.Session()
+            session.mount(uri, CustomHTTPAdapter(ssl.PROTOCOL_TLSv1))
+            session.get(uri, allow_redirects=False, verify=False)
+
+        # TLSv1.1
+        with self.assertRaises(requests.exceptions.SSLError):
+            session = requests.Session()
+            session.mount(uri, CustomHTTPAdapter(ssl.PROTOCOL_TLSv1_1))
+            session.get(uri, allow_redirects=False, verify=False)
+
+        session = requests.Session()
+        session.mount(uri, CustomHTTPAdapter(ssl.PROTOCOL_TLS))
+        r = session.get(uri, allow_redirects=False, verify=False)
+        self.assertEqual(r.status_code, 200)

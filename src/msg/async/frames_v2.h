@@ -61,9 +61,9 @@ enum class Tag : __u8 {
 struct segment_t {
   // TODO: this will be dropped with support for `allocation policies`.
   // We need them because of the rx_buffers zero-copy optimization.
-  static constexpr __le16 PAGE_SIZE_ALIGNMENT{4096};
+  static constexpr __u16 PAGE_SIZE_ALIGNMENT = 4096;
 
-  static constexpr __le16 DEFAULT_ALIGNMENT = sizeof(void *);
+  static constexpr __u16 DEFAULT_ALIGNMENT = sizeof(void *);
 
   ceph_le32 length;
   ceph_le16 alignment;
@@ -101,7 +101,7 @@ struct preamble_block_t {
   // third to #segments - MAX_NUM_SEGMENTS and so on.
   __u8 num_segments;
 
-  std::array<segment_t, MAX_NUM_SEGMENTS> segments;
+  segment_t segments[MAX_NUM_SEGMENTS];
   __u8 _reserved[2];
 
   // CRC32 for this single preamble block.
@@ -112,7 +112,7 @@ static_assert(std::is_standard_layout<preamble_block_t>::value);
 
 struct epilogue_crc_rev0_block_t {
   __u8 late_flags;  // FRAME_LATE_FLAG_ABORTED
-  std::array<ceph_le32, MAX_NUM_SEGMENTS> crc_values;
+  ceph_le32 crc_values[MAX_NUM_SEGMENTS];
 } __attribute__((packed));
 static_assert(std::is_standard_layout_v<epilogue_crc_rev0_block_t>);
 
@@ -495,14 +495,14 @@ protected:
 
 struct AuthRequestFrame : public ControlFrame<AuthRequestFrame,
                                               uint32_t, // auth method
-                                              vector<uint32_t>, // preferred modes
+                                              std::vector<uint32_t>, // preferred modes
                                               bufferlist> { // auth payload
   static const Tag tag = Tag::AUTH_REQUEST;
   using ControlFrame::Encode;
   using ControlFrame::Decode;
 
   inline uint32_t &method() { return get_val<0>(); }
-  inline vector<uint32_t> &preferred_modes() { return get_val<1>(); }
+  inline std::vector<uint32_t> &preferred_modes() { return get_val<1>(); }
   inline bufferlist &auth_payload() { return get_val<2>(); }
 
 protected:

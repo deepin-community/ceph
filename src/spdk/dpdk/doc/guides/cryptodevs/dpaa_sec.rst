@@ -58,6 +58,8 @@ Cipher algorithms:
 * ``RTE_CRYPTO_CIPHER_AES128_CTR``
 * ``RTE_CRYPTO_CIPHER_AES192_CTR``
 * ``RTE_CRYPTO_CIPHER_AES256_CTR``
+* ``RTE_CRYPTO_CIPHER_SNOW3G_UEA2``
+* ``RTE_CRYPTO_CIPHER_ZUC_EEA3``
 
 Hash algorithms:
 
@@ -66,7 +68,9 @@ Hash algorithms:
 * ``RTE_CRYPTO_AUTH_SHA256_HMAC``
 * ``RTE_CRYPTO_AUTH_SHA384_HMAC``
 * ``RTE_CRYPTO_AUTH_SHA512_HMAC``
+* ``RTE_CRYPTO_AUTH_SNOW3G_UIA2``
 * ``RTE_CRYPTO_AUTH_MD5_HMAC``
+* ``RTE_CRYPTO_AUTH_ZUC_EIA3``
 
 AEAD algorithms:
 
@@ -85,11 +89,11 @@ For blacklisting a DPAA device, following commands can be used.
 
  .. code-block:: console
 
-    <dpdk app> <EAL args> -b "dpaa_bus:dpaa-secX" -- ...
-    e.g. "dpaa_bus:dpaa-sec0"
+    <dpdk app> <EAL args> -b "dpaa:dpaa_sec-X" -- ...
+    e.g. "dpaa:dpaa_sec-1"
 
     or to disable all 4 SEC devices
-    -b "dpaa_sec:dpaa-sec0"  -b "dpaa_sec:dpaa-sec1" -b "dpaa_sec:dpaa-sec2" -b "dpaa_sec:dpaa-sec3"
+    -b "dpaa:dpaa_sec-1"  -b "dpaa:dpaa_sec-2" -b "dpaa:dpaa_sec-3" -b "dpaa:dpaa_sec-4"
 
 Limitations
 -----------
@@ -101,32 +105,11 @@ Prerequisites
 -------------
 
 DPAA_SEC driver has similar pre-requisites as described in :ref:`dpaa_overview`.
-The following dependencies are not part of DPDK and must be installed separately:
 
-* **NXP Linux SDK**
+See :doc:`../platform/dpaa` for setup information
 
-  NXP Linux software development kit (SDK) includes support for the family
-  of QorIQ® ARM-Architecture-based system on chip (SoC) processors
-  and corresponding boards.
 
-  It includes the Linux board support packages (BSPs) for NXP SoCs,
-  a fully operational tool chain, kernel and board specific modules.
-
-  SDK and related information can be obtained from:  `NXP QorIQ SDK  <http://www.nxp.com/products/software-and-tools/run-time-software/linux-sdk/linux-sdk-for-qoriq-processors:SDKLINUX>`_.
-
-* **DPDK Extras Scripts**
-
-  DPAA based resources can be configured easily with the help of ready scripts
-  as provided in the DPDK Extras repository.
-
-  `DPDK Extras Scripts <https://github.com/qoriq-open-source/dpdk-extras>`_.
-
-Currently supported by DPDK:
-
-* NXP SDK **2.0+**.
-* Supported architectures:  **arm64 LE**.
-
-* Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>` to setup the basic DPDK environment.
+- Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>` to setup the basic DPDK environment.
 
 Pre-Installation Configuration
 ------------------------------
@@ -152,7 +135,7 @@ following ``make`` command:
 .. code-block:: console
 
    cd <DPDK-source-directory>
-   make config T=arm64-dpaa-linuxapp-gcc install
+   make config T=arm64-dpaa-linux-gcc install
 
 Enabling logs
 -------------

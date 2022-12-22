@@ -60,6 +60,32 @@ vmbus_set_event(const struct rte_vmbus_device *dev,
 }
 
 /*
+ * Set the wait between when hypervisor examines the trigger.
+ */
+void
+rte_vmbus_set_latency(const struct rte_vmbus_device *dev,
+		      const struct vmbus_channel *chan,
+		      uint32_t latency)
+{
+	uint32_t trig_idx = chan->monitor_id / VMBUS_MONTRIG_LEN;
+	uint32_t trig_offs = chan->monitor_id % VMBUS_MONTRIG_LEN;
+
+	if (latency >= UINT16_MAX * 100) {
+		VMBUS_LOG(ERR, "invalid latency value %u", latency);
+		return;
+	}
+
+	if (trig_idx >= VMBUS_MONTRIGS_MAX) {
+		VMBUS_LOG(ERR, "invalid monitor trigger %u",
+			  trig_idx);
+		return;
+	}
+
+	/* Host value is expressed in 100 nanosecond units */
+	dev->monitor_page->lat[trig_idx][trig_offs] = latency / 100;
+}
+
+/*
  * Notify host that there are data pending on our TX bufring.
  *
  * Since this in userspace, rely on the monitor page.
@@ -173,6 +199,7 @@ bool rte_vmbus_chan_rx_empty(const struct vmbus_channel *channel)
 {
 	const struct vmbus_br *br = &channel->rxbr;
 
+	rte_smp_rmb();
 	return br->vbr->rindex == br->vbr->windex;
 }
 
@@ -326,12 +353,21 @@ int vmbus_chan_create(const struct rte_vmbus_device *device,
 int rte_vmbus_chan_open(struct rte_vmbus_device *device,
 			struct vmbus_channel **new_chan)
 {
+	struct mapped_vmbus_resource *uio_res;
 	int err;
+
+	uio_res = vmbus_uio_find_resource(device);
+	if (!uio_res) {
+		VMBUS_LOG(ERR, "can't find uio resource");
+		return -EINVAL;
+	}
 
 	err = vmbus_chan_create(device, device->relid, 0,
 				device->monitor_id, new_chan);
-	if (!err)
+	if (!err) {
 		device->primary = *new_chan;
+		uio_res->primary = *new_chan;
+	}
 
 	return err;
 }
@@ -370,11 +406,16 @@ void rte_vmbus_chan_close(struct vmbus_channel *chan)
 	const struct rte_vmbus_device *device = chan->device;
 	struct vmbus_channel *primary = device->primary;
 
-	if (chan != primary)
+	/*
+	 * intentionally leak primary channel because
+	 * secondary may still reference it
+	 */
+	if (chan != primary) {
 		STAILQ_REMOVE(&primary->subchannel_list, chan,
 			      vmbus_channel, next);
+		rte_free(chan);
+	}
 
-	rte_free(chan);
 }
 
 static void vmbus_dump_ring(FILE *f, const char *id, const struct vmbus_br *br)

@@ -40,14 +40,14 @@
 ;;			-----------------------------------------------------------
 ;; Clobbers ZMM0-31
 
-%include "os.asm"
+%include "include/os.asm"
 %include "job_aes_hmac.asm"
 %include "mb_mgr_datastruct.asm"
-%include "reg_sizes.asm"
-%include "memcpy.asm"
+%include "include/reg_sizes.asm"
+%include "include/memcpy.asm"
 
 ;; %define DO_DBGPRINT
-%include "dbgprint.asm"
+%include "include/dbgprint.asm"
 
 extern sha256_x16_avx512
 
@@ -332,9 +332,19 @@ end_loop:
 	mov	[state + _unused_lanes_sha256], unused_lanes
 	sub	dword [state + _num_lanes_inuse_sha256], 1
 
+        vzeroupper
+
 	mov	p, [job_rax + _auth_tag_output]
 
-	; copy 14 bytes for SHA224 and 16 bytes for SHA256
+%ifdef SHA224
+        cmp     qword [job_rax + _auth_tag_output_len_in_bytes], 14
+        jne     copy_full_digest
+%else
+        cmp     qword [job_rax + _auth_tag_output_len_in_bytes], 16
+        jne     copy_full_digest
+%endif
+
+	;; copy 14 bytes for SHA224 // 16 bytes for SHA256
 	mov	DWORD(tmp),  [state + _args_digest_sha256 + 4*idx + 0*SHA256_DIGEST_ROW_SIZE]
 	mov	DWORD(tmp2), [state + _args_digest_sha256 + 4*idx + 1*SHA256_DIGEST_ROW_SIZE]
 	mov	DWORD(tmp3), [state + _args_digest_sha256 + 4*idx + 2*SHA256_DIGEST_ROW_SIZE]
@@ -346,13 +356,75 @@ end_loop:
 	mov	[p + 0*4], DWORD(tmp)
 	mov	[p + 1*4], DWORD(tmp2)
 	mov	[p + 2*4], DWORD(tmp3)
-
 %ifdef SHA224
 	mov	[p + 3*4], WORD(tmp4)
 %else
 	mov	[p + 3*4], DWORD(tmp4)
 %endif
-        vzeroupper
+        jmp     clear_ret
+copy_full_digest:
+	;; copy 28 bytes for SHA224 // 32 bytes for SHA256
+	mov	DWORD(tmp),  [state + _args_digest_sha256 + 4*idx + 0*SHA256_DIGEST_ROW_SIZE]
+	mov	DWORD(tmp2), [state + _args_digest_sha256 + 4*idx + 1*SHA256_DIGEST_ROW_SIZE]
+	mov	DWORD(tmp3), [state + _args_digest_sha256 + 4*idx + 2*SHA256_DIGEST_ROW_SIZE]
+	mov	DWORD(tmp4), [state + _args_digest_sha256 + 4*idx + 3*SHA256_DIGEST_ROW_SIZE]
+	bswap	DWORD(tmp)
+	bswap	DWORD(tmp2)
+	bswap	DWORD(tmp3)
+	bswap	DWORD(tmp4)
+	mov	[p + 0*4], DWORD(tmp)
+	mov	[p + 1*4], DWORD(tmp2)
+	mov	[p + 2*4], DWORD(tmp3)
+	mov	[p + 3*4], DWORD(tmp4)
+
+	mov	DWORD(tmp),  [state + _args_digest_sha256 + 4*idx + 4*SHA256_DIGEST_ROW_SIZE]
+	mov	DWORD(tmp2), [state + _args_digest_sha256 + 4*idx + 5*SHA256_DIGEST_ROW_SIZE]
+	mov	DWORD(tmp3), [state + _args_digest_sha256 + 4*idx + 6*SHA256_DIGEST_ROW_SIZE]
+%ifndef SHA224
+	mov	DWORD(tmp4), [state + _args_digest_sha256 + 4*idx + 7*SHA256_DIGEST_ROW_SIZE]
+%endif
+	bswap	DWORD(tmp)
+	bswap	DWORD(tmp2)
+	bswap	DWORD(tmp3)
+%ifndef SHA224
+	bswap	DWORD(tmp4)
+%endif
+	mov	[p + 4*4], DWORD(tmp)
+	mov	[p + 5*4], DWORD(tmp2)
+	mov	[p + 6*4], DWORD(tmp3)
+%ifndef SHA224
+	mov	[p + 7*4], DWORD(tmp4)
+%endif
+
+clear_ret:
+
+%ifdef SAFE_DATA
+        ;; Clear digest (28B/32B), outer_block (28B/32B) and extra_block (64B) of returned job
+%assign J 0
+%rep 7
+        mov     dword [state + _args_digest_sha256 + SHA256_DIGEST_WORD_SIZE*idx + J*SHA256_DIGEST_ROW_SIZE], 0
+%assign J (J+1)
+%endrep
+%ifndef SHA224
+        mov     dword [state + _args_digest_sha256 + SHA256_DIGEST_WORD_SIZE*idx + 7*SHA256_DIGEST_ROW_SIZE], 0
+%endif
+
+        vpxorq  zmm0, zmm0
+        imul	lane_data, idx, _HMAC_SHA1_LANE_DATA_size
+        lea	lane_data, [state + _ldata_sha256 + lane_data]
+        ;; Clear first 64 bytes of extra_block
+        vmovdqu64  [lane_data + _extra_block], zmm0
+
+        ;; Clear first 28 bytes (SHA-224) or 32 bytes (SHA-256) of outer_block
+%ifdef SHA224
+        vmovdqa64 [lane_data + _outer_block], xmm0
+        mov     qword [lane_data + _outer_block + 16], 0
+        mov     dword [lane_data + _outer_block + 24], 0
+%else
+        vmovdqu64 [lane_data + _outer_block], ymm0
+%endif
+%endif ;; SAFE_DATA
+
 return:
 	mov	rbx, [rsp + _gpr_save + 8*0]
 	mov	rbp, [rsp + _gpr_save + 8*1]

@@ -40,6 +40,8 @@ The following table describes the support status for current Amazon S3 functiona
 +---------------------------------+-----------------+----------------------------------------+
 | **Bucket Lifecycle**            | Supported       |                                        |
 +---------------------------------+-----------------+----------------------------------------+
+| **Bucket Replication**          | Partial         | Only permitted across zones            |
++---------------------------------+-----------------+----------------------------------------+
 | **Policy (Buckets, Objects)**   | Supported       | ACLs & bucket policies are supported   |
 +---------------------------------+-----------------+----------------------------------------+
 | **Bucket Website**              | Supported       |                                        |
@@ -74,9 +76,10 @@ The following table describes the support status for current Amazon S3 functiona
 +---------------------------------+-----------------+----------------------------------------+
 | **Object Tagging**              | Supported       | See :ref:`tag_policy` for Policy verbs |
 +---------------------------------+-----------------+----------------------------------------+
+| **Bucket Tagging**              | Supported       |                                        |
++---------------------------------+-----------------+----------------------------------------+
 | **Storage Class**               | Supported       | See :ref:`storage_classes`             |
 +---------------------------------+-----------------+----------------------------------------+
-
 
 Unsupported Header Fields
 -------------------------
@@ -86,8 +89,6 @@ The following common request header fields are not supported:
 +----------------------------+------------+
 | Name                       | Type       |
 +============================+============+
-| **x-amz-security-token**   | Request    |
-+----------------------------+------------+
 | **Server**                 | Response   |
 +----------------------------+------------+
 | **x-amz-delete-marker**    | Response   |

@@ -35,8 +35,32 @@
 
 #include "spdk/event.h"
 #include "spdk/nvme.h"
+#include "spdk/string.h"
+#include "spdk/thread.h"
 
 static char g_path[256];
+static struct spdk_poller *g_poller;
+
+struct ctrlr_entry {
+	struct spdk_nvme_ctrlr *ctrlr;
+	struct ctrlr_entry *next;
+};
+
+static struct ctrlr_entry *g_controllers = NULL;
+
+static void
+cleanup(void)
+{
+	struct ctrlr_entry *ctrlr_entry = g_controllers;
+
+	while (ctrlr_entry) {
+		struct ctrlr_entry *next = ctrlr_entry->next;
+
+		spdk_nvme_detach(ctrlr_entry->ctrlr);
+		free(ctrlr_entry);
+		ctrlr_entry = next;
+	}
+}
 
 static void
 usage(char *executable_name)
@@ -67,10 +91,28 @@ static void
 attach_cb(void *cb_ctx, const struct spdk_nvme_transport_id *trid,
 	  struct spdk_nvme_ctrlr *ctrlr, const struct spdk_nvme_ctrlr_opts *opts)
 {
+	struct ctrlr_entry *entry;
+
+	entry = malloc(sizeof(struct ctrlr_entry));
+	if (entry == NULL) {
+		fprintf(stderr, "Malloc error\n");
+		exit(1);
+	}
+
+	entry->ctrlr = ctrlr;
+	entry->next = g_controllers;
+	g_controllers = entry;
+}
+
+static int
+stub_sleep(void *arg)
+{
+	usleep(1000 * 1000);
+	return 0;
 }
 
 static void
-stub_start(void *arg1, void *arg2)
+stub_start(void *arg1)
 {
 	int shm_id = (intptr_t)arg1;
 
@@ -86,11 +128,14 @@ stub_start(void *arg1, void *arg2)
 		fprintf(stderr, "could not create sentinel file %s\n", g_path);
 		exit(1);
 	}
+
+	g_poller = SPDK_POLLER_REGISTER(stub_sleep, NULL, 0);
 }
 
 static void
 stub_shutdown(void)
 {
+	spdk_poller_unregister(&g_poller);
 	unlink(g_path);
 	spdk_app_stop(0);
 }
@@ -100,6 +145,7 @@ main(int argc, char **argv)
 {
 	int ch;
 	struct spdk_app_opts opts = {};
+	long int val;
 
 	/* default value in opts structure */
 	spdk_app_opts_init(&opts);
@@ -108,26 +154,35 @@ main(int argc, char **argv)
 	opts.rpc_addr = NULL;
 
 	while ((ch = getopt(argc, argv, "i:m:n:p:s:H")) != -1) {
-		switch (ch) {
-		case 'i':
-			opts.shm_id = atoi(optarg);
-			break;
-		case 'm':
+		if (ch == 'm') {
 			opts.reactor_mask = optarg;
-			break;
-		case 'n':
-			opts.mem_channel = atoi(optarg);
-			break;
-		case 'p':
-			opts.master_core = atoi(optarg);
-			break;
-		case 's':
-			opts.mem_size = atoi(optarg);
-			break;
-		case 'H':
-		default:
+		} else if (ch == '?') {
 			usage(argv[0]);
-			exit(EXIT_SUCCESS);
+			exit(1);
+		} else {
+			val = spdk_strtol(optarg, 10);
+			if (val < 0) {
+				fprintf(stderr, "Converting a string to integer failed\n");
+				exit(1);
+			}
+			switch (ch) {
+			case 'i':
+				opts.shm_id = val;
+				break;
+			case 'n':
+				opts.mem_channel = val;
+				break;
+			case 'p':
+				opts.master_core = val;
+				break;
+			case 's':
+				opts.mem_size = val;
+				break;
+			case 'H':
+			default:
+				usage(argv[0]);
+				exit(EXIT_SUCCESS);
+			}
 		}
 	}
 
@@ -138,9 +193,10 @@ main(int argc, char **argv)
 	}
 
 	opts.shutdown_cb = stub_shutdown;
-	opts.max_delay_us = 1000 * 1000;
 
-	ch = spdk_app_start(&opts, stub_start, (void *)(intptr_t)opts.shm_id, NULL);
+	ch = spdk_app_start(&opts, stub_start, (void *)(intptr_t)opts.shm_id);
+
+	cleanup();
 	spdk_app_fini();
 
 	return ch;

@@ -1,3 +1,5 @@
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// vim: ts=8 sw=2 smarttab
 /*
  * Ceph - scalable distributed file system
  *
@@ -28,6 +30,11 @@
 
 #define DECIMAL_PRECISION 10
 
+using ceph::bufferlist;
+using std::string;
+using ceph::decode;
+using ceph::encode;
+
 CLS_VER(1,0)
 CLS_NAME(numops)
 
@@ -39,7 +46,7 @@ static int add(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   try {
     decode(key, iter);
     decode(diff_str, iter);
-  } catch (const buffer::error &err) {
+  } catch (const ceph::buffer::error &err) {
     CLS_LOG(20, "add: invalid decode of input");
     return -EINVAL;
   }
@@ -94,7 +101,7 @@ static int mul(cls_method_context_t hctx, bufferlist *in, bufferlist *out)
   try {
     decode(key, iter);
     decode(diff_str, iter);
-  } catch (const buffer::error &err) {
+  } catch (const ceph::buffer::error &err) {
     CLS_LOG(20, "mul: invalid decode of input");
     return -EINVAL;
   }

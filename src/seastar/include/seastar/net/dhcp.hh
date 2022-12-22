@@ -22,7 +22,7 @@
 #pragma once
 
 #include <seastar/net/ip.hh>
-#include <seastar/core/reactor.hh>
+#include <seastar/util/std-compat.hh>
 
 namespace seastar {
 
@@ -37,7 +37,7 @@ namespace net {
 class dhcp {
 public:
     dhcp(ipv4 &);
-    dhcp(dhcp &&);
+    dhcp(dhcp &&) noexcept;
     ~dhcp();
 
     static const steady_clock_type::duration default_timeout;
@@ -59,7 +59,7 @@ public:
         uint16_t mtu = 0;
     };
 
-    typedef future<bool, lease> result_type;
+    typedef future<std::optional<lease>> result_type;
 
     /**
      * Runs a discover/request sequence on the ipv4 "stack".

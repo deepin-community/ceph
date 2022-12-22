@@ -1,3 +1,4 @@
+from io import StringIO
 import json
 import logging
 import os
@@ -5,7 +6,6 @@ from textwrap import dedent
 from tasks.cephfs.cephfs_test_case import CephFSTestCase
 from tasks.cephfs.fuse_mount import FuseMount
 from teuthology.exceptions import CommandFailedError
-from teuthology.misc import sudo_write_file
 
 log = logging.getLogger(__name__)
 
@@ -52,11 +52,12 @@ vc.disconnect()
             "mon", "allow *"
         )
         mount.client_id = id_name
-        sudo_write_file(mount.client_remote, mount.get_keyring_path(), out)
+        mount.client_remote.write_file(mount.get_keyring_path(),
+                                       out, sudo=True)
         self.set_conf("client.{name}".format(name=id_name), "keyring", mount.get_keyring_path())
 
     def _configure_guest_auth(self, volumeclient_mount, guest_mount,
-                              guest_entity, mount_path,
+                              guest_entity, cephfs_mntpt,
                               namespace_prefix=None, readonly=False,
                               tenant_id=None, allow_existing_id=False):
         """
@@ -66,7 +67,7 @@ vc.disconnect()
                                    volumeclient.
         :param guest_mount: mount used by the guest client.
         :param guest_entity: auth ID used by the guest client.
-        :param mount_path: path of the volume.
+        :param cephfs_mntpt: path of the volume.
         :param namespace_prefix: name prefix of the RADOS namespace, which
                                  is used for the volume's layout.
         :param readonly: defaults to False. If set to 'True' only read-only
@@ -74,7 +75,7 @@ vc.disconnect()
         :param tenant_id: (OpenStack) tenant ID of the guest client.
         """
 
-        head, volume_id = os.path.split(mount_path)
+        head, volume_id = os.path.split(cephfs_mntpt)
         head, group_id = os.path.split(head)
         head, volume_prefix = os.path.split(head)
         volume_prefix = "/" + volume_prefix
@@ -117,8 +118,8 @@ vc.disconnect()
             key=key
         ))
         guest_mount.client_id = guest_entity
-        sudo_write_file(guest_mount.client_remote,
-                        guest_mount.get_keyring_path(), keyring_txt)
+        guest_mount.client_remote.write_file(guest_mount.get_keyring_path(),
+                                             keyring_txt, sudo=True)
 
         # Add a guest client section to the ceph config file.
         self.set_conf("client.{0}".format(guest_entity), "client quota", "True")
@@ -179,7 +180,7 @@ vc.disconnect()
 
         # Create a 100MB volume
         volume_size = 100
-        mount_path = self._volume_client_python(self.mount_b, dedent("""
+        cephfs_mntpt = self._volume_client_python(self.mount_b, dedent("""
             vp = VolumePath("{group_id}", "{volume_id}")
             create_result = vc.create_volume(vp, 1024*1024*{volume_size})
             print(create_result['mount_path'])
@@ -195,8 +196,8 @@ vc.disconnect()
         # Authorize and configure credentials for the guest to mount the
         # the volume.
         self._configure_guest_auth(self.mount_b, self.mounts[2], guest_entity,
-                                   mount_path, namespace_prefix)
-        self.mounts[2].mount(mount_path=mount_path)
+                                   cephfs_mntpt, namespace_prefix)
+        self.mounts[2].mount_wait(cephfs_mntpt=cephfs_mntpt)
 
         # The kernel client doesn't have the quota-based df behaviour,
         # or quotas at all, so only exercise the client behaviour when
@@ -251,7 +252,7 @@ vc.disconnect()
             ns_in_attr = self.mount_a.getfattr(os.path.join("myprefix", group_id, volume_id), "ceph.dir.layout.pool_namespace")
             self.assertEqual(namespace, ns_in_attr)
 
-            objects_in_ns = set(self.fs.rados(["ls"], pool=pool_name, namespace=namespace).split("\n"))
+            objects_in_ns = set(self.fs.rados(["ls"], pool=pool_name, namespace=namespace, stdout=StringIO()).stdout.getvalue().split("\n"))
             self.assertNotEqual(objects_in_ns, set())
 
             # De-authorize the guest
@@ -273,7 +274,7 @@ vc.disconnect()
             try:
                 background.wait()
             except CommandFailedError:
-                # command failed with EBLACKLISTED?
+                # command failed with EBLOCKLISTED?
                 if "transport endpoint shutdown" in background.stderr.getvalue():
                     pass
                 else:
@@ -355,33 +356,8 @@ vc.disconnect()
         :return:
         """
 
-        # Because the teuthology config template sets mon_max_pg_per_osd to
-        # 10000 (i.e. it just tries to ignore health warnings), reset it to something
-        # sane before using volume_client, to avoid creating pools with absurdly large
-        # numbers of PGs.
-        self.set_conf("global", "mon max pg per osd", "300")
-        for mon_daemon_state in self.ctx.daemons.iter_daemons_of_role('mon'):
-            mon_daemon_state.restart()
-
         self.mount_b.umount_wait()
         self._configure_vc_auth(self.mount_b, "manila")
-
-        # Calculate how many PGs we'll expect the new volume pool to have
-        osd_map = json.loads(self.fs.mon_manager.raw_cluster_cmd('osd', 'dump', '--format=json-pretty'))
-        max_per_osd = int(self.fs.get_config('mon_max_pg_per_osd'))
-        osd_count = len(osd_map['osds'])
-        max_overall = osd_count * max_per_osd
-
-        existing_pg_count = 0
-        for p in osd_map['pools']:
-            existing_pg_count += p['pg_num']
-
-        expected_pg_num = (max_overall - existing_pg_count) // 10
-        log.info("max_per_osd {0}".format(max_per_osd))
-        log.info("osd_count {0}".format(osd_count))
-        log.info("max_overall {0}".format(max_overall))
-        log.info("existing_pg_count {0}".format(existing_pg_count))
-        log.info("expected_pg_num {0}".format(expected_pg_num))
 
         pools_a = json.loads(self.fs.mon_manager.raw_cluster_cmd("osd", "dump", "--format=json-pretty"))['pools']
 
@@ -389,7 +365,7 @@ vc.disconnect()
         volume_id = "volid"
         self._volume_client_python(self.mount_b, dedent("""
             vp = VolumePath("{group_id}", "{volume_id}")
-            vc.create_volume(vp, 10, data_isolated=True)
+            vc.create_volume(vp, data_isolated=True)
         """.format(
             group_id=group_id,
             volume_id=volume_id,
@@ -401,12 +377,6 @@ vc.disconnect()
         new_pools = set(p['pool_name'] for p in pools_b) - set([p['pool_name'] for p in pools_a])
         self.assertEqual(len(new_pools), 1)
 
-        # It should have followed the heuristic for PG count
-        # (this is an overly strict test condition, so we may want to remove
-        #  it at some point as/when the logic gets fancier)
-        created_pg_num = self.fs.mon_manager.get_pool_property(list(new_pools)[0], "pg_num")
-        self.assertEqual(expected_pg_num, created_pg_num)
-
     def test_15303(self):
         """
         Reproducer for #15303 "Client holds incorrect complete flag on dir
@@ -416,13 +386,13 @@ vc.disconnect()
             m.umount_wait()
 
         # Create a dir on mount A
-        self.mount_a.mount()
+        self.mount_a.mount_wait()
         self.mount_a.run_shell(["mkdir", "parent1"])
         self.mount_a.run_shell(["mkdir", "parent2"])
         self.mount_a.run_shell(["mkdir", "parent1/mydir"])
 
         # Put some files in it from mount B
-        self.mount_b.mount()
+        self.mount_b.mount_wait()
         self.mount_b.run_shell(["touch", "parent1/mydir/afile"])
         self.mount_b.umount_wait()
 
@@ -451,7 +421,7 @@ vc.disconnect()
 
         guest_entity = "guest"
         group_id = "grpid"
-        mount_paths = []
+        cephfs_mntpts = []
         volume_ids = []
 
         # Create two volumes. Authorize 'guest' auth ID to mount the two
@@ -459,7 +429,7 @@ vc.disconnect()
         for i in range(2):
             # Create volume.
             volume_ids.append("volid_{0}".format(str(i)))
-            mount_paths.append(
+            cephfs_mntpts.append(
                 self._volume_client_python(volumeclient_mount, dedent("""
                     vp = VolumePath("{group_id}", "{volume_id}")
                     create_result = vc.create_volume(vp, 10 * 1024 * 1024)
@@ -471,12 +441,12 @@ vc.disconnect()
 
             # Authorize 'guest' auth ID to mount the volume.
             self._configure_guest_auth(volumeclient_mount, guest_mounts[i],
-                                       guest_entity, mount_paths[i])
+                                       guest_entity, cephfs_mntpts[i])
 
             # Mount the volume.
             guest_mounts[i].mountpoint_dir_name = 'mnt.{id}.{suffix}'.format(
                 id=guest_entity, suffix=str(i))
-            guest_mounts[i].mount(mount_path=mount_paths[i])
+            guest_mounts[i].mount_wait(cephfs_mntpt=cephfs_mntpts[i])
             guest_mounts[i].write_n_mb("data.bin", 1)
 
 
@@ -494,7 +464,7 @@ vc.disconnect()
 
         # Evicted guest client, guest_mounts[0], should not be able to do
         # anymore metadata ops.  It should start failing all operations
-        # when it sees that its own address is in the blacklist.
+        # when it sees that its own address is in the blocklist.
         try:
             guest_mounts[0].write_n_mb("rogue.bin", 1)
         except CommandFailedError:
@@ -502,7 +472,7 @@ vc.disconnect()
         else:
             raise RuntimeError("post-eviction write should have failed!")
 
-        # The blacklisted guest client should now be unmountable
+        # The blocklisted guest client should now be unmountable
         guest_mounts[0].umount_wait()
 
         # Guest client, guest_mounts[1], using the same auth ID 'guest', but
@@ -543,7 +513,7 @@ vc.disconnect()
         volume_id = u"volid"
 
         # Create
-        mount_path = self._volume_client_python(self.mount_b, dedent("""
+        cephfs_mntpt = self._volume_client_python(self.mount_b, dedent("""
             vp = VolumePath("{group_id}", u"{volume_id}")
             create_result = vc.create_volume(vp, 10)
             print(create_result['mount_path'])
@@ -553,14 +523,14 @@ vc.disconnect()
         )))
 
         # Strip leading "/"
-        mount_path = mount_path[1:]
+        cephfs_mntpt = cephfs_mntpt[1:]
 
         # A file with non-ascii characters
-        self.mount_a.run_shell(["touch", os.path.join(mount_path, u"b\u00F6b")])
+        self.mount_a.run_shell(["touch", os.path.join(cephfs_mntpt, u"b\u00F6b")])
 
         # A file with no permissions to do anything
-        self.mount_a.run_shell(["touch", os.path.join(mount_path, "noperms")])
-        self.mount_a.run_shell(["chmod", "0000", os.path.join(mount_path, "noperms")])
+        self.mount_a.run_shell(["touch", os.path.join(cephfs_mntpt, "noperms")])
+        self.mount_a.run_shell(["chmod", "0000", os.path.join(cephfs_mntpt, "noperms")])
 
         self._volume_client_python(self.mount_b, dedent("""
             vp = VolumePath("{group_id}", u"{volume_id}")
@@ -593,7 +563,7 @@ vc.disconnect()
         volume_id = "volid"
 
         # Create a volume.
-        mount_path = self._volume_client_python(volumeclient_mount, dedent("""
+        cephfs_mntpt = self._volume_client_python(volumeclient_mount, dedent("""
             vp = VolumePath("{group_id}", "{volume_id}")
             create_result = vc.create_volume(vp, 1024*1024*10)
             print(create_result['mount_path'])
@@ -604,11 +574,11 @@ vc.disconnect()
 
         # Authorize and configure credentials for the guest to mount the
         # the volume with read-write access.
-        self._configure_guest_auth(volumeclient_mount, guest_mount, guest_entity,
-                                   mount_path, readonly=False)
+        self._configure_guest_auth(volumeclient_mount, guest_mount,
+                                   guest_entity, cephfs_mntpt, readonly=False)
 
         # Mount the volume, and write to it.
-        guest_mount.mount(mount_path=mount_path)
+        guest_mount.mount_wait(cephfs_mntpt=cephfs_mntpt)
         guest_mount.write_n_mb("data.bin", 1)
 
         # Change the guest auth ID's authorization to read-only mount access.
@@ -621,13 +591,13 @@ vc.disconnect()
             guest_entity=guest_entity
         )))
         self._configure_guest_auth(volumeclient_mount, guest_mount, guest_entity,
-                                   mount_path, readonly=True)
+                                   cephfs_mntpt, readonly=True)
 
         # The effect of the change in access level to read-only is not
         # immediate. The guest sees the change only after a remount of
         # the volume.
         guest_mount.umount_wait()
-        guest_mount.mount(mount_path=mount_path)
+        guest_mount.mount_wait(cephfs_mntpt=cephfs_mntpt)
 
         # Read existing content of the volume.
         self.assertListEqual(guest_mount.ls(guest_mount.mountpoint), ["data.bin"])
@@ -1572,7 +1542,7 @@ vc.disconnect()
             obj_data = obj_data
         )))
 
-        read_data = self.fs.rados(['get', obj_name, '-'], pool=pool_name)
+        read_data = self.fs.rados(['get', obj_name, '-'], pool=pool_name, stdout=StringIO()).stdout.getvalue()
         self.assertEqual(obj_data, read_data)
 
     def test_get_object(self):
@@ -1584,7 +1554,7 @@ vc.disconnect()
         obj_name = 'test_vc_ob_2'
         pool_name = self.fs.get_data_pool_names()[0]
 
-        self.fs.rados(['put', obj_name, '-'], pool=pool_name, stdin_data=obj_data)
+        self.fs.rados(['put', obj_name, '-'], pool=pool_name, stdin=StringIO(obj_data))
 
         self._volume_client_python(vc_mount, dedent("""
             data_read = vc.get_object("{pool_name}", "{obj_name}")
@@ -1603,7 +1573,7 @@ vc.disconnect()
         obj_data = 'test_data'
         obj_name = 'test_vc_obj'
         pool_name = self.fs.get_data_pool_names()[0]
-        self.fs.rados(['put', obj_name, '-'], pool=pool_name, stdin_data=obj_data)
+        self.fs.rados(['put', obj_name, '-'], pool=pool_name, stdin=StringIO(obj_data))
 
         self._volume_client_python(vc_mount, dedent("""
             data, version_before = vc.get_object_and_version("{pool_name}", "{obj_name}")
@@ -1626,7 +1596,7 @@ vc.disconnect()
         obj_data = 'test_data'
         obj_name = 'test_vc_ob_2'
         pool_name = self.fs.get_data_pool_names()[0]
-        self.fs.rados(['put', obj_name, '-'], pool=pool_name, stdin_data=obj_data)
+        self.fs.rados(['put', obj_name, '-'], pool=pool_name, stdin=StringIO(obj_data))
 
         # Test if put_object_versioned() crosschecks the version of the
         # given object. Being a negative test, an exception is expected.
@@ -1664,7 +1634,7 @@ vc.disconnect()
         obj_name = 'test_vc_obj_3'
         pool_name = self.fs.get_data_pool_names()[0]
 
-        self.fs.rados(['put', obj_name, '-'], pool=pool_name, stdin_data=obj_data)
+        self.fs.rados(['put', obj_name, '-'], pool=pool_name, stdin=StringIO(obj_data))
 
         self._volume_client_python(vc_mount, dedent("""
             data_read = vc.delete_object("{pool_name}", "{obj_name}")
@@ -1700,7 +1670,7 @@ vc.disconnect()
         # Create a volume
         group_id = "grpid"
         volume_id = "volid"
-        mount_path = self._volume_client_python(vc_mount, dedent("""
+        cephfs_mntpt = self._volume_client_python(vc_mount, dedent("""
             vp = VolumePath("{group_id}", "{volume_id}")
             create_result = vc.create_volume(vp, 1024*1024*10)
             print(create_result['mount_path'])
@@ -1716,13 +1686,13 @@ vc.disconnect()
 
         guest_mount = self.mounts[2]
         guest_mount.umount_wait()
-
-        # Set auth caps for the auth ID using the volumeclient
-        self._configure_guest_auth(vc_mount, guest_mount, guest_id, mount_path, allow_existing_id=True)
+# Set auth caps for the auth ID using the volumeclient
+        self._configure_guest_auth(vc_mount, guest_mount, guest_id, cephfs_mntpt,
+                                   allow_existing_id=True)
 
         # Mount the volume in the guest using the auth ID to assert that the
         # auth caps are valid
-        guest_mount.mount(mount_path=mount_path)
+        guest_mount.mount_wait(cephfs_mntpt=cephfs_mntpt)
 
     def test_volume_without_namespace_isolation(self):
         """

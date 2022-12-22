@@ -44,9 +44,17 @@ struct ip_frag {
 
 /** @internal <src addr, dst_addr, id> to uniquely identify fragmented datagram. */
 struct ip_frag_key {
-	uint64_t src_dst[4];      /**< src address, first 8 bytes used for IPv4 */
-	uint32_t id;           /**< dst address */
-	uint32_t key_len;      /**< src/dst key length */
+	uint64_t src_dst[4];
+	/**< src and dst address, only first 8 bytes used for IPv4 */
+	RTE_STD_C11
+	union {
+		uint64_t id_key_len; /**< combined for easy fetch */
+		__extension__
+		struct {
+			uint32_t id;       /**< packet id */
+			uint32_t key_len;  /**< src/dst key length */
+		};
+	};
 };
 
 /**
@@ -65,10 +73,13 @@ struct ip_frag_pkt {
 
 #define IP_FRAG_DEATH_ROW_LEN 32 /**< death row size (in packets) */
 
+/* death row size in mbufs */
+#define IP_FRAG_DEATH_ROW_MBUF_LEN (IP_FRAG_DEATH_ROW_LEN * (IP_MAX_FRAG_NUM + 1))
+
 /** mbuf death row (packets to be freed) */
 struct rte_ip_frag_death_row {
 	uint32_t cnt;          /**< number of mbufs currently on death row */
-	struct rte_mbuf *row[IP_FRAG_DEATH_ROW_LEN * (IP_MAX_FRAG_NUM + 1)];
+	struct rte_mbuf *row[IP_FRAG_DEATH_ROW_MBUF_LEN];
 	/**< mbufs to be freed */
 };
 
@@ -104,6 +115,7 @@ struct rte_ip_frag_tbl {
 #define	RTE_IPV6_EHDR_MF_MASK			1
 #define	RTE_IPV6_EHDR_FO_SHIFT			3
 #define	RTE_IPV6_EHDR_FO_MASK			(~((1 << RTE_IPV6_EHDR_FO_SHIFT) - 1))
+#define	RTE_IPV6_EHDR_FO_ALIGN			(1 << RTE_IPV6_EHDR_FO_SHIFT)
 
 #define RTE_IPV6_FRAG_USED_MASK			\
 	(RTE_IPV6_EHDR_MF_MASK | RTE_IPV6_EHDR_FO_MASK)
@@ -119,7 +131,7 @@ struct ipv6_extension_fragment {
 	uint8_t reserved;               /**< Reserved */
 	uint16_t frag_data;             /**< All fragmentation data */
 	uint32_t id;                    /**< Packet ID */
-} __attribute__((__packed__));
+} __rte_packed;
 
 
 
@@ -207,7 +219,7 @@ rte_ipv6_fragment_packet(struct rte_mbuf *pkt_in,
  */
 struct rte_mbuf *rte_ipv6_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,
 		struct rte_ip_frag_death_row *dr,
-		struct rte_mbuf *mb, uint64_t tms, struct ipv6_hdr *ip_hdr,
+		struct rte_mbuf *mb, uint64_t tms, struct rte_ipv6_hdr *ip_hdr,
 		struct ipv6_extension_fragment *frag_hdr);
 
 /**
@@ -222,7 +234,7 @@ struct rte_mbuf *rte_ipv6_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,
  *   present.
  */
 static inline struct ipv6_extension_fragment *
-rte_ipv6_frag_get_ipv6_fragment_header(struct ipv6_hdr *hdr)
+rte_ipv6_frag_get_ipv6_fragment_header(struct rte_ipv6_hdr *hdr)
 {
 	if (hdr->proto == IPPROTO_FRAGMENT) {
 		return (struct ipv6_extension_fragment *) ++hdr;
@@ -262,7 +274,7 @@ int32_t rte_ipv4_fragment_packet(struct rte_mbuf *pkt_in,
 
 /**
  * This function implements reassembly of fragmented IPv4 packets.
- * Incoming mbufs should have its l2_len/l3_len fields setup correclty.
+ * Incoming mbufs should have its l2_len/l3_len fields setup correctly.
  *
  * @param tbl
  *   Table where to lookup/add the fragmented packet.
@@ -281,7 +293,7 @@ int32_t rte_ipv4_fragment_packet(struct rte_mbuf *pkt_in,
  */
 struct rte_mbuf * rte_ipv4_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,
 		struct rte_ip_frag_death_row *dr,
-		struct rte_mbuf *mb, uint64_t tms, struct ipv4_hdr *ip_hdr);
+		struct rte_mbuf *mb, uint64_t tms, struct rte_ipv4_hdr *ip_hdr);
 
 /**
  * Check if the IPv4 packet is fragmented
@@ -292,12 +304,13 @@ struct rte_mbuf * rte_ipv4_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,
  *   1 if fragmented, 0 if not fragmented
  */
 static inline int
-rte_ipv4_frag_pkt_is_fragmented(const struct ipv4_hdr * hdr) {
+rte_ipv4_frag_pkt_is_fragmented(const struct rte_ipv4_hdr *hdr)
+{
 	uint16_t flag_offset, ip_flag, ip_ofs;
 
 	flag_offset = rte_be_to_cpu_16(hdr->fragment_offset);
-	ip_ofs = (uint16_t)(flag_offset & IPV4_HDR_OFFSET_MASK);
-	ip_flag = (uint16_t)(flag_offset & IPV4_HDR_MF_FLAG);
+	ip_ofs = (uint16_t)(flag_offset & RTE_IPV4_HDR_OFFSET_MASK);
+	ip_flag = (uint16_t)(flag_offset & RTE_IPV4_HDR_MF_FLAG);
 
 	return ip_flag != 0 || ip_ofs  != 0;
 }
@@ -324,6 +337,21 @@ void rte_ip_frag_free_death_row(struct rte_ip_frag_death_row *dr,
  */
 void
 rte_ip_frag_table_statistics_dump(FILE * f, const struct rte_ip_frag_tbl *tbl);
+
+/**
+ * Delete expired fragments
+ *
+ * @param tbl
+ *   Table to delete expired fragments from
+ * @param dr
+ *   Death row to free buffers to
+ * @param tms
+ *   Current timestamp
+ */
+__rte_experimental
+void
+rte_frag_table_del_expired_entries(struct rte_ip_frag_tbl *tbl,
+	struct rte_ip_frag_death_row *dr, uint64_t tms);
 
 #ifdef __cplusplus
 }

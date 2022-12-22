@@ -30,14 +30,6 @@ Please note that enabling debugging options may affect system performance.
 
   Toggle compilation of LiquidIO PMD.
 
-- ``CONFIG_RTE_LIBRTE_LIO_DEBUG_DRIVER`` (default ``n``)
-
-  Toggle display of generic debugging messages.
-
-- ``CONFIG_RTE_LIBRTE_LIO_DEBUG_INIT`` (default ``n``)
-
-  Toggle display of initialization related messages.
-
 - ``CONFIG_RTE_LIBRTE_LIO_DEBUG_RX`` (default ``n``)
 
   Toggle display of receive fast path run-time messages.
@@ -198,7 +190,7 @@ Ring size
 
 Number of descriptors for Rx/Tx ring should be in the range 128 to 512.
 
-CRC striping
-~~~~~~~~~~~~
+CRC stripping
+~~~~~~~~~~~~~
 
 LiquidIO adapters strip ethernet FCS of every packet coming to the host interface.

@@ -5,6 +5,10 @@
 #ifndef EAL_OPTIONS_H
 #define EAL_OPTIONS_H
 
+#include "getopt.h"
+
+struct rte_tel_data;
+
 enum {
 	/* long options mapped to a short option */
 #define OPT_HELP              "help"
@@ -31,6 +35,14 @@ enum {
 	OPT_LCORES_NUM,
 #define OPT_LOG_LEVEL         "log-level"
 	OPT_LOG_LEVEL_NUM,
+#define OPT_TRACE             "trace"
+	OPT_TRACE_NUM,
+#define OPT_TRACE_DIR         "trace-dir"
+	OPT_TRACE_DIR_NUM,
+#define OPT_TRACE_BUF_SIZE    "trace-bufsz"
+	OPT_TRACE_BUF_SIZE_NUM,
+#define OPT_TRACE_MODE        "trace-mode"
+	OPT_TRACE_MODE_NUM,
 #define OPT_MASTER_LCORE      "master-lcore"
 	OPT_MASTER_LCORE_NUM,
 #define OPT_MBUF_POOL_OPS_NAME "mbuf-pool-ops-name"
@@ -63,6 +75,14 @@ enum {
 	OPT_LEGACY_MEM_NUM,
 #define OPT_SINGLE_FILE_SEGMENTS    "single-file-segments"
 	OPT_SINGLE_FILE_SEGMENTS_NUM,
+#define OPT_IOVA_MODE          "iova-mode"
+	OPT_IOVA_MODE_NUM,
+#define OPT_MATCH_ALLOCATIONS  "match-allocations"
+	OPT_MATCH_ALLOCATIONS_NUM,
+#define OPT_TELEMETRY         "telemetry"
+	OPT_TELEMETRY_NUM,
+#define OPT_NO_TELEMETRY      "no-telemetry"
+	OPT_NO_TELEMETRY_NUM,
 	OPT_LONG_MAX_NUM
 };
 
@@ -73,9 +93,13 @@ int eal_parse_common_option(int opt, const char *argv,
 			    struct internal_config *conf);
 int eal_option_device_parse(void);
 int eal_adjust_config(struct internal_config *internal_cfg);
+int eal_cleanup_config(struct internal_config *internal_cfg);
 int eal_check_common_options(struct internal_config *internal_cfg);
 void eal_common_usage(void);
 enum rte_proc_type_t eal_proc_type_detect(void);
 int eal_plugins_init(void);
+int eal_save_args(int argc, char **argv);
+int handle_eal_info_request(const char *cmd, const char *params __rte_unused,
+		struct rte_tel_data *d);
 
 #endif /* EAL_OPTIONS_H */

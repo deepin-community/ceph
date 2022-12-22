@@ -38,12 +38,12 @@ sw_port_link(struct rte_eventdev *dev, void *port, const uint8_t queues[],
 
 		/* check for qid map overflow */
 		if (q->cq_num_mapped_cqs >= RTE_DIM(q->cq_map)) {
-			rte_errno = -EDQUOT;
+			rte_errno = EDQUOT;
 			break;
 		}
 
 		if (p->is_directed && p->num_qids_mapped > 0) {
-			rte_errno = -EDQUOT;
+			rte_errno = EDQUOT;
 			break;
 		}
 
@@ -59,12 +59,12 @@ sw_port_link(struct rte_eventdev *dev, void *port, const uint8_t queues[],
 		if (q->type == SW_SCHED_TYPE_DIRECT) {
 			/* check directed qids only map to one port */
 			if (p->num_qids_mapped > 0) {
-				rte_errno = -EDQUOT;
+				rte_errno = EDQUOT;
 				break;
 			}
 			/* check port only takes a directed flow */
 			if (num > 1) {
-				rte_errno = -EDQUOT;
+				rte_errno = EDQUOT;
 				break;
 			}
 
@@ -113,7 +113,19 @@ sw_port_unlink(struct rte_eventdev *dev, void *port, uint8_t queues[],
 			}
 		}
 	}
+
+	p->unlinks_in_progress += unlinked;
+	rte_smp_mb();
+
 	return unlinked;
+}
+
+static int
+sw_port_unlinks_in_progress(struct rte_eventdev *dev, void *port)
+{
+	RTE_SET_USED(dev);
+	struct sw_port *p = port;
+	return p->unlinks_in_progress;
 }
 
 static int
@@ -925,6 +937,7 @@ sw_probe(struct rte_vdev_device *vdev)
 			.port_release = sw_port_release,
 			.port_link = sw_port_link,
 			.port_unlink = sw_port_unlink,
+			.port_unlinks_in_progress = sw_port_unlinks_in_progress,
 
 			.eth_rx_adapter_caps_get = sw_eth_rx_adapter_caps_get,
 

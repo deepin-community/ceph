@@ -15,7 +15,6 @@ There is no change to PMD API. The RX/TX handler are the only two entries for vP
 They are transparently registered at runtime RX/TX execution if all condition checks pass.
 
 1.  To date, only an SSE version of IX GBE vPMD is available.
-    To ensure that vPMD is in the binary code, ensure that the option CONFIG_RTE_IXGBE_INC_VECTOR=y is in the configure file.
 
 Some constraints apply as pre-conditions for specific optimizations on bulk packet transfers.
 The following sections explain RX and TX constraints in the vPMD.
@@ -81,6 +80,31 @@ To guarantee the constraint, capabilities in dev_conf.rxmode.offloads will be ch
 *   dev_conf
 
 fdir_conf->mode will also be checked.
+
+VF Runtime Options
+^^^^^^^^^^^^^^^^^^
+
+The following ``devargs`` options can be enabled at runtime. They must
+be passed as part of EAL arguments. For example,
+
+.. code-block:: console
+
+   testpmd -w af:10.0,pflink_fullchk=1 -- -i
+
+- ``pflink_fullchk`` (default **0**)
+
+  When calling ``rte_eth_link_get_nowait()`` to get VF link status,
+  this option is used to control how VF synchronizes its status with
+  PF's. If set, VF will not only check the PF's physical link status
+  by reading related register, but also check the mailbox status. We
+  call this behavior as fully checking. And checking mailbox will
+  trigger PF's mailbox interrupt generation. If unset, the application
+  can get the VF's link status quickly by just reading the PF's link
+  status register, this will avoid the whole system's mailbox interrupt
+  generation.
+
+  ``rte_eth_link_get()`` will still use the mailbox method regardless
+  of the pflink_fullchk setting.
 
 RX Burst Size
 ^^^^^^^^^^^^^
@@ -200,6 +224,33 @@ There is no RTE API to add a VF's MAC address from the PF. On ixgbe, the
 ``rte_eth_dev_mac_addr_add()`` function can be used to add a VF's MAC address,
 as a workaround.
 
+X550 does not support legacy interrupt mode
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Description
+^^^^^^^^^^^
+X550 cannot get interrupts if using ``uio_pci_generic`` module or using legacy
+interrupt mode of ``igb_uio`` or ``vfio``. Because the errata of X550 states
+that the Interrupt Status bit is not implemented. The errata is the item #22
+from `X550 spec update <https://www.intel.com/content/dam/www/public/us/en/
+documents/specification-updates/ethernet-x550-spec-update.pdf>`_
+
+Implication
+^^^^^^^^^^^
+When using ``uio_pci_generic`` module or using legacy interrupt mode of
+``igb_uio`` or ``vfio``, the Interrupt Status bit would be checked if the
+interrupt is coming. Since the bit is not implemented in X550, the irq cannot
+be handled correctly and cannot report the event fd to DPDK apps. Then apps
+cannot get interrupts and ``dmesg`` will show messages like ``irq #No.: ``
+``nobody cared.``
+
+Workaround
+^^^^^^^^^^
+Do not bind the ``uio_pci_generic`` module in X550 NICs.
+Do not bind ``igb_uio`` with legacy mode in X550 NICs.
+Before binding ``vfio`` with legacy mode in X550 NICs, use ``modprobe vfio ``
+``nointxmask=1`` to load ``vfio`` module if the intx is not shared with other
+devices.
 
 Inline crypto processing support
 --------------------------------

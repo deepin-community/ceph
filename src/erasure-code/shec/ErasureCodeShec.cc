@@ -18,13 +18,11 @@
  *
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <errno.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <cerrno>
 #include <algorithm>
-using namespace std;
-
 #include "common/debug.h"
 #include "ErasureCodeShec.h"
 extern "C" {
@@ -39,6 +37,10 @@ extern int* reed_sol_vandermonde_coding_matrix(int k, int m, int w);
 #define dout_subsys ceph_subsys_osd
 #undef dout_prefix
 #define dout_prefix _prefix(_dout)
+
+using namespace std;
+using namespace ceph;
+
 
 static ostream& _prefix(std::ostream* _dout)
 {
@@ -176,6 +178,10 @@ int ErasureCodeShec::_decode(const set<int> &want_to_read,
 
   if (!decoded || !decoded->empty()){
     return -EINVAL;
+  }
+  if (!want_to_read.empty() && chunks.empty()) {
+    // i need to get the blocksize from the first element of chunks
+    return -1;
   }
 
   have.reserve(chunks.size());
@@ -691,7 +697,7 @@ int ErasureCodeShec::shec_make_decoding_matrix(bool prepare, int *want_, int *av
 
 
   if (mindup == k+1) {
-    fprintf(stderr, "shec_make_decoding_matrix(): can't find recover matrix.\n");
+    dout(10) << __func__ << ": can't find recover matrix." << dendl;
     return -1;
   }
 
