@@ -10,6 +10,7 @@ interrupts, which avoids kernel context switches and eliminates interrupt
 handling overhead.
 
 The development kit currently includes:
+
 * [NVMe driver](http://www.spdk.io/doc/nvme.html)
 * [I/OAT (DMA engine) driver](http://www.spdk.io/doc/ioat.html)
 * [NVMe over Fabrics target](http://www.spdk.io/doc/nvmf.html)
@@ -17,7 +18,7 @@ The development kit currently includes:
 * [vhost target](http://www.spdk.io/doc/vhost.html)
 * [Virtio-SCSI driver](http://www.spdk.io/doc/virtio.html)
 
-# In this readme:
+# In this readme
 
 * [Documentation](#documentation)
 * [Prerequisites](#prerequisites)
@@ -25,7 +26,9 @@ The development kit currently includes:
 * [Build](#libraries)
 * [Unit Tests](#tests)
 * [Vagrant](#vagrant)
+* [AWS](#aws)
 * [Advanced Build Options](#advanced)
+* [Shared libraries](#shared)
 * [Hugepages and Device Binding](#huge)
 * [Example Code](#examples)
 * [Contributing](#contributing)
@@ -50,6 +53,9 @@ git submodule update --init
 ## Prerequisites
 
 The dependencies can be installed automatically by `scripts/pkgdep.sh`.
+The `scripts/pkgdep.sh` script will automatically install the bare minimum
+dependencies required to build SPDK.
+Use `--help` to see information on installing dependencies for optional components
 
 ~~~{.sh}
 ./scripts/pkgdep.sh
@@ -91,13 +97,22 @@ success or failure.
 
 A [Vagrant](https://www.vagrantup.com/downloads.html) setup is also provided
 to create a Linux VM with a virtual NVMe controller to get up and running
-quickly.  Currently this has only been tested on MacOS and Ubuntu 16.04.2 LTS
-with the [VirtualBox](https://www.virtualbox.org/wiki/Downloads) provider.  The
-[VirtualBox Extension Pack](https://www.virtualbox.org/wiki/Downloads) must
+quickly.  Currently this has been tested on MacOS, Ubuntu 16.04.2 LTS and
+Ubuntu 18.04.3 LTS with the VirtualBox and Libvirt provider.
+The [VirtualBox Extension Pack](https://www.virtualbox.org/wiki/Downloads)
+or [Vagrant Libvirt] (https://github.com/vagrant-libvirt/vagrant-libvirt) must
 also be installed in order to get the required NVMe support.
 
 Details on the Vagrant setup can be found in the
 [SPDK Vagrant documentation](http://spdk.io/doc/vagrant.html).
+
+<a id="aws"></a>
+## AWS
+
+The following setup is known to work on AWS:
+Image: Ubuntu 18.04
+Before running  `setup.sh`, run `modprobe vfio-pci`
+then: `DRIVER_OVERRIDE=vfio-pci ./setup.sh`
 
 <a id="advanced"></a>
 ## Advanced Build Options
@@ -155,6 +170,34 @@ The options specified on the `make` command line take precedence over the
 values in `mk/config.mk`. This can be useful if you, for example, generate
 a `mk/config.mk` using the `configure` script and then have one or two
 options (i.e. debug builds) that you wish to turn on and off frequently.
+
+<a id="shared"></a>
+## Shared libraries
+
+By default, the build of the SPDK yields static libraries against which
+the SPDK applications and examples are linked.
+Configure option `--with-shared` provides the ability to produce SPDK shared
+libraries, in addition to the default static ones.  Use of this flag also
+results in the SPDK executables linked to the shared versions of libraries.
+SPDK shared libraries by default, are located in `./build/lib`.  This includes
+the single SPDK shared lib encompassing all of the SPDK static libs
+(`libspdk.so`) as well as individual SPDK shared libs corresponding to each
+of the SPDK static ones.
+
+In order to start a SPDK app linked with SPDK shared libraries, make sure
+to do the following steps:
+
+- run ldconfig specifying the directory containing SPDK shared libraries
+- provide proper `LD_LIBRARY_PATH`
+
+Linux:
+
+~~~{.sh}
+./configure --with-shared
+make
+ldconfig -v -n ./build/lib
+LD_LIBRARY_PATH=./build/lib/ ./build/bin/spdk_tgt
+~~~
 
 <a id="huge"></a>
 ## Hugepages and Device Binding

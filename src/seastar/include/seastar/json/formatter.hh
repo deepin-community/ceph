@@ -27,6 +27,7 @@
 #include <map>
 #include <time.h>
 #include <sstream>
+#include <seastar/core/loop.hh>
 #include <seastar/core/sstring.hh>
 #include <seastar/core/iostream.hh>
 
@@ -34,7 +35,7 @@ namespace seastar {
 
 namespace json {
 
-struct jsonable;
+class jsonable;
 
 typedef struct tm date_time;
 
@@ -104,7 +105,8 @@ class formatter {
                         return write(stream, m);
                     });
                 }).then([&stream, s] {
-                   stream.write(end(s));
+                    // FIXME: future is discarded
+                    (void)stream.write(end(s));
                 });
             });
         });
@@ -148,7 +150,7 @@ public:
 
     /**
      * return a json formated float
-     * @param n the float to format
+     * @param f the float to format
      * @return the given float in a json format
      */
     static sstring to_json(float f);
@@ -246,7 +248,7 @@ public:
 
     /**
      * return a json formated float
-     * @param n the float to format
+     * @param f the float to format
      * @return the given float in a json format
      */
     static future<> write(output_stream<char>& s, float f) {
@@ -326,12 +328,6 @@ public:
     static future<> write(output_stream<char>& s, unsigned long l) {
       return s.write(to_json(l));
      }
-
-
-private:
-
-    static constexpr const char* TIME_FORMAT = "%a %b %d %I:%M:%S %Z %Y";
-
 };
 
 }

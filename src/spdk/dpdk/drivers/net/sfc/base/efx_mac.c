@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2007-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2007-2019 Solarflare Communications Inc.
  */
 
 #include "efx.h"
@@ -39,7 +39,7 @@ static const efx_mac_ops_t	__efx_mac_siena_ops = {
 };
 #endif	/* EFSYS_OPT_SIENA */
 
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
+#if EFX_OPTS_EF10()
 static const efx_mac_ops_t	__efx_mac_ef10_ops = {
 	ef10_mac_poll,				/* emo_poll */
 	ef10_mac_up,				/* emo_up */
@@ -62,7 +62,7 @@ static const efx_mac_ops_t	__efx_mac_ef10_ops = {
 	ef10_mac_stats_update			/* emo_stats_update */
 #endif	/* EFSYS_OPT_MAC_STATS */
 };
-#endif	/* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */
+#endif	/* EFX_OPTS_EF10() */
 
 	__checkReturn			efx_rc_t
 efx_mac_pdu_set(
@@ -216,6 +216,21 @@ fail1:
 	epp->ep_brdcst = old_brdcst;
 
 	return (rc);
+}
+
+					void
+efx_mac_filter_get_all_ucast_mcast(
+	__in				efx_nic_t *enp,
+	__out				boolean_t *all_unicst,
+	__out				boolean_t *all_mulcst)
+{
+	efx_port_t *epp = &(enp->en_port);
+
+	EFSYS_ASSERT3U(enp->en_magic, ==, EFX_NIC_MAGIC);
+	EFSYS_ASSERT3U(enp->en_mod_flags, &, EFX_MOD_PORT);
+
+	*all_unicst = epp->ep_all_unicst_inserted;
+	*all_mulcst = epp->ep_all_mulcst_inserted;
 }
 
 	__checkReturn			efx_rc_t

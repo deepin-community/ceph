@@ -1,31 +1,44 @@
 # -*- coding: utf-8 -*-
+# pylint: disable=C0302
 # pylint: disable=too-many-branches
 # pylint: disable=too-many-lines
 from __future__ import absolute_import
 
-from copy import deepcopy
-import re
 import json
-import cherrypy
+import re
+from copy import deepcopy
 
+import cherrypy
 import rados
 import rbd
 
-from . import ApiController, UiApiController, RESTController, BaseController, Endpoint,\
-    ReadPermission, UpdatePermission, Task
 from .. import mgr
+from ..exceptions import DashboardException
 from ..rest_client import RequestException
 from ..security import Scope
-from ..services.iscsi_client import IscsiClient
 from ..services.iscsi_cli import IscsiGatewaysConfig
+from ..services.iscsi_client import IscsiClient
 from ..services.iscsi_config import IscsiGatewayDoesNotExist
 from ..services.rbd import format_bitmask
 from ..services.tcmu_service import TcmuService
-from ..exceptions import DashboardException
-from ..tools import str_to_bool, TaskManager
+from ..tools import TaskManager, str_to_bool
+from . import APIDoc, APIRouter, BaseController, Endpoint, EndpointDoc, \
+    ReadPermission, RESTController, Task, UIRouter, UpdatePermission
+
+try:
+    from typing import Any, Dict, List, no_type_check
+except ImportError:
+    no_type_check = object()  # Just for type checking
+
+ISCSI_SCHEMA = {
+    'user': (str, 'username'),
+    'password': (str, 'password'),
+    'mutual_user': (str, ''),
+    'mutual_password': (str, '')
+}
 
 
-@UiApiController('/iscsi', Scope.ISCSI)
+@UIRouter('/iscsi', Scope.ISCSI)
 class IscsiUi(BaseController):
 
     REQUIRED_CEPH_ISCSI_CONFIG_MIN_VERSION = 10
@@ -33,6 +46,7 @@ class IscsiUi(BaseController):
 
     @Endpoint()
     @ReadPermission
+    @no_type_check
     def status(self):
         status = {'available': False}
         try:
@@ -181,17 +195,27 @@ class IscsiUi(BaseController):
         }
 
 
-@ApiController('/iscsi', Scope.ISCSI)
+@APIRouter('/iscsi', Scope.ISCSI)
+@APIDoc("Iscsi Management API", "Iscsi")
 class Iscsi(BaseController):
-
     @Endpoint('GET', 'discoveryauth')
     @ReadPermission
+    @EndpointDoc("Get Iscsi discoveryauth Details",
+                 responses={'200': [ISCSI_SCHEMA]})
     def get_discoveryauth(self):
         gateway = get_available_gateway()
         return self._get_discoveryauth(gateway)
 
-    @Endpoint('PUT', 'discoveryauth')
+    @Endpoint('PUT', 'discoveryauth',
+              query_params=['user', 'password', 'mutual_user', 'mutual_password'])
     @UpdatePermission
+    @EndpointDoc("Set Iscsi discoveryauth",
+                 parameters={
+                     'user': (str, 'Username'),
+                     'password': (str, 'Password'),
+                     'mutual_user': (str, 'Mutual UserName'),
+                     'mutual_password': (str, 'Mutual Password'),
+                 })
     def set_discoveryauth(self, user, password, mutual_user, mutual_password):
         validate_auth({
             'user': user,
@@ -228,7 +252,8 @@ def iscsi_target_task(name, metadata, wait_for=2.0):
     return Task("iscsi/target/{}".format(name), metadata, wait_for)
 
 
-@ApiController('/iscsi/target', Scope.ISCSI)
+@APIRouter('/iscsi/target', Scope.ISCSI)
+@APIDoc("Get Iscsi Target Details", "IscsiTarget")
 class IscsiTarget(RESTController):
 
     def list(self):
@@ -607,7 +632,7 @@ class IscsiTarget(RESTController):
                                                      code='disk_control_invalid_max',
                                                      component='iscsi')
 
-        initiators = []
+        initiators = []  # type: List[Any]
         for group in groups:
             initiators = initiators + group['members']
         if len(initiators) != len(set(initiators)):
@@ -992,7 +1017,8 @@ class IscsiTarget(RESTController):
 
     @staticmethod
     def _get_portals_by_host(portals):
-        portals_by_host = {}
+        # type: (List[dict]) -> Dict[str, List[str]]
+        portals_by_host = {}  # type: Dict[str, List[str]]
         for portal in portals:
             host = portal['host']
             ip = portal['ip']

@@ -5,8 +5,8 @@ import hmac
 import hashlib
 import base64
 import xmltodict
-from six.moves import http_client
-from six.moves.urllib import parse as urlparse
+from http import client as http_client
+from urllib import parse as urlparse
 from time import gmtime, strftime
 from .multisite import Zone
 import boto3
@@ -18,8 +18,7 @@ def put_object_tagging(conn, bucket_name, key, tags):
     client = boto3.client('s3',
             endpoint_url='http://'+conn.host+':'+str(conn.port),
             aws_access_key_id=conn.aws_access_key_id,
-            aws_secret_access_key=conn.aws_secret_access_key,
-            config=Config(signature_version='s3'))
+            aws_secret_access_key=conn.aws_secret_access_key)
     return client.put_object(Body='aaaaaaaaaaa', Bucket=bucket_name, Key=key, Tagging=tags)
 
 
@@ -27,8 +26,7 @@ def get_object_tagging(conn, bucket, object_key):
     client = boto3.client('s3',
             endpoint_url='http://'+conn.host+':'+str(conn.port),
             aws_access_key_id=conn.aws_access_key_id,
-            aws_secret_access_key=conn.aws_secret_access_key,
-            config=Config(signature_version='s3'))
+            aws_secret_access_key=conn.aws_secret_access_key)
     return client.get_object_tagging(
                 Bucket=bucket, 
                 Key=object_key
@@ -49,6 +47,9 @@ class PSZone(Zone):  # pylint: disable=too-many-ancestors
     def tier_type(self):
         return "pubsub"
 
+    def syncs_from(self, zone_name):
+        return zone_name == self.master_zone.name
+
     def create(self, cluster, args=None, **kwargs):
         if args is None:
             args = ''
@@ -61,13 +62,6 @@ class PSZone(Zone):  # pylint: disable=too-many-ancestors
 
 
 NO_HTTP_BODY = ''
-
-
-def print_connection_info(conn):
-    """print connection details"""
-    print('Endpoint: ' + conn.host + ':' + str(conn.port))
-    print('AWS Access Key:: ' + conn.aws_access_key_id)
-    print('AWS Secret Key:: ' + conn.aws_secret_access_key)
 
 
 def make_request(conn, method, resource, parameters=None, sign_parameters=False, extra_parameters=None):
@@ -160,8 +154,7 @@ def delete_all_s3_topics(zone, region):
                 aws_access_key_id=conn.aws_access_key_id,
                 aws_secret_access_key=conn.aws_secret_access_key,
                 region_name=region,
-                verify='./cert.pem',
-                config=Config(signature_version='s3'))
+                verify='./cert.pem')
 
         topics = client.list_topics()['Topics']
         for topic in topics:
@@ -191,6 +184,7 @@ class PSTopicS3:
     POST ?Action=CreateTopic&Name=<topic name>[&OpaqueData=<data>[&push-endpoint=<endpoint>&[<arg1>=<value1>...]]]
     POST ?Action=ListTopics
     POST ?Action=GetTopic&TopicArn=<topic-arn>
+    POST ?Action=GetTopicAttributes&TopicArn=<topic-arn>
     POST ?Action=DeleteTopic&TopicArn=<topic-arn>
     """
     def __init__(self, conn, topic_name, region, endpoint_args=None, opaque_data=None):
@@ -209,8 +203,7 @@ class PSTopicS3:
                            aws_access_key_id=conn.aws_access_key_id,
                            aws_secret_access_key=conn.aws_secret_access_key,
                            region_name=region,
-                           verify='./cert.pem',
-                           config=Config(signature_version='s3'))
+                           verify='./cert.pem')
 
 
     def get_config(self):
@@ -242,6 +235,10 @@ class PSTopicS3:
         http_conn.close()
         dict_response = xmltodict.parse(data)
         return dict_response, status
+
+    def get_attributes(self):
+        """get topic attributes"""
+        return self.client.get_topic_attributes(TopicArn=self.topic_arn)
 
     def set_config(self):
         """set topic"""
@@ -334,8 +331,7 @@ class PSNotificationS3:
         self.client = boto3.client('s3',
                                    endpoint_url='http://'+conn.host+':'+str(conn.port),
                                    aws_access_key_id=conn.aws_access_key_id,
-                                   aws_secret_access_key=conn.aws_secret_access_key,
-                                   config=Config(signature_version='s3'))
+                                   aws_secret_access_key=conn.aws_secret_access_key)
 
     def send_request(self, method, parameters=None):
         """send request to radosgw"""

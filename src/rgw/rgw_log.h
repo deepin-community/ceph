@@ -1,14 +1,78 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 #ifndef CEPH_RGW_LOG_H
 #define CEPH_RGW_LOG_H
+
 #include <boost/container/flat_map.hpp>
 #include "rgw_common.h"
-#include "common/Formatter.h"
 #include "common/OutputDataSocket.h"
+#include <vector>
+#include <fstream>
+
+#define dout_subsys ceph_subsys_rgw
 
 class RGWRados;
+
+class RGWOp;
+
+struct delete_multi_obj_entry {
+  std::string key;
+  std::string version_id;
+  std::string error_message;
+  std::string marker_version_id;
+  uint32_t http_status = 0;
+  bool error = false;
+  bool delete_marker = false;
+
+  void encode(bufferlist &bl) const {
+    ENCODE_START(1, 1, bl);
+    encode(key, bl);
+    encode(version_id, bl);
+    encode(error_message, bl);
+    encode(marker_version_id, bl);
+    encode(http_status, bl);
+    encode(error, bl);
+    encode(delete_marker, bl);
+    ENCODE_FINISH(bl);
+  }
+
+  void decode(bufferlist::const_iterator &p) {
+    DECODE_START_LEGACY_COMPAT_LEN(1, 1, 1, p);
+    decode(key, p);
+    decode(version_id, p);
+    decode(error_message, p);
+    decode(marker_version_id, p);
+    decode(http_status, p);
+    decode(error, p);
+    decode(delete_marker, p);
+    DECODE_FINISH(p);
+  }
+};
+WRITE_CLASS_ENCODER(delete_multi_obj_entry)
+
+struct delete_multi_obj_op_meta {
+  uint32_t num_ok = 0;
+  uint32_t num_err = 0;
+  std::vector<delete_multi_obj_entry> objects;
+
+  void encode(bufferlist &bl) const {
+    ENCODE_START(1, 1, bl);
+    encode(num_ok, bl);
+    encode(num_err, bl);
+    encode(objects, bl);
+    ENCODE_FINISH(bl);
+  }
+
+  void decode(bufferlist::const_iterator &p) {
+    DECODE_START_LEGACY_COMPAT_LEN(1, 1, 1, p);
+    decode(num_ok, p);
+    decode(num_err, p);
+    decode(objects, p);
+    DECODE_FINISH(p);
+  }
+};
+WRITE_CLASS_ENCODER(delete_multi_obj_op_meta)
 
 struct rgw_log_entry {
 
@@ -26,17 +90,24 @@ struct rgw_log_entry {
   string uri;
   string http_status;
   string error_code;
-  uint64_t bytes_sent;
-  uint64_t bytes_received;
-  uint64_t obj_size;
-  Clock::duration total_time;
+  uint64_t bytes_sent = 0;
+  uint64_t bytes_received = 0;
+  uint64_t obj_size = 0;
+  Clock::duration total_time{};
   string user_agent;
   string referrer;
   string bucket_id;
   headers_map x_headers;
+  string trans_id;
+  std::vector<string> token_claims;
+  uint32_t identity_type = TYPE_NONE;
+  std::string access_key_id;
+  std::string subuser;
+  bool temp_url {false};
+  delete_multi_obj_op_meta delete_multi_obj_meta;
 
   void encode(bufferlist &bl) const {
-    ENCODE_START(9, 5, bl);
+    ENCODE_START(14, 5, bl);
     encode(object_owner.id, bl);
     encode(bucket_owner.id, bl);
     encode(bucket, bl);
@@ -59,10 +130,17 @@ struct rgw_log_entry {
     encode(object_owner, bl);
     encode(bucket_owner, bl);
     encode(x_headers, bl);
+    encode(trans_id, bl);
+    encode(token_claims, bl);
+    encode(identity_type,bl);
+    encode(access_key_id, bl);
+    encode(subuser, bl);
+    encode(temp_url, bl);
+    encode(delete_multi_obj_meta, bl);
     ENCODE_FINISH(bl);
   }
   void decode(bufferlist::const_iterator &p) {
-    DECODE_START_LEGACY_COMPAT_LEN(8, 5, 5, p);
+    DECODE_START_LEGACY_COMPAT_LEN(14, 5, 5, p);
     decode(object_owner.id, p);
     if (struct_v > 3)
       decode(bucket_owner.id, p);
@@ -108,37 +186,110 @@ struct rgw_log_entry {
     if (struct_v >= 9) {
       decode(x_headers, p);
     }
+    if (struct_v >= 10) {
+      decode(trans_id, p);
+    }
+    if (struct_v >= 11) {
+      decode(token_claims, p);
+    }
+    if (struct_v >= 12) {
+      decode(identity_type, p);
+    }
+    if (struct_v >= 13) {
+      decode(access_key_id, p);
+      decode(subuser, p);
+      decode(temp_url, p);
+    }
+    if (struct_v >= 14) {
+      decode(delete_multi_obj_meta, p);
+    }
     DECODE_FINISH(p);
   }
-  void dump(Formatter *f) const;
+  void dump(ceph::Formatter *f) const;
   static void generate_test_instances(list<rgw_log_entry*>& o);
 };
 WRITE_CLASS_ENCODER(rgw_log_entry)
 
-class OpsLogSocket : public OutputDataSocket {
-  Formatter *formatter;
-  Mutex lock;
+class OpsLogSink {
+public:
+  virtual int log(struct req_state* s, struct rgw_log_entry& entry) = 0;
+  virtual ~OpsLogSink() = default;
+};
+
+class OpsLogManifold: public OpsLogSink {
+  std::vector<OpsLogSink*> sinks;
+public:
+  ~OpsLogManifold() override;
+  void add_sink(OpsLogSink* sink);
+  int log(struct req_state* s, struct rgw_log_entry& entry) override;
+};
+
+class JsonOpsLogSink : public OpsLogSink {
+  ceph::Formatter *formatter;
+  ceph::mutex lock = ceph::make_mutex("JsonOpsLogSink");
 
   void formatter_to_bl(bufferlist& bl);
-
 protected:
+  virtual int log_json(struct req_state* s, bufferlist& bl) = 0;
+public:
+  JsonOpsLogSink();
+  ~JsonOpsLogSink() override;
+  int log(struct req_state* s, struct rgw_log_entry& entry) override;
+};
+
+class OpsLogFile : public JsonOpsLogSink, public Thread, public DoutPrefixProvider {
+  CephContext* cct;
+  ceph::mutex mutex = ceph::make_mutex("OpsLogFile");
+  std::vector<bufferlist> log_buffer;
+  std::vector<bufferlist> flush_buffer;
+  ceph::condition_variable cond;
+  std::ofstream file;
+  bool stopped;
+  uint64_t data_size;
+  uint64_t max_data_size;
+  std::string path;
+  std::atomic_bool need_reopen;
+
+  void flush();
+protected:
+  int log_json(struct req_state* s, bufferlist& bl) override;
+  void *entry() override;
+public:
+  OpsLogFile(CephContext* cct, std::string& path, uint64_t max_data_size);
+  ~OpsLogFile() override;
+  CephContext *get_cct() const override { return cct; }
+  unsigned get_subsys() const override { return dout_subsys; }
+  std::ostream& gen_prefix(std::ostream& out) const override { return out << "rgw OpsLogFile: "; }
+  void reopen();
+  void start();
+  void stop();
+};
+
+class OpsLogSocket : public OutputDataSocket, public JsonOpsLogSink {
+protected:
+  int log_json(struct req_state* s, bufferlist& bl) override;
   void init_connection(bufferlist& bl) override;
 
 public:
   OpsLogSocket(CephContext *cct, uint64_t _backlog);
-  ~OpsLogSocket() override;
+};
 
-  void log(struct rgw_log_entry& entry);
+class OpsLogRados : public OpsLogSink {
+  // main()'s Store pointer as a reference, possibly modified by RGWRealmReloader
+  rgw::sal::RGWRadosStore* const& store;
+public:
+  OpsLogRados(rgw::sal::RGWRadosStore* const& store);
+  int log(struct req_state* s, struct rgw_log_entry& entry) override;
 };
 
 class RGWREST;
 
-int rgw_log_op(RGWRados *store, RGWREST* const rest, struct req_state *s,
-	       const string& op_name, OpsLogSocket *olog);
+int rgw_log_op(RGWREST* const rest, struct req_state* s,
+	             const RGWOp* op, OpsLogSink* olog);
 void rgw_log_usage_init(CephContext *cct, RGWRados *store);
 void rgw_log_usage_finalize();
 void rgw_format_ops_log_entry(struct rgw_log_entry& entry,
-			      Formatter *formatter);
+			      ceph::Formatter *formatter);
 
 #endif /* CEPH_RGW_LOG_H */
 

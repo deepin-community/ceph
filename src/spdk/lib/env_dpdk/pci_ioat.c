@@ -35,8 +35,8 @@
 
 #include "spdk/pci_ids.h"
 
-#define SPDK_IOAT_PCI_DEVICE(DEVICE_ID) RTE_PCI_DEVICE(SPDK_PCI_VID_INTEL, DEVICE_ID)
-static struct rte_pci_id ioat_driver_id[] = {
+#define SPDK_IOAT_PCI_DEVICE(DEVICE_ID) SPDK_PCI_DEVICE(SPDK_PCI_VID_INTEL, DEVICE_ID)
+static struct spdk_pci_id ioat_driver_id[] = {
 	{SPDK_IOAT_PCI_DEVICE(PCI_DEVICE_ID_INTEL_IOAT_SNB0)},
 	{SPDK_IOAT_PCI_DEVICE(PCI_DEVICE_ID_INTEL_IOAT_SNB1)},
 	{SPDK_IOAT_PCI_DEVICE(PCI_DEVICE_ID_INTEL_IOAT_SNB2)},
@@ -85,39 +85,14 @@ static struct rte_pci_id ioat_driver_id[] = {
 	{SPDK_IOAT_PCI_DEVICE(PCI_DEVICE_ID_INTEL_IOAT_BDX8)},
 	{SPDK_IOAT_PCI_DEVICE(PCI_DEVICE_ID_INTEL_IOAT_BDX9)},
 	{SPDK_IOAT_PCI_DEVICE(PCI_DEVICE_ID_INTEL_IOAT_SKX)},
+	{SPDK_IOAT_PCI_DEVICE(PCI_DEVICE_ID_INTEL_IOAT_ICX)},
 	{ .vendor_id = 0, /* sentinel */ },
 };
 
-static struct spdk_pci_enum_ctx g_ioat_pci_drv = {
-	.driver = {
-		.drv_flags	= RTE_PCI_DRV_NEED_MAPPING,
-		.id_table	= ioat_driver_id,
-#if RTE_VERSION >= RTE_VERSION_NUM(16, 11, 0, 0)
-		.probe		= spdk_pci_device_init,
-		.remove		= spdk_pci_device_fini,
-		.driver.name	= "spdk_ioat",
-#else
-		.devinit	= spdk_pci_device_init,
-		.devuninit	= spdk_pci_device_fini,
-		.name		= "spdk_ioat",
-#endif
-	},
-
-	.cb_fn = NULL,
-	.cb_arg = NULL,
-	.mtx = PTHREAD_MUTEX_INITIALIZER,
-	.is_registered = false,
-};
-
-int
-spdk_pci_ioat_device_attach(spdk_pci_enum_cb enum_cb, void *enum_ctx,
-			    struct spdk_pci_addr *pci_address)
+struct spdk_pci_driver *
+spdk_pci_ioat_get_driver(void)
 {
-	return spdk_pci_device_attach(&g_ioat_pci_drv, enum_cb, enum_ctx, pci_address);
+	return spdk_pci_get_driver("ioat");
 }
 
-int
-spdk_pci_ioat_enumerate(spdk_pci_enum_cb enum_cb, void *enum_ctx)
-{
-	return spdk_pci_enumerate(&g_ioat_pci_drv, enum_cb, enum_ctx);
-}
+SPDK_PCI_DRIVER_REGISTER("ioat", ioat_driver_id, SPDK_PCI_DRIVER_NEED_MAPPING);

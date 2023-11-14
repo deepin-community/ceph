@@ -707,7 +707,7 @@ Example of failure scenarios:
                 |                     |
 
 
-* Connection failure after session is established because server reseted,
+* Connection failure after session is established because server reset,
   and then client reconnects.
 
 .. ditaa::
@@ -735,7 +735,7 @@ RC* means that the reset session full flag depends on the policy.resetcheck
 of the connection.
 
 
-* Connection failure after session is established because client reseted,
+* Connection failure after session is established because client reset,
   and then client reconnects.
 
 .. ditaa::

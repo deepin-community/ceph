@@ -289,7 +289,7 @@ public:
     bool dirty_info = false;
     bool dirty_big_info = false;
     merge_log(
-      oinfo, olog, pg_shard_t(1, shard_id_t(0)), info,
+      oinfo, std::move(olog), pg_shard_t(1, shard_id_t(0)), info,
       &h, dirty_info, dirty_big_info);
 
     ASSERT_EQ(info.last_update, oinfo.last_update);
@@ -890,7 +890,7 @@ TEST_F(PGLogTest, merge_log) {
     EXPECT_FALSE(dirty_big_info);
 
     TestHandler h(remove_snap);
-    merge_log(oinfo, olog, fromosd, info, &h,
+    merge_log(oinfo, std::move(olog), fromosd, info, &h,
               dirty_info, dirty_big_info);
 
     EXPECT_FALSE(missing.have_missing());
@@ -940,7 +940,7 @@ TEST_F(PGLogTest, merge_log) {
     EXPECT_FALSE(dirty_big_info);
 
     TestHandler h(remove_snap);
-    merge_log(oinfo, olog, fromosd, info, &h,
+    merge_log(oinfo, std::move(olog), fromosd, info, &h,
               dirty_info, dirty_big_info);
 
     EXPECT_FALSE(missing.have_missing());
@@ -1045,7 +1045,7 @@ TEST_F(PGLogTest, merge_log) {
     EXPECT_FALSE(dirty_big_info);
 
     TestHandler h(remove_snap);
-    merge_log(oinfo, olog, fromosd, info, &h,
+    merge_log(oinfo, std::move(olog), fromosd, info, &h,
               dirty_info, dirty_big_info);
 
     EXPECT_FALSE(missing.have_missing());
@@ -1154,7 +1154,7 @@ TEST_F(PGLogTest, merge_log) {
     EXPECT_FALSE(dirty_big_info);
 
     TestHandler h(remove_snap);
-    merge_log(oinfo, olog, fromosd, info, &h,
+    merge_log(oinfo, std::move(olog), fromosd, info, &h,
               dirty_info, dirty_big_info);
 
     /* When the divergent entry is a DELETE and the authoritative
@@ -1273,7 +1273,7 @@ TEST_F(PGLogTest, merge_log) {
 
     TestHandler h(remove_snap);
     missing.may_include_deletes = false;
-    merge_log(oinfo, olog, fromosd, info, &h,
+    merge_log(oinfo, std::move(olog), fromosd, info, &h,
               dirty_info, dirty_big_info);
 
     /* When the divergent entry is a DELETE and the authoritative
@@ -1375,7 +1375,7 @@ TEST_F(PGLogTest, merge_log) {
 
     TestHandler h(remove_snap);
     missing.may_include_deletes = false;
-    merge_log(oinfo, olog, fromosd, info, &h,
+    merge_log(oinfo, std::move(olog), fromosd, info, &h,
               dirty_info, dirty_big_info);
 
     EXPECT_FALSE(missing.have_missing());
@@ -2204,8 +2204,9 @@ TEST_F(PGLogTest, get_request) {
     eversion_t replay_version;
     version_t user_version;
     int return_code = 0;
+    vector<pg_log_op_return_item_t> op_returns;
     bool got = log.get_request(
-      entry.reqid, &replay_version, &user_version, &return_code);
+      entry.reqid, &replay_version, &user_version, &return_code, &op_returns);
     EXPECT_TRUE(got);
     EXPECT_EQ(entry.return_code, return_code);
     EXPECT_EQ(entry.version, replay_version);
@@ -2271,23 +2272,23 @@ TEST_F(PGLogTest, split_into_preserves_may_include_deletes) {
   clear();
 
   {
-    rebuilt_missing_with_deletes = false;
+    may_include_deletes_in_missing_dirty = false;
     missing.may_include_deletes = true;
     PGLog child_log(cct);
     pg_t child_pg;
     split_into(child_pg, 6, &child_log);
     ASSERT_TRUE(child_log.get_missing().may_include_deletes);
-    ASSERT_TRUE(child_log.get_rebuilt_missing_with_deletes());
+    ASSERT_TRUE(child_log.get_may_include_deletes_in_missing_dirty());
   }
 
   {
-    rebuilt_missing_with_deletes = false;
+    may_include_deletes_in_missing_dirty = false;
     missing.may_include_deletes = false;
     PGLog child_log(cct);
     pg_t child_pg;
     split_into(child_pg, 6, &child_log);
     ASSERT_FALSE(child_log.get_missing().may_include_deletes);
-    ASSERT_FALSE(child_log.get_rebuilt_missing_with_deletes());
+    ASSERT_FALSE(child_log.get_may_include_deletes_in_missing_dirty());
   }
 }
 
@@ -2738,8 +2739,8 @@ TEST_F(PGLogTrimTest, TestPartialTrim)
   EXPECT_EQ(eversion_t(19, 160), write_from_dups2);
   EXPECT_EQ(2u, log.log.size());
   EXPECT_EQ(1u, trimmed2.size());
-  EXPECT_EQ(2u, log.dups.size());
-  EXPECT_EQ(1u, trimmed_dups2.size());
+  EXPECT_EQ(3u, log.dups.size());
+  EXPECT_EQ(0u, trimmed_dups2.size());
 }
 
 
@@ -2887,6 +2888,7 @@ TEST_F(PGLogTrimTest, TestGetRequest) {
   eversion_t version;
   version_t user_version;
   int return_code;
+  vector<pg_log_op_return_item_t> op_returns;
 
   osd_reqid_t log_reqid = osd_reqid_t(client, 8, 5);
   osd_reqid_t dup_reqid = osd_reqid_t(client, 8, 3);
@@ -2894,15 +2896,18 @@ TEST_F(PGLogTrimTest, TestGetRequest) {
 
   bool result;
 
-  result = log.get_request(log_reqid, &version, &user_version, &return_code);
+  result = log.get_request(log_reqid, &version, &user_version, &return_code,
+			   &op_returns);
   EXPECT_EQ(true, result);
   EXPECT_EQ(mk_evt(21, 165), version);
 
-  result = log.get_request(dup_reqid, &version, &user_version, &return_code);
+  result = log.get_request(dup_reqid, &version, &user_version, &return_code,
+			   &op_returns);
   EXPECT_EQ(true, result);
   EXPECT_EQ(mk_evt(15, 155), version);
 
-  result = log.get_request(bad_reqid, &version, &user_version, &return_code);
+  result = log.get_request(bad_reqid, &version, &user_version, &return_code,
+			   &op_returns);
   EXPECT_FALSE(result);
 }
 
@@ -3018,7 +3023,7 @@ TEST_F(PGLogTrimTest, TestTrimDups) {
 
   EXPECT_EQ(eversion_t(20, 103), write_from_dups) << log;
   EXPECT_EQ(2u, log.log.size()) << log;
-  EXPECT_EQ(3u, log.dups.size()) << log;
+  EXPECT_EQ(4u, log.dups.size()) << log;
 }
 
 // This tests trim() to make copies of
@@ -3062,7 +3067,7 @@ TEST_F(PGLogTrimTest, TestTrimDups2) {
 
   EXPECT_EQ(eversion_t(10, 100), write_from_dups) << log;
   EXPECT_EQ(4u, log.log.size()) << log;
-  EXPECT_EQ(5u, log.dups.size()) << log;
+  EXPECT_EQ(6u, log.dups.size()) << log;
 }
 
 // This tests copy_up_to() to make copies of

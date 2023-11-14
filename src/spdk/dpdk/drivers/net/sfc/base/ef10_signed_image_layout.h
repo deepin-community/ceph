@@ -1,7 +1,15 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2016-2019 Solarflare Communications Inc.
+ */
+
+/*
+ * This is NOT the original source file. Do NOT edit it.
+ * To update the image layout headers, please edit the copy in
+ * the sfregistry repo and then, in that repo,
+ * "make layout_headers" or "make export" to
+ * regenerate and export all types of headers.
  */
 
 /* These structures define the layouts for the signed firmware image binary

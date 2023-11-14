@@ -34,6 +34,7 @@
 #include "spdk/stdinc.h"
 
 #include "spdk/event.h"
+#include "spdk/string.h"
 #include "spdk/thread.h"
 
 static int g_time_in_sec;
@@ -84,19 +85,19 @@ nop(void *arg)
 }
 
 static void
-test_start(void *arg1, void *arg2)
+test_start(void *arg1)
 {
 	printf("test_start\n");
 
 	/* Register a poller that will stop the test after the time has elapsed. */
-	test_end_poller = spdk_poller_register(test_end, NULL, g_time_in_sec * 1000000ULL);
+	test_end_poller = SPDK_POLLER_REGISTER(test_end, NULL, g_time_in_sec * 1000000ULL);
 
-	poller_100ms = spdk_poller_register(tick, (void *)100, 100000);
-	poller_250ms = spdk_poller_register(tick, (void *)250, 250000);
-	poller_500ms = spdk_poller_register(tick, (void *)500, 500000);
-	poller_oneshot = spdk_poller_register(oneshot, NULL, 0);
+	poller_100ms = SPDK_POLLER_REGISTER(tick, (void *)100, 100000);
+	poller_250ms = SPDK_POLLER_REGISTER(tick, (void *)250, 250000);
+	poller_500ms = SPDK_POLLER_REGISTER(tick, (void *)500, 500000);
+	poller_oneshot = SPDK_POLLER_REGISTER(oneshot, NULL, 0);
 
-	poller_unregister = spdk_poller_register(nop, NULL, 0);
+	poller_unregister = SPDK_POLLER_REGISTER(nop, NULL, 0);
 	spdk_poller_unregister(&poller_unregister);
 }
 
@@ -116,14 +117,13 @@ main(int argc, char **argv)
 
 	spdk_app_opts_init(&opts);
 	opts.name = "reactor";
-	opts.max_delay_us = 1000;
 
 	g_time_in_sec = 0;
 
 	while ((op = getopt(argc, argv, "t:")) != -1) {
 		switch (op) {
 		case 't':
-			g_time_in_sec = atoi(optarg);
+			g_time_in_sec = spdk_strtol(optarg, 10);
 			break;
 		default:
 			usage(argv[0]);
@@ -131,12 +131,12 @@ main(int argc, char **argv)
 		}
 	}
 
-	if (!g_time_in_sec) {
+	if (g_time_in_sec <= 0) {
 		usage(argv[0]);
 		exit(1);
 	}
 
-	rc = spdk_app_start(&opts, test_start, NULL, NULL);
+	rc = spdk_app_start(&opts, test_start, NULL);
 
 	spdk_app_fini();
 

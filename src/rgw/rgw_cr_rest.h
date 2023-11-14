@@ -1,8 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef CEPH_RGW_CR_REST_H
-#define CEPH_RGW_CR_REST_H
+#pragma once
 
 #include <boost/intrusive_ptr.hpp>
 #include <mutex>
@@ -70,13 +69,13 @@ public:
     request_cleanup();
   }
 
-  int send_request() override {
+  int send_request(const DoutPrefixProvider *dpp) override {
     auto op = boost::intrusive_ptr<RGWRESTReadResource>(
         new RGWRESTReadResource(conn, path, params, &extra_headers, http_manager));
 
     init_new_io(op.get());
 
-    int ret = op->aio_read();
+    int ret = op->aio_read(dpp);
     if (ret < 0) {
       log_error() << "failed to send http operation: " << op->to_str()
           << " ret=" << ret << std::endl;
@@ -90,7 +89,7 @@ public:
 
 
   virtual int wait_result() {
-    return http_op->wait(result);
+    return http_op->wait(result, null_yield);
   }
 
   int request_complete() override {
@@ -138,7 +137,7 @@ class RGWReadRESTResourceCR : public RGWReadRawRESTResourceCR {
   {}
 
   int wait_result() override {
-    return http_op->wait(result);
+    return http_op->wait(result, null_yield);
   }
 
 };
@@ -187,15 +186,15 @@ class RGWSendRawRESTResourceCR: public RGWSimpleCoroutine {
     request_cleanup();
   }
 
-  int send_request() override {
+  int send_request(const DoutPrefixProvider *dpp) override {
     auto op = boost::intrusive_ptr<RGWRESTSendResource>(
         new RGWRESTSendResource(conn, method, path, params, &headers, http_manager));
 
     init_new_io(op.get());
 
-    int ret = op->aio_send(input_bl);
+    int ret = op->aio_send(dpp, input_bl);
     if (ret < 0) {
-      lsubdout(cct, rgw, 0) << "ERROR: failed to send request" << dendl;
+      ldpp_subdout(dpp, rgw, 0) << "ERROR: failed to send request" << dendl;
       op->put();
       return ret;
     }
@@ -206,10 +205,10 @@ class RGWSendRawRESTResourceCR: public RGWSimpleCoroutine {
   int request_complete() override {
     int ret;
     if (result || err_result) {
-      ret = http_op->wait(result, err_result);
+      ret = http_op->wait(result, null_yield, err_result);
     } else {
       bufferlist bl;
-      ret = http_op->wait(&bl);
+      ret = http_op->wait(&bl, null_yield);
     }
     auto op = std::move(http_op); // release ref on return
     if (ret < 0) {
@@ -342,7 +341,7 @@ public:
     request_cleanup();
   }
 
-  int send_request() override {
+  int send_request(const DoutPrefixProvider *dpp) override {
     auto op = boost::intrusive_ptr<RGWRESTDeleteResource>(
         new RGWRESTDeleteResource(conn, path, params, nullptr, http_manager));
 
@@ -350,9 +349,9 @@ public:
 
     bufferlist bl;
 
-    int ret = op->aio_send(bl);
+    int ret = op->aio_send(dpp, bl);
     if (ret < 0) {
-      lsubdout(cct, rgw, 0) << "ERROR: failed to send DELETE request" << dendl;
+      ldpp_subdout(dpp, rgw, 0) << "ERROR: failed to send DELETE request" << dendl;
       op->put();
       return ret;
     }
@@ -363,7 +362,7 @@ public:
   int request_complete() override {
     int ret;
     bufferlist bl;
-    ret = http_op->wait(&bl);
+    ret = http_op->wait(&bl, null_yield);
     auto op = std::move(http_op); // release ref on return
     if (ret < 0) {
       error_stream << "http operation failed: " << op->to_str()
@@ -386,7 +385,7 @@ public:
 };
 
 class RGWCRHTTPGetDataCB : public RGWHTTPStreamRWRequest::ReceiveCB {
-  Mutex lock;
+  ceph::mutex lock = ceph::make_mutex("RGWCRHTTPGetDataCB");
   RGWCoroutinesEnv *env;
   RGWCoroutine *cr;
   RGWHTTPStreamRWRequest *req;
@@ -422,7 +421,7 @@ protected:
   boost::asio::coroutine read_state;
 
 public:
-  virtual int init() = 0;
+  virtual int init(const DoutPrefixProvider *dpp) = 0;
   virtual int read(bufferlist *data, uint64_t max, bool *need_retry) = 0; /* reentrant */
   virtual int decode_rest_obj(map<string, string>& headers, bufferlist& extra_data) = 0;
   virtual bool has_attrs() = 0;
@@ -437,7 +436,7 @@ protected:
 
 public:
   virtual int init() = 0;
-  virtual void send_ready(const rgw_rest_obj& rest_obj) = 0;
+  virtual void send_ready(const DoutPrefixProvider *dpp, const rgw_rest_obj& rest_obj) = 0;
   virtual int send() = 0;
   virtual int write(bufferlist& data, bool *need_retry) = 0; /* reentrant */
   virtual int drain_writes(bool *need_retry) = 0; /* reentrant */
@@ -487,7 +486,7 @@ public:
   }
   ~RGWStreamReadHTTPResourceCRF();
 
-  int init() override;
+  int init(const DoutPrefixProvider *dpp) override;
   int read(bufferlist *data, uint64_t max, bool *need_retry) override; /* reentrant */
   int decode_rest_obj(map<string, string>& headers, bufferlist& extra_data) override;
   bool has_attrs() override;
@@ -550,7 +549,7 @@ public:
   int init() override {
     return 0;
   }
-  void send_ready(const rgw_rest_obj& rest_obj) override;
+  void send_ready(const DoutPrefixProvider *dpp, const rgw_rest_obj& rest_obj) override;
   int send() override;
   int write(bufferlist& data, bool *need_retry) override; /* reentrant */
   void write_drain_notify(uint64_t pending_size);
@@ -587,7 +586,5 @@ public:
                     std::shared_ptr<RGWStreamWriteHTTPResourceCRF>& _out_crf);
   ~RGWStreamSpliceCR();
 
-  int operate() override;
+  int operate(const DoutPrefixProvider *dpp) override;
 };
-
-#endif

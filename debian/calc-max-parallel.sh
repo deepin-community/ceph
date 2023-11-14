@@ -6,8 +6,17 @@
 # MDCache.cc generally runs out of RAM in 4G of memory
 # with parallel=4
 
+if [ ""$(dpkg-architecture -qDEB_HOST_ARCH_BITS) = 32 ] ; then
+	echo "--max-parallel=1"
+	exit 0
+fi
+
 total_ram=$(grep MemTotal /proc/meminfo | awk '{ print $2 }')
 
+fivehundred_g=$((512*1024*1024))
+twohundredtwentysix_g=$((256*1024*1024))
+hundredtwenty_g=$((128*1024*1024))
+nightysix_g=$((96*1024*1024))
 sixtyfour_g=$((64*1024*1024))
 fourtyheight_g=$((48*1024*1024))
 thirtytwo_g=$((32*1024*1024))
@@ -22,11 +31,19 @@ elif [ ${total_ram} -le ${eight_g} ]; then
 elif [ ${total_ram} -le ${sixteen_g} ]; then
     echo "--max-parallel=3"
 elif [ ${total_ram} -le ${thirtytwo_g} ]; then
-    echo "--max-parallel=6"
-elif [ ${total_ram} -le ${fourtyheight_g} ]; then
     echo "--max-parallel=8"
+elif [ ${total_ram} -le ${fourtyheight_g} ]; then
+    echo "--max-parallel=14"
 elif [ ${total_ram} -le ${sixtyfour_g} ]; then
-    echo "--max-parallel=12"
+    echo "--max-parallel=18"
+elif [ ${total_ram} -le ${nightysix_g} ]; then
+    echo "--max-parallel=24"
+elif [ ${total_ram} -le ${hundredtwenty_g} ]; then
+    echo "--max-parallel=36"
+elif [ ${total_ram} -le ${twohundredtwentysix_g} ]; then
+    echo "--max-parallel=72"
+elif [ ${total_ram} -le ${fivehundred_g} ]; then
+    echo "--max-parallel=144"
 else
-    echo "--max-parallel=16"
+    echo "--max-parallel=256"
 fi

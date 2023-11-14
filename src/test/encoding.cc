@@ -320,8 +320,8 @@ TEST(EncodingRoundTrip, Integers) {
 }
 
 const char* expected_what[] = {
-  "buffer::malformed_input: void lame_decoder(int) no longer understand old encoding version 100 < 200",
-  "buffer::malformed_input: void lame_decoder(int) decode past end of struct encoding",
+  "void lame_decoder(int) no longer understand old encoding version 100 < 200: Malformed input",
+  "void lame_decoder(int) decode past end of struct encoding: Malformed input"
 };
 
 void lame_decoder(int which) {
@@ -334,11 +334,11 @@ void lame_decoder(int which) {
 }
 
 TEST(EncodingException, Macros) {
-  for (unsigned i = 0; i < sizeof(expected_what)/sizeof(expected_what[0]); i++) {
+  for (unsigned i = 0; i < std::size(expected_what); i++) {
     try {
       lame_decoder(i);
     } catch (const exception& e) {
-      ASSERT_EQ(string(expected_what[i]), string(e.what()));
+      ASSERT_NE(string(e.what()).find(expected_what[i]), string::npos);
     }
   }
 }

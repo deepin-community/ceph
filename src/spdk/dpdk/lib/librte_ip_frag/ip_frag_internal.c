@@ -14,24 +14,6 @@
 #define	IP_FRAG_TBL_POS(tbl, sig)	\
 	((tbl)->pkt + ((sig) & (tbl)->entry_mask))
 
-#ifdef RTE_LIBRTE_IP_FRAG_TBL_STAT
-#define	IP_FRAG_TBL_STAT_UPDATE(s, f, v)	((s)->f += (v))
-#else
-#define	IP_FRAG_TBL_STAT_UPDATE(s, f, v)	do {} while (0)
-#endif /* IP_FRAG_TBL_STAT */
-
-/* local frag table helper functions */
-static inline void
-ip_frag_tbl_del(struct rte_ip_frag_tbl *tbl, struct rte_ip_frag_death_row *dr,
-	struct ip_frag_pkt *fp)
-{
-	ip_frag_free(fp, dr);
-	ip_frag_key_invalidate(&fp->key);
-	TAILQ_REMOVE(&tbl->lru, fp, lru);
-	tbl->use_entries--;
-	IP_FRAG_TBL_STAT_UPDATE(&tbl->stat, del_num, 1);
-}
-
 static inline void
 ip_frag_tbl_add(struct rte_ip_frag_tbl *tbl,  struct ip_frag_pkt *fp,
 	const struct ip_frag_key *key, uint64_t tms)
@@ -125,8 +107,7 @@ ip_frag_process(struct ip_frag_pkt *fp, struct rte_ip_frag_death_row *dr,
 				IP_LAST_FRAG_IDX : UINT32_MAX;
 
 	/* this is the intermediate fragment. */
-	} else if ((idx = fp->last_idx) <
-		sizeof (fp->frags) / sizeof (fp->frags[0])) {
+	} else if ((idx = fp->last_idx) < RTE_DIM(fp->frags)) {
 		fp->last_idx++;
 	}
 
@@ -134,7 +115,7 @@ ip_frag_process(struct ip_frag_pkt *fp, struct rte_ip_frag_death_row *dr,
 	 * erroneous packet: either exceed max allowed number of fragments,
 	 * or duplicate first/last fragment encountered.
 	 */
-	if (idx >= sizeof (fp->frags) / sizeof (fp->frags[0])) {
+	if (idx >= RTE_DIM(fp->frags)) {
 
 		/* report an error. */
 		if (fp->key.key_len == IPV4_KEYLEN)

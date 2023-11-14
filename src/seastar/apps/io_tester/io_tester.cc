@@ -28,6 +28,9 @@
 #include <seastar/core/align.hh>
 #include <seastar/core/timer.hh>
 #include <seastar/core/thread.hh>
+#include <seastar/core/print.hh>
+#include <seastar/core/loop.hh>
+#include <seastar/core/with_scheduling_group.hh>
 #include <chrono>
 #include <vector>
 #include <boost/range/irange.hpp>
@@ -56,7 +59,7 @@ static std::default_random_engine random_generator(random_seed);
 // that will push the data out of the disk's cache. And static sizes per file are simpler.
 static constexpr uint64_t file_data_size = 1ull << 30;
 
-struct context;
+class context;
 enum class request_type { seqread, seqwrite, randread, randwrite, append, cpu };
 
 namespace std {
@@ -99,6 +102,10 @@ struct shard_info {
     seastar::scheduling_group scheduling_group = seastar::default_scheduling_group();
 };
 
+struct options {
+    bool dsync = false;
+};
+
 class class_data;
 
 struct job_config {
@@ -106,6 +113,7 @@ struct job_config {
     request_type type;
     shard_config shard_placement;
     ::shard_info shard_info;
+    ::options options;
     std::unique_ptr<class_data> gen_class_data();
 };
 
@@ -143,13 +151,15 @@ public:
         , _pos_distribution(0,  file_data_size / _config.shard_info.request_size)
     {}
 
+    virtual ~class_data() = default;
+
     future<> issue_requests(std::chrono::steady_clock::time_point stop) {
         _start = std::chrono::steady_clock::now();
         return with_scheduling_group(_sg, [this, stop] {
             return parallel_for_each(boost::irange(0u, parallelism()), [this, stop] (auto dummy) mutable {
                 auto bufptr = allocate_aligned_buffer<char>(this->req_size(), _alignment);
                 auto buf = bufptr.get();
-                return do_until([this, stop] { return std::chrono::steady_clock::now() > stop; }, [this, buf, stop] () mutable {
+                return do_until([stop] { return std::chrono::steady_clock::now() > stop; }, [this, buf, stop] () mutable {
                     auto start = std::chrono::steady_clock::now();
                     return issue_request(buf).then([this, start, stop] (auto size) {
                         auto now = std::chrono::steady_clock::now();
@@ -184,6 +194,13 @@ public:
     // cpu               : CPU-only load, file is not created.
     future<> start(sstring dir) {
         return do_start(dir);
+    }
+
+    future<> stop() {
+        if (_file) {
+            return _file.close();
+        }
+        return make_ready_future<>();
     }
 protected:
     sstring type_str() const {
@@ -281,8 +298,12 @@ public:
     io_class_data(job_config cfg) : class_data(std::move(cfg)) {}
 
     future<> do_start(sstring dir) override {
-        auto fname = format("{}/test-{}-{:d}", dir, name(), engine().cpu_id());
-        return open_file_dma(fname, open_flags::rw | open_flags::create | open_flags::truncate).then([this, fname] (auto f) {
+        auto fname = format("{}/test-{}-{:d}", dir, name(), this_shard_id());
+        auto flags = open_flags::rw | open_flags::create | open_flags::truncate;
+        if (_config.options.dsync) {
+            flags |= open_flags::dsync;
+        }
+        return open_file_dma(fname, flags).then([this, fname] (auto f) {
             _file = f;
             return remove_file(fname);
         }).then([this, fname] {
@@ -296,7 +317,7 @@ public:
                         std::uniform_int_distribution<char> fill('@', '~');
                         memset(buf, fill(random_generator), bufsize);
                         pos = pos * bufsize;
-                        return _file.dma_write(pos, buf, bufsize).finally([this, bufsize, bufptr = std::move(bufptr), perm = std::move(perm), pos] {
+                        return _file.dma_write(pos, buf, bufsize).finally([this, bufptr = std::move(bufptr), perm = std::move(perm), pos] {
                             if ((this->req_type() == request_type::append) && (pos > _last_pos)) {
                                 _last_pos = pos;
                             }
@@ -490,6 +511,16 @@ struct convert<shard_info> {
 };
 
 template<>
+struct convert<options> {
+    static bool decode(const Node& node, options& op) {
+        if (node["dsync"]) {
+            op.dsync = node["dsync"].as<bool>();
+        }
+        return true;
+    }
+};
+
+template<>
 struct convert<job_config> {
     static bool decode(const Node& node, job_config& cl) {
         cl.name = node["name"].as<std::string>();
@@ -497,6 +528,9 @@ struct convert<job_config> {
         cl.shard_placement = node["shards"].as<shard_config>();
         if (node["shard_info"]) {
             cl.shard_info = node["shard_info"].as<shard_info>();
+        }
+        if (node["options"]) {
+            cl.options = node["options"].as<options>();
         }
         return true;
     }
@@ -515,7 +549,7 @@ class context {
 public:
     context(sstring dir, std::vector<job_config> req_config, unsigned duration)
             : _cl(boost::copy_range<std::vector<std::unique_ptr<class_data>>>(req_config
-                | boost::adaptors::filtered([] (auto& cfg) { return cfg.shard_placement.is_set(engine().cpu_id()); })
+                | boost::adaptors::filtered([] (auto& cfg) { return cfg.shard_placement.is_set(this_shard_id()); })
                 | boost::adaptors::transformed([] (auto& cfg) { return cfg.gen_class_data(); })
             ))
             , _dir(dir)
@@ -523,7 +557,11 @@ public:
             , _finished(0)
     {}
 
-    future<> stop() { return make_ready_future<>(); }
+    future<> stop() {
+        return parallel_for_each(_cl, [] (std::unique_ptr<class_data>& cl) {
+            return cl->stop();
+        });
+    }
 
     future<> start() {
         return parallel_for_each(_cl, [this] (std::unique_ptr<class_data>& cl) {
@@ -541,7 +579,7 @@ public:
 
     future<> print_stats() {
         return _finished.wait(_cl.size()).then([this] {
-            fmt::print("Shard {:>2}\n", engine().cpu_id());
+            fmt::print("Shard {:>2}\n", this_shard_id());
             auto idx = 0;
             for (auto& cl: _cl) {
                 fmt::print("Class {:>2} ({})\n", idx++, cl->describe_class());
@@ -607,6 +645,7 @@ int main(int ac, char** av) {
                     return c.print_stats();
                 }).get();
             }
+            ctx.stop().get0();
         }).or_terminate();
     });
 }

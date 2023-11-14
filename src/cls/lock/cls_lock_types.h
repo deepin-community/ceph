@@ -13,23 +13,23 @@
 #define LOCK_FLAG_MAY_RENEW 0x1    /* idempotent lock acquire */
 #define LOCK_FLAG_MUST_RENEW 0x2   /* lock must already be acquired */
 
-enum ClsLockType {
-  LOCK_NONE                = 0,
-  LOCK_EXCLUSIVE           = 1,
-  LOCK_SHARED              = 2,
-  LOCK_EXCLUSIVE_EPHEMERAL = 3, /* lock object is removed @ unlock */
+enum class ClsLockType {
+  NONE                = 0,
+  EXCLUSIVE           = 1,
+  SHARED              = 2,
+  EXCLUSIVE_EPHEMERAL = 3, /* lock object is removed @ unlock */
 };
 
 inline const char *cls_lock_type_str(ClsLockType type)
 {
     switch (type) {
-      case LOCK_NONE:
+      case ClsLockType::NONE:
 	return "none";
-      case LOCK_EXCLUSIVE:
+      case ClsLockType::EXCLUSIVE:
 	return "exclusive";
-      case LOCK_SHARED:
+      case ClsLockType::SHARED:
 	return "shared";
-      case LOCK_EXCLUSIVE_EPHEMERAL:
+      case ClsLockType::EXCLUSIVE_EPHEMERAL:
 	return "exclusive-ephemeral";
       default:
 	return "<unknown>";
@@ -37,17 +37,17 @@ inline const char *cls_lock_type_str(ClsLockType type)
 }
 
 inline bool cls_lock_is_exclusive(ClsLockType type) {
-  return LOCK_EXCLUSIVE == type || LOCK_EXCLUSIVE_EPHEMERAL == type;
+  return ClsLockType::EXCLUSIVE == type || ClsLockType::EXCLUSIVE_EPHEMERAL == type;
 }
 
 inline bool cls_lock_is_ephemeral(ClsLockType type) {
-  return LOCK_EXCLUSIVE_EPHEMERAL == type;
+  return ClsLockType::EXCLUSIVE_EPHEMERAL == type;
 }
 
 inline bool cls_lock_is_valid(ClsLockType type) {
-  return LOCK_SHARED == type ||
-    LOCK_EXCLUSIVE == type ||
-    LOCK_EXCLUSIVE_EPHEMERAL == type;
+  return ClsLockType::SHARED == type ||
+    ClsLockType::EXCLUSIVE == type ||
+    ClsLockType::EXCLUSIVE_EPHEMERAL == type;
 }
 
 namespace rados {
@@ -59,18 +59,18 @@ namespace rados {
        */
       struct locker_id_t {
         entity_name_t locker;   // locker's client name
-        string cookie;          // locker's cookie.
+	std::string cookie;          // locker's cookie.
 
         locker_id_t() {}
-        locker_id_t(entity_name_t& _n, const string& _c) : locker(_n), cookie(_c) {}
+        locker_id_t(entity_name_t& _n, const std::string& _c) : locker(_n), cookie(_c) {}
 
-        void encode(bufferlist &bl) const {
+        void encode(ceph::buffer::list &bl) const {
           ENCODE_START(1, 1, bl);
           encode(locker, bl);
           encode(cookie, bl);
           ENCODE_FINISH(bl);
         }
-        void decode(bufferlist::const_iterator &bl) {
+        void decode(ceph::buffer::list::const_iterator &bl) {
           DECODE_START_LEGACY_COMPAT_LEN(1, 1, 1, bl);
           decode(locker, bl);
           decode(cookie, bl);
@@ -84,13 +84,13 @@ namespace rados {
             return true;
           return false;
         }
-        void dump(Formatter *f) const;
+        void dump(ceph::Formatter *f) const;
 	friend std::ostream& operator<<(std::ostream& out,
 					const locker_id_t& data) {
 	  out << data.locker;
 	  return out;
 	}
-        static void generate_test_instances(list<locker_id_t*>& o);
+        static void generate_test_instances(std::list<locker_id_t*>& o);
       };
       WRITE_CLASS_ENCODER(locker_id_t)
 
@@ -98,29 +98,30 @@ namespace rados {
       {
         utime_t expiration;  // expiration: non-zero means epoch of locker expiration
         entity_addr_t addr;  // addr: locker address
-        string description;  // description: locker description, may be empty
+	std::string description;  // description: locker description, may be empty
 
         locker_info_t() {}
         locker_info_t(const utime_t& _e, const entity_addr_t& _a,
-                      const string& _d) :  expiration(_e), addr(_a), description(_d) {}
+                      const std::string& _d) :  expiration(_e), addr(_a), description(_d) {}
 
-        void encode(bufferlist &bl, uint64_t features) const {
+        void encode(ceph::buffer::list &bl, uint64_t features) const {
           ENCODE_START(1, 1, bl);
           encode(expiration, bl);
           encode(addr, bl, features);
           encode(description, bl);
           ENCODE_FINISH(bl);
         }
-        void decode(bufferlist::const_iterator &bl) {
+        void decode(ceph::buffer::list::const_iterator &bl) {
           DECODE_START_LEGACY_COMPAT_LEN(1, 1, 1, bl);
           decode(expiration, bl);
           decode(addr, bl);
           decode(description, bl);
           DECODE_FINISH(bl);
         }
-        void dump(Formatter *f) const;
+        void dump(ceph::Formatter *f) const;
 	friend std::ostream& operator<<(std::ostream& out,
 					const locker_info_t& data) {
+	  using ceph::operator <<;
 	  out << "{addr:" << data.addr << ", exp:";
 
 	  const auto& exp = data.expiration;
@@ -132,18 +133,18 @@ namespace rados {
 
 	  return out;
 	}
-        static void generate_test_instances(list<locker_info_t *>& o);
+        static void generate_test_instances(std::list<locker_info_t *>& o);
       };
       WRITE_CLASS_ENCODER_FEATURES(locker_info_t)
 
       struct lock_info_t {
-        map<locker_id_t, locker_info_t> lockers; // map of lockers
+	std::map<locker_id_t, locker_info_t> lockers; // map of lockers
         ClsLockType lock_type;                   // lock type (exclusive / shared)
-        string tag;                              // tag: operations on lock can only succeed with this tag
+	std::string tag;                              // tag: operations on lock can only succeed with this tag
                                                  //      as long as set of non expired lockers
                                                  //      is bigger than 0.
 
-        void encode(bufferlist &bl, uint64_t features) const {
+        void encode(ceph::buffer::list &bl, uint64_t features) const {
           ENCODE_START(1, 1, bl);
           encode(lockers, bl, features);
           uint8_t t = (uint8_t)lock_type;
@@ -151,7 +152,7 @@ namespace rados {
           encode(tag, bl);
           ENCODE_FINISH(bl);
         }
-        void decode(bufferlist::const_iterator &bl) {
+        void decode(ceph::buffer::list::const_iterator &bl) {
           DECODE_START_LEGACY_COMPAT_LEN(1, 1, 1, bl);
           decode(lockers, bl);
           uint8_t t;
@@ -160,9 +161,10 @@ namespace rados {
           decode(tag, bl);
           DECODE_FINISH(bl);
         }
-        lock_info_t() : lock_type(LOCK_NONE) {}
-        void dump(Formatter *f) const;
-        static void generate_test_instances(list<lock_info_t *>& o);
+
+        lock_info_t() : lock_type(ClsLockType::NONE) {}
+        void dump(ceph::Formatter *f) const;
+        static void generate_test_instances(std::list<lock_info_t *>& o);
       };
       WRITE_CLASS_ENCODER_FEATURES(lock_info_t);
     }

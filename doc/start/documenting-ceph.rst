@@ -15,6 +15,34 @@ but you may view documentation for older branches (e.g., ``argonaut``) or future
 branches (e.g., ``next``) as well as work-in-progress branches by substituting
 ``master`` with the branch name you prefer.
 
+Another way to suggest a documentation correction is to make a pull request.
+The instructions for making a pull request against the Ceph documentation are
+in the section :ref:`making_contributions`.
+
+If this is your first time making an improvement to the documentation or
+if you have noticed a small mistake (such as a spelling error or a typo),
+it will be easier to send an email than to make a pull request. You will
+be credited for the improvement unless you instruct Ceph Upstream
+Documentation not to credit you.
+
+Location of the Documentation in the Repository
+===============================================
+
+The Ceph documentation source is in the ``ceph/doc`` directory of the Ceph
+repository. Python Sphinx renders the source into HTML and manpages. 
+
+Viewing Old Ceph Documentation
+==============================
+The https://docs.ceph.com link displays the latest release branch by default
+(for example, if "Quincy" is the most recent release, then by default
+https://docs.ceph.com displays the documentation for Quincy), but you can view
+the documentation for older versions of Ceph (for example, ``pacific``) by
+replacing the version name in the url (for example, ``quincy`` in
+`https://docs.ceph.com/en/pacific <https://docs.ceph.com/en/quincy>`_) with the
+branch name you prefer (for example, ``pacific``, to create a URL that reads
+`https://docs.ceph.com/en/pacific/ <https://docs.ceph.com/en/pacific/>`_).
+
+.. _making_contributions:
 
 Making Contributions
 ====================
@@ -43,25 +71,35 @@ see :ref:`Get Involved`.
 The most common way to make contributions is to use the `Fork and Pull`_
 approach. You must:
 
-#. Install git locally. For Debian/Ubuntu, execute::
+#. Install git locally. For Debian/Ubuntu, execute:
+
+   .. prompt:: bash $
 
 	sudo apt-get install git
 
-   For Fedora, execute::
+   For Fedora, execute:
+
+   .. prompt:: bash $
 
 	sudo yum install git
 
-   For CentOS/RHEL, execute::
+   For CentOS/RHEL, execute:
+
+   .. prompt:: bash $
 
 	sudo yum install git
 
-#. Ensure your ``.gitconfig`` file has your name and email address. ::
+#. Ensure your ``.gitconfig`` file has your name and email address. :
+
+   .. code-block:: ini
 
 	[user]
 	   email = {your-email-address}
 	   name = {your-name}
 
-   For example::
+   For example:
+
+   .. prompt:: bash $
 
 	git config --global user.name "John Doe"
 	git config --global user.email johndoe@example.com
@@ -86,7 +124,7 @@ main components.
 - **Ceph Object Storage:** The Ceph Object Storage documentation resides under
   the ``doc/radosgw`` directory.
 
-- **Ceph Filesystem:** The Ceph Filesystem documentation resides under the 
+- **Ceph File System:** The Ceph File System documentation resides under the 
   ``doc/cephfs`` directory.
   
 - **Installation (Quick):** Quick start documentation resides under the
@@ -108,21 +146,25 @@ Select a Branch
 ---------------
 
 When you make small changes to the documentation, such as fixing typographical
-errors or clarifying explanations, use the ``master`` branch (default). You
-should also use the ``master`` branch when making contributions to features that
-are in the current release. ``master`` is the most commonly used branch. ::
+errors or clarifying explanations, use the ``main`` branch (default). You
+should also use the ``main`` branch when making contributions to features that
+are in the current release. ``main`` is the most commonly used branch. :
 
-	git checkout master
+.. prompt:: bash $
+
+	git checkout main
 
 When you make changes to documentation that affect an upcoming release, use 
-the ``next`` branch. ``next`` is the second most commonly used branch. ::
+the ``next`` branch. ``next`` is the second most commonly used branch. :
+
+.. prompt:: bash $
 
 	git checkout next
 
 When you are making substantial contributions such as new features that are not
 yet in the current release; if your contribution is related to an issue with a
 tracker ID; or, if you want to see your documentation rendered on the Ceph.com
-website before it gets merged into the ``master`` branch, you should create a
+website before it gets merged into the ``main`` branch, you should create a
 branch. To distinguish branches that include only documentation updates, we
 prepend them with ``wip-doc`` by convention, following the form
 ``wip-doc-{your-branch-name}``. If the branch relates to an issue filed in
@@ -132,17 +174,22 @@ should be ``wip-doc-4000`` by convention and the relevant tracker URL will be
 http://tracker.ceph.com/issues/4000.
 
 .. note:: Please do not mingle documentation contributions and source code
-   contributions in a single pull request. Editors review the documentation
-   and engineers review source code changes. When you keep documentation 
-   pull requests separate from source code pull requests, it simplifies the 
-   process and we won't have to ask you to resubmit the requests separately.
+   contributions in a single commit. When you keep documentation
+   commits separate from source code commits, it simplifies the review
+   process. We highly recommend that any pull request that adds a feature or
+   a configuration option should also include a documentation commit that
+   describes the changes.
 
 Before you create your branch name, ensure that it doesn't already exist in the
-local or remote repository. ::
+local or remote repository. :
+
+.. prompt:: bash $
 
 	git branch -a | grep wip-doc-{your-branch-name}
 
-If it doesn't exist, create your branch::
+If it doesn't exist, create your branch:
+
+.. prompt:: bash $
 
 	git checkout -b wip-doc-{your-branch-name}
 
@@ -150,13 +197,13 @@ If it doesn't exist, create your branch::
 Make a Change
 -------------
 
-Modifying a document involves opening a restructuredText file, changing
+Modifying a document involves opening a reStructuredText file, changing
 its contents, and saving the changes. See `Documentation Style Guide`_ for
 details on syntax requirements.
 
-Adding a document involves creating a new restructuredText file under the
-``doc`` directory or its subdirectories and saving the file with a ``*.rst``
-file extension. You must also include a reference to the  document: a hyperlink
+Adding a document involves creating a new reStructuredText file within the
+``doc`` directory tree with a ``*.rst``
+extension. You must also include a reference to the document: a hyperlink
 or a table of contents entry. The ``index.rst`` file of a top-level directory
 usually contains a TOC, where you can add the new file name. All documents must
 have a title. See `Headings`_ for details.
@@ -165,12 +212,16 @@ Your new document doesn't get tracked by ``git`` automatically. When you want
 to add the document to the repository,  you must use ``git add 
 {path-to-filename}``. For example, from the top level  directory of the
 repository, adding an ``example.rst`` file to the ``rados`` subdirectory would
-look like this::
+look like this:
+
+.. prompt:: bash $
 
 	git add doc/rados/example.rst
 
 Deleting a document involves removing it from the repository with ``git rm
-{path-to-filename}``. For example:: 
+{path-to-filename}``. For example:
+
+.. prompt:: bash $
 
 	git rm doc/rados/example.rst
 
@@ -180,33 +231,49 @@ You must also remove any reference to a deleted document from other documents.
 Build the Source
 ----------------
 
-To build the documentation, navigate to the ``ceph`` repository directory::
+To build the documentation, navigate to the ``ceph`` repository directory:
+
+
+.. prompt:: bash $
 
 	cd ceph
 
-To build the documentation on Debian/Ubuntu, Fedora, or CentOS/RHEL, execute::
+.. note::
+   The directory that contains ``build-doc`` and ``serve-doc`` must be included
+   in the ``PATH`` environment variable in order for these commands to work.
+
+
+To build the documentation on Debian/Ubuntu, Fedora, or CentOS/RHEL, execute:
+
+.. prompt:: bash $
 
 	admin/build-doc
 
-To scan for the reachability of external links, execute::
+To scan for the reachability of external links, execute:
+
+.. prompt:: bash $
 
 	admin/build-doc linkcheck
 
-Executing ``admin/build-doc`` will create a ``build-doc`` directory under ``ceph``.
-You may need to create a directory under ``ceph/build-doc`` for output of Javadoc
-files. ::
+Executing ``admin/build-doc`` will create a ``build-doc`` directory under
+``ceph``.  You may need to create a directory under ``ceph/build-doc`` for
+output of Javadoc files:
+
+.. prompt:: bash $
 
 	mkdir -p output/html/api/libcephfs-java/javadoc
 
 The build script ``build-doc`` will produce an output of errors and warnings.
-You MUST fix errors in documents you modified before committing a change, and you
-SHOULD fix warnings that are related to syntax you modified.
+You MUST fix errors in documents you modified before committing a change, and
+you SHOULD fix warnings that are related to syntax you modified.
 
 .. important:: You must validate ALL HYPERLINKS. If a hyperlink is broken,
    it automatically breaks the build!
 
 Once you build the documentation set, you may start an HTTP server at
-``http://localhost:8080/`` to view it::
+``http://localhost:8080/`` to view it:
+
+.. prompt:: bash $
 
 	admin/serve-doc
 
@@ -232,10 +299,10 @@ the following packages are required:
 	<table cellpadding="10"><colgroup><col width="30%"><col width="30%"><col width="30%"></colgroup><tbody valign="top"><tr><td><h3>Debian/Ubuntu</h3>
 
 - gcc
-- python-dev
-- python-pip
-- python-virtualenv
-- python-sphinx
+- python3-dev
+- python3-pip
+- python3-sphinx
+- pytnon3-venv
 - libxml2-dev
 - libxslt1-dev
 - doxygen
@@ -250,7 +317,6 @@ the following packages are required:
 - gcc
 - python-devel
 - python-pip
-- python-virtualenv
 - python-docutils
 - python-jinja2
 - python-pygments
@@ -269,7 +335,6 @@ the following packages are required:
 - gcc
 - python-devel
 - python-pip
-- python-virtualenv
 - python-docutils
 - python-jinja2
 - python-pygments
@@ -286,14 +351,18 @@ the following packages are required:
 
 
 Install each dependency that is not installed on your host. For Debian/Ubuntu
-distributions, execute the following::
+distributions, execute the following:
 
-	sudo apt-get install gcc python-dev python-pip python-virtualenv libxml2-dev libxslt-dev doxygen graphviz ant ditaa
+.. prompt:: bash $
+
+	sudo apt-get install gcc python-dev python-pip libxml2-dev libxslt-dev doxygen graphviz ant ditaa
 	sudo apt-get install python-sphinx
 
-For Fedora distributions, execute the following::
+For Fedora distributions, execute the following:
 
-   sudo yum install gcc python-devel python-pip python-virtualenv libxml2-devel libxslt-devel doxygen graphviz ant
+.. prompt:: bash $
+
+   sudo yum install gcc python-devel python-pip libxml2-devel libxslt-devel doxygen graphviz ant
    sudo pip install html2text
    sudo yum install python-jinja2 python-pygments python-docutils python-sphinx
    sudo yum install jericho-html ditaa
@@ -301,18 +370,24 @@ For Fedora distributions, execute the following::
 For CentOS/RHEL distributions, it is recommended to have ``epel`` (Extra
 Packages for Enterprise Linux) repository as it provides some extra packages
 which are not available in the default repository. To install ``epel``, execute
-the following::
+the following:
+
+.. prompt:: bash $
 
         sudo yum install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
 
-For CentOS/RHEL distributions, execute the following::
+For CentOS/RHEL distributions, execute the following:
 
-	sudo yum install gcc python-devel python-pip python-virtualenv libxml2-devel libxslt-devel doxygen graphviz ant
+.. prompt:: bash $
+
+	sudo yum install gcc python-devel python-pip libxml2-devel libxslt-devel doxygen graphviz ant
 	sudo pip install html2text
 
-For CentOS/RHEL distributions, the remaining python packages are not available in
-the default and ``epel`` repositories. So, use http://rpmfind.net/ to find the
-packages. Then, download them from a mirror and install them. For example::
+For CentOS/RHEL distributions, the remaining python packages are not available
+in the default and ``epel`` repositories. So, use http://rpmfind.net/ to find
+the packages. Then, download them from a mirror and install them. For example:
+
+.. prompt:: bash $
 
 	wget http://rpmfind.net/linux/centos/7/os/x86_64/Packages/python-jinja2-2.7.2-2.el7.noarch.rpm
 	sudo yum install python-jinja2-2.7.2-2.el7.noarch.rpm
@@ -327,15 +402,17 @@ Ceph documentation makes extensive use of `ditaa`_, which is not presently built
 for CentOS/RHEL7. You must install ``ditaa`` if you are making changes to
 ``ditaa`` diagrams so that you can verify that they render properly before you
 commit new or modified ``ditaa`` diagrams. You may retrieve compatible required
-packages for CentOS/RHEL distributions and install them manually. To run ``ditaa``
-on CentOS/RHEL7, following dependencies are required:
+packages for CentOS/RHEL distributions and install them manually. To run
+``ditaa`` on CentOS/RHEL7, following dependencies are required:
 
 - jericho-html
 - jai-imageio-core
 - batik
 
 Use http://rpmfind.net/ to find compatible ``ditaa`` and the dependencies.
-Then, download them from a mirror and install them. For example::
+Then, download them from a mirror and install them. For example:
+
+.. prompt:: bash $
 
 	wget http://rpmfind.net/linux/fedora/linux/releases/22/Everything/x86_64/os/Packages/j/jericho-html-3.3-4.fc22.noarch.rpm
 	sudo yum install jericho-html-3.3-4.fc22.noarch.rpm
@@ -397,7 +474,9 @@ There is a carriage return between the summary line and the description::
 	Signed-off-by: John Doe <john.doe@gmail.com>
 
 
-To commit changes, execute the following:: 
+To commit changes, execute the following:
+
+.. prompt:: bash $
 
 	git commit -a
 	
@@ -409,15 +488,21 @@ your uncommitted changes, staging them for commit, committing the changes and
 pushing them to your forked Ceph repository.
 
 
-For Debian/Ubuntu, execute::
+For Debian/Ubuntu, execute:
+
+.. prompt:: bash $
 
 	sudo apt-get install gitk git-gui
 
-For Fedora/CentOS/RHEL, execute::
+For Fedora/CentOS/RHEL, execute:
+
+.. prompt:: bash $
 
 	sudo yum install gitk git-gui
 
-Then, execute::
+Then, execute:
+
+.. prompt:: bash $
 
 	cd {git-ceph-repo-path}
 	gitk
@@ -430,11 +515,15 @@ Push the Change
 
 Once you have one or more commits, you must push them from the local copy of the
 repository to ``github``. A graphical tool like ``git-gui`` provides a user
-interface for pushing to the repository. If you created a branch previously::
+interface for pushing to the repository. If you created a branch previously:
+
+.. prompt:: bash $
 
 	git push origin wip-doc-{your-branch-name}
 
-Otherwise::
+Otherwise:
+
+.. prompt:: bash $
 
 	git push
 
@@ -462,7 +551,9 @@ the documentation in both native restructuredText format and its rendered
 formats such as HTML. Navigate to your Ceph repository and view a document in
 its native format. You may notice that it is generally as legible in a terminal
 as it is in its rendered HTML format. Additionally, you may also notice that
-diagrams in ``ditaa`` format also render reasonably well in text mode. ::
+diagrams in ``ditaa`` format also render reasonably well in text mode. :
+
+.. prompt:: bash $
 
 	less doc/architecture.rst
 
@@ -558,32 +649,138 @@ The Ceph project uses `paragraph level markup`_ to highlight points.
    additional details.
 
 
-TOC and Hyperlinks
-------------------
+Table of Contents (TOC) and Hyperlinks
+---------------------------------------
 
-All documents must be linked from another document or a table of contents,
-otherwise you will receive a warning when building the documentation.
+The documents in the Ceph documentation suite follow certain conventions that
+are explained in this section.
 
-The Ceph project uses the ``.. toctree::`` directive. See `The TOC tree`_
-for details. When rendering a TOC, consider specifying the ``:maxdepth:`` 
-parameter so the rendered TOC is reasonably terse.
+Every document (every ``.rst`` file) in the Sphinx-controlled Ceph
+documentation suite must be linked either (1) from another document in the
+documentation suite or (2) from a table of contents (TOC). If any document in
+the documentation suite is not linked in this way, the ``build-doc`` script
+generates warnings when it tries to build the documentation. 
 
-Document authors should prefer to use the ``:ref:`` syntax where a link target
-contains a specific unique identifier (e.g., ``.. _unique-target-id:``), and  a
-reference to the target specifically references the target  (e.g.,
-``:ref:`unique-target-id```) so that if source files are moved or the
-information architecture changes, the links will still work. See
-`Cross referencing arbitrary locations`_ for details.
+The Ceph project uses the ``.. toctree::`` directive. See `The TOC tree`_ for
+details. When rendering a table of contents (TOC), specify the ``:maxdepth:``
+parameter so that the rendered TOC is not too long.
 
-Ceph documentation also uses the backtick (accent grave) character followed by
-the link text, another backtick and an underscore. Sphinx allows you to
-incorporate the link destination inline; however, we prefer to use the use the
-``.. _Link Text: ../path`` convention at the bottom of the document, because it
-improves the readability of the document in a command line interface.
+Use the ``:ref:`` syntax where a link target contains a specific unique
+identifier (for example, ``.. _unique-target-id:``). A link to the section
+designated by ``.. _unique-target-id:`` looks like this:
+``:ref:`unique-target-id```. If this convention is followed, the links within
+the ``.rst`` source files will work even if the source files are moved within
+the ``ceph/doc`` directory. See `Cross referencing arbitrary locations`_ for
+details.
+
+.. _start_external_hyperlink_example:
+
+External Hyperlink Example
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+It is also possible to create a link to a section of the documentation and to
+have custom text appear in the body of the link. This is useful when it is more
+important to preserve the text of the sentence containing the link than it is
+to refer explicitly to the title of the section being linked to.
+
+For example, RST that links to the Sphinx Python Document Generator homepage
+and generates a sentence reading "Click here to learn more about Python
+Sphinx." looks like this: 
+
+::
+
+    ``Click `here <https://www.sphinx-doc.org>`_ to learn more about Python
+    Sphinx.`` 
+
+And here it is, rendered:
+
+Click `here <https://www.sphinx-doc.org>`_ to learn more about Python Sphinx. 
+
+Pay special attention to the underscore after the backtick. If you forget to
+include it and this is your first day working with RST, there's a chance that
+you'll spend all day wondering what went wrong without realizing that you
+omitted that underscore. Also, pay special attention to the space between the
+substitution text (in this case, "here") and the less-than bracket that sets
+the explicit link apart from the substition text. The link will not render
+properly without this space.
+
+Linking Customs
+~~~~~~~~~~~~~~~
+
+By a custom established when Ceph was still being developed by Inktank,
+contributors to the documentation of the Ceph project preferred to use the
+convention of putting ``.. _Link Text: ../path`` links at the bottom of the
+document and linking to them using references of the form ``:ref:`path```. This
+convention was preferred because it made the documents more readable in a
+command line interface. As of 2023, though, we have no preference for one over
+the other. Use whichever convention makes the text easier to read.
+
+Quirks of ReStructured Text
+---------------------------
+
+External Links
+~~~~~~~~~~~~~~
+
+.. _external_link_with_inline_text:
+
+This is the formula for links to addresses external to the Ceph documentation:
+
+::
+
+   `inline text <http:www.foo.com>`_
+
+.. note:: Do not fail to include the space between the inline text and the
+   less-than sign. 
+   
+   Do not fail to include the underscore after the final backtick.
+
+   To link to addresses that are external to the Ceph documentation, include a
+   space between the inline text and the angle bracket that precedes the
+   external address. This is precisely the opposite of :ref:`the convention for
+   inline text that links to a location inside the Ceph
+   documentation<internal_link_with_inline_text>`. If this seems inconsistent
+   and confusing to you, then you're right. It is inconsistent and confusing.
+
+See also ":ref:`External Hyperlink Example<start_external_hyperlink_example>`".
+
+Internal Links
+~~~~~~~~~~~~~~
+
+To link to a section in the Ceph documentation, you must (1) define a target
+link before the section and then (2) link to that target from another location
+in the documentation. Here are the formulas for targets and links to those
+targets:
+
+Target::
+
+   .. _target:
+
+   Title of Targeted Section
+   =========================
+
+   Lorem ipsum...
+
+Link to target::
+
+   :ref:`target`
+
+.. _internal_link_with_inline_text:
+
+Link to target with inline text::
+
+   :ref:`inline text<target>`
+
+.. note:: 
+
+   There is no space between "inline text" and the angle bracket that
+   immediately follows it. This is precisely the opposite of :ref:`the
+   convention for inline text that links to a location outside of the Ceph
+   documentation<external_link_with_inline_text>`. If this seems inconsistent
+   and confusing to you, then you're right. It is inconsistent and confusing.
 
 
-.. _Python Sphinx: http://sphinx-doc.org
-.. _resturcturedText: http://docutils.sourceforge.net/rst.html
+.. _Python Sphinx: https://www.sphinx-doc.org
+.. _restructuredText: http://docutils.sourceforge.net/rst.html
 .. _Fork and Pull: https://help.github.com/articles/using-pull-requests
 .. _github: http://github.com
 .. _ditaa: http://ditaa.sourceforge.net/

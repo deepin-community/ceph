@@ -1,14 +1,14 @@
 Manually editing a CRUSH Map
 ============================
 
-.. note:: Manually editing the CRUSH map is considered an advanced
+.. note:: Manually editing the CRUSH map is an advanced
 	  administrator operation.  All CRUSH changes that are
 	  necessary for the overwhelming majority of installations are
 	  possible via the standard ceph CLI and do not require manual
 	  CRUSH map edits.  If you have identified a use case where
-	  manual edits *are* necessary, consider contacting the Ceph
-	  developers so that future versions of Ceph can make this
-	  unnecessary.
+	  manual edits *are* necessary with recent Ceph releases, consider
+	  contacting the Ceph developers so that future versions of Ceph
+	  can obviate your corner case.
 
 To edit an existing CRUSH map:
 
@@ -35,7 +35,9 @@ Pool Values`_.
 Get a CRUSH Map
 ---------------
 
-To get the CRUSH map for your cluster, execute the following::
+To get the CRUSH map for your cluster, execute the following:
+
+.. prompt:: bash $
 
 	ceph osd getcrushmap -o {compiled-crushmap-filename}
 
@@ -48,23 +50,47 @@ edit it.
 Decompile a CRUSH Map
 ---------------------
 
-To decompile a CRUSH map, execute the following::
+To decompile a CRUSH map, execute the following:
+
+.. prompt:: bash $
 
 	crushtool -d {compiled-crushmap-filename} -o {decompiled-crushmap-filename}
 
+.. _compilecrushmap:
+
+Recompile a CRUSH Map
+---------------------
+
+To compile a CRUSH map, execute the following:
+
+.. prompt:: bash $
+
+	crushtool -c {decompiled-crushmap-filename} -o {compiled-crushmap-filename}
+
+.. _setcrushmap:
+
+Set the CRUSH Map
+-----------------
+
+To set the CRUSH map for your cluster, execute the following:
+
+.. prompt:: bash $
+
+	ceph osd setcrushmap -i {compiled-crushmap-filename}
+
+Ceph will load (-i) a compiled CRUSH map from the filename you specified.
 
 Sections
 --------
 
 There are six main sections to a CRUSH Map.
 
-#. **tunables:** The preamble at the top of the map described any *tunables*
-   for CRUSH behavior that vary from the historical/legacy CRUSH behavior. These
-   correct for old bugs, optimizations, or other changes in behavior that have
+#. **tunables:** The preamble at the top of the map describes any *tunables*
+   that differ from the historical / legacy CRUSH behavior. These
+   correct for old bugs, optimizations, or other changes that have
    been made over the years to improve CRUSH's behavior.
 
-#. **devices:** Devices are individual ``ceph-osd`` daemons that can
-   store data.
+#. **devices:** Devices are individual OSDs that store data.
 
 #. **types**: Bucket ``types`` define the types of buckets used in
    your CRUSH hierarchy. Buckets consist of a hierarchical aggregation
@@ -89,23 +115,33 @@ There are six main sections to a CRUSH Map.
 CRUSH Map Devices
 -----------------
 
-Devices are individual ``ceph-osd`` daemons that can store data.  You
-will normally have one defined here for each OSD daemon in your
-cluster.  Devices are identified by an id (a non-negative integer) and
-a name, normally ``osd.N`` where ``N`` is the device id.
+Devices are individual OSDs that store data.  Usually one is defined here for each
+OSD daemon in your
+cluster.  Devices are identified by an ``id`` (a non-negative integer) and
+a ``name``, normally ``osd.N`` where ``N`` is the device id.
+
+.. _crush-map-device-class:
 
 Devices may also have a *device class* associated with them (e.g.,
 ``hdd`` or ``ssd``), allowing them to be conveniently targeted by a
 crush rule.
 
+.. prompt:: bash #
+
+	devices
+
 ::
 
-	# devices
 	device {num} {osd.name} [class {class}]
 
-For example::
+For example:
 
-	# devices
+.. prompt:: bash #
+
+	devices
+
+::
+
 	device 0 osd.0 class ssd
 	device 1 osd.1 class hdd
 	device 2 osd.2
@@ -115,10 +151,6 @@ In most cases, each device maps to a single ``ceph-osd`` daemon.  This
 is normally a single storage device, a pair of devices (for example,
 one for data and one for a journal or metadata), or in some cases a
 small RAID device.
-
-
-
-
 
 CRUSH Map Bucket Types
 ----------------------
@@ -137,9 +169,9 @@ media.
 To add a bucket type to the CRUSH map, create a new line under your list of
 bucket types. Enter ``type`` followed by a unique numeric ID and a bucket name.
 By convention, there is one leaf bucket and it is ``type 0``;  however, you may
-give it any name you like (e.g., osd, disk, drive, storage, etc.)::
+give it any name you like (e.g., osd, disk, drive, storage)::
 
-	#types
+	# types
 	type {num} {bucket-name}
 
 For example::
@@ -154,8 +186,9 @@ For example::
 	type 6 pod
 	type 7 room
 	type 8 datacenter
-	type 9 region
-	type 10 root
+	type 9 zone
+	type 10 region
+	type 11 root
 
 
 
@@ -178,8 +211,8 @@ distribution units, pods, rows, rooms, and data centers. With the exception of
 the leaf nodes representing OSDs, the rest of the hierarchy is arbitrary, and
 you may define it according to your own needs.
 
-We recommend adapting your CRUSH map to your firms's hardware naming conventions
-and using instances names that reflect the physical hardware. Your naming
+We recommend adapting your CRUSH map to your firm's hardware naming conventions
+and using instance names that reflect the physical hardware. Your naming
 practice can make it easier to administer the cluster and troubleshoot
 problems when an OSD and/or other hardware malfunctions and the administrator
 need access to physical hardware.
@@ -223,7 +256,7 @@ result in bringing down numerous hosts/nodes and their OSDs.
 When declaring a bucket instance, you must specify its type, give it a unique
 name (string), assign it a unique ID expressed as a negative integer (optional),
 specify a weight relative to the total capacity/capability of its item(s),
-specify the bucket algorithm (usually ``straw``), and the hash (usually ``0``,
+specify the bucket algorithm (usually ``straw2``), and the hash (usually ``0``,
 reflecting hash algorithm ``rjenkins1``). A bucket may have one or more items.
 The items may consist of node buckets or leaves. Items may have a weight that
 reflects the relative weight of the item.
@@ -233,7 +266,7 @@ You may declare a node bucket with the following syntax::
 	[bucket-type] [bucket-name] {
 		id [a unique negative numeric ID]
 		weight [the relative capacity/capability of the item(s)]
-		alg [the bucket type: uniform | list | tree | straw ]
+		alg [the bucket type: uniform | list | tree | straw | straw2 ]
 		hash [the hash type: 0 by default]
 		item [item-name] weight [weight]
 	}
@@ -243,7 +276,7 @@ and one rack bucket. The OSDs are declared as items within the host buckets::
 
 	host node1 {
 		id -1
-		alg straw
+		alg straw2
 		hash 0
 		item osd.0 weight 1.00
 		item osd.1 weight 1.00
@@ -251,7 +284,7 @@ and one rack bucket. The OSDs are declared as items within the host buckets::
 
 	host node2 {
 		id -2
-		alg straw
+		alg straw2
 		hash 0
 		item osd.2 weight 1.00
 		item osd.3 weight 1.00
@@ -259,7 +292,7 @@ and one rack bucket. The OSDs are declared as items within the host buckets::
 
 	rack rack1 {
 		id -3
-		alg straw
+		alg straw2
 		hash 0
 		item node1 weight 2.00
 		item node2 weight 2.00
@@ -271,14 +304,14 @@ and one rack bucket. The OSDs are declared as items within the host buckets::
 
 .. topic:: Bucket Types
 
-   Ceph supports four bucket types, each representing a tradeoff between
+   Ceph supports five bucket types, each representing a tradeoff between
    performance and reorganization efficiency. If you are unsure of which bucket
-   type to use, we recommend using a ``straw`` bucket.  For a detailed
+   type to use, we recommend using a ``straw2`` bucket.  For a detailed
    discussion of bucket types, refer to
    `CRUSH - Controlled, Scalable, Decentralized Placement of Replicated Data`_,
    and more specifically to **Section 3.4**. The bucket types are:
 
-	#. **Uniform**: Uniform buckets aggregate devices with **exactly** the same
+	#. **uniform**: Uniform buckets aggregate devices with **exactly** the same
 	   weight. For example, when firms commission or decommission hardware, they
 	   typically do so with many machines that have exactly the same physical
 	   configuration (e.g., bulk purchases). When storage devices have exactly
@@ -286,7 +319,7 @@ and one rack bucket. The OSDs are declared as items within the host buckets::
 	   CRUSH to map replicas into uniform buckets in constant time. With
 	   non-uniform weights, you should use another bucket algorithm.
 
-	#. **List**: List buckets aggregate their content as linked lists. Based on
+	#. **list**: List buckets aggregate their content as linked lists. Based on
 	   the :abbr:`RUSH (Replication Under Scalable Hashing)` :sub:`P` algorithm,
 	   a list is a natural and intuitive choice for an **expanding cluster**:
 	   either an object is relocated to the newest device with some appropriate
@@ -296,13 +329,13 @@ and one rack bucket. The OSDs are declared as items within the host buckets::
 	   amount of unnecessary movement, making list buckets most suitable for
 	   circumstances in which they **never (or very rarely) shrink**.
 
-	#. **Tree**: Tree buckets use a binary search tree. They are more efficient
+	#. **tree**: Tree buckets use a binary search tree. They are more efficient
 	   than list buckets when a bucket contains a larger set of items. Based on
 	   the :abbr:`RUSH (Replication Under Scalable Hashing)` :sub:`R` algorithm,
 	   tree buckets reduce the placement time to O(log :sub:`n`), making them
 	   suitable for managing much larger sets of devices or nested buckets.
 
-	#. **Straw**: List and Tree buckets use a divide and conquer strategy
+	#. **straw**: List and Tree buckets use a divide and conquer strategy
 	   in a way that either gives certain items precedence (e.g., those
 	   at the beginning of a list) or obviates the need to consider entire
 	   subtrees of items at all. That improves the performance of the replica
@@ -312,7 +345,7 @@ and one rack bucket. The OSDs are declared as items within the host buckets::
 	   fairly “compete” against each other for replica placement through a
 	   process analogous to a draw of straws.
 
-        #. **Straw2**: Straw2 buckets improve Straw to correctly avoid any data 
+        #. **straw2**: Straw2 buckets improve Straw to correctly avoid any data
            movement between items when neighbor weights change.
 
            For example the weight of item A including adding it anew or removing
@@ -568,16 +601,16 @@ There are three types of transformations possible:
    since the previous rule distributed across devices of multiple
    classes but the adjusted rules will only map to devices of the
    specified *device-class*, but that often is an accepted level of
-   data movement when the nubmer of outlier devices is small.
+   data movement when the number of outlier devices is small.
 
 #. ``--reclassify-bucket <match-pattern> <device-class> <default-parent>``
 
-   This will allow you to merge a parallel type-specific hiearchy with the normal hierarchy.  For example, many users have maps like::
+   This will allow you to merge a parallel type-specific hierarchy with the normal hierarchy.  For example, many users have maps like::
 
      host node1 {
         id -2           # do not change unnecessarily
         # weight 109.152
-        alg straw
+        alg straw2
         hash 0  # rjenkins1
         item osd.0 weight 9.096
         item osd.1 weight 9.096
@@ -591,7 +624,7 @@ There are three types of transformations possible:
      host node1-ssd {
         id -10          # do not change unnecessarily
         # weight 2.000
-        alg straw
+        alg straw2
         hash 0  # rjenkins1
         item osd.80 weight 2.000
 	...
@@ -599,7 +632,7 @@ There are three types of transformations possible:
 
      root default {
         id -1           # do not change unnecessarily
-        alg straw
+        alg straw2
         hash 0  # rjenkins1
         item node1 weight 110.967
         ...
@@ -608,7 +641,7 @@ There are three types of transformations possible:
      root ssd {
         id -18          # do not change unnecessarily
         # weight 16.000
-        alg straw
+        alg straw2
         hash 0  # rjenkins1
         item node1-ssd weight 2.000
 	...
@@ -634,29 +667,38 @@ There are three types of transformations possible:
    single bucket.  For example, in the previous example, we want the
    ``ssd`` bucket to be mapped to the ``default`` bucket.
 
-The final command to convert the map comprised of the above fragments would be something like::
+The final command to convert the map comprising the above fragments would be something like:
 
-  $ ceph osd getcrushmap -o original
-  $ crushtool -i original --reclassify \
-      --set-subtree-class default hdd \
-      --reclassify-root default hdd \
-      --reclassify-bucket %-ssd ssd default \
-      --reclassify-bucket ssd ssd default \
-      -o adjusted
+.. prompt:: bash $
 
-In order to ensure that the conversion is correct, there is a ``--compare`` command that will test a large sample of inputs to the CRUSH map and ensure that the same result comes back out.  These inputs are controlled by the same options that apply to the ``--test`` command.  For the above example,::
+  ceph osd getcrushmap -o original
+  crushtool -i original --reclassify \
+    --set-subtree-class default hdd \
+    --reclassify-root default hdd \
+    --reclassify-bucket %-ssd ssd default \
+    --reclassify-bucket ssd ssd default \
+    -o adjusted
 
-  $ crushtool -i original --compare adjusted
+In order to ensure that the conversion is correct, there is a ``--compare`` command that will test a large sample of inputs against the CRUSH map and check that the same result is output. These inputs are controlled by the same options that apply to the ``--test`` command.  For the above example,:
+
+.. prompt:: bash $
+
+   crushtool -i original --compare adjusted
+
+::
+
   rule 0 had 0/10240 mismatched mappings (0)
   rule 1 had 0/10240 mismatched mappings (0)
   maps appear equivalent
 
-If there were difference, you'd see what ratio of inputs are remapped
-in the parentheses.
+If there were differences, the ratio of remapped inputs would be reported in
+the parentheses.
 
-If you are satisfied with the adjusted map, you can apply it to the cluster with something like::
+When you are satisfied with the adjusted map, apply it to the cluster with a command of the form:
 
-  ceph osd setcrushmap -i adjusted
+.. prompt:: bash $
+
+   ceph osd setcrushmap -i adjusted
 
 Tuning CRUSH, the hard way
 --------------------------
@@ -665,7 +707,9 @@ If you can ensure that all clients are running recent code, you can
 adjust the tunables by extracting the CRUSH map, modifying the values,
 and reinjecting it into the cluster.
 
-* Extract the latest CRUSH map::
+* Extract the latest CRUSH map:
+
+  .. prompt:: bash $
 
 	ceph osd getcrushmap -o /tmp/crush
 
@@ -673,19 +717,25 @@ and reinjecting it into the cluster.
   for both large and small clusters we tested with.  You will need to
   additionally specify the ``--enable-unsafe-tunables`` argument to
   ``crushtool`` for this to work.  Please use this option with
-  extreme care.::
+  extreme care.:
 
-	crushtool -i /tmp/crush --set-choose-local-tries 0 --set-choose-local-fallback-tries 0 --set-choose-total-tries 50 -o /tmp/crush.new
+  .. prompt:: bash $
 
-* Reinject modified map::
+     crushtool -i /tmp/crush --set-choose-local-tries 0 --set-choose-local-fallback-tries 0 --set-choose-total-tries 50 -o /tmp/crush.new
 
-	ceph osd setcrushmap -i /tmp/crush.new
+* Reinject modified map:
+
+  .. prompt:: bash $
+
+     ceph osd setcrushmap -i /tmp/crush.new
 
 Legacy values
 -------------
 
 For reference, the legacy values for the CRUSH tunables can be set
-with::
+with:
+
+.. prompt:: bash $
 
    crushtool -i /tmp/crush --set-choose-local-tries 2 --set-choose-local-fallback-tries 5 --set-choose-total-tries 19 --set-chooseleaf-descend-once 0 --set-chooseleaf-vary-r 0 -o /tmp/crush.legacy
 
@@ -694,4 +744,4 @@ Further, as noted above, be careful running old versions of the
 ``ceph-osd`` daemon after reverting to legacy values as the feature
 bit is not perfectly enforced.
 
-.. _CRUSH - Controlled, Scalable, Decentralized Placement of Replicated Data: https://ceph.com/wp-content/uploads/2016/08/weil-crush-sc06.pdf
+.. _CRUSH - Controlled, Scalable, Decentralized Placement of Replicated Data: https://ceph.io/assets/pdfs/weil-crush-sc06.pdf

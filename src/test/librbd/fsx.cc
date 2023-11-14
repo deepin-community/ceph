@@ -25,11 +25,13 @@
 #endif
 #include <sys/file.h>
 #include <sys/stat.h>
+#ifndef _WIN32
 #include <sys/mman.h>
+#include <sys/ioctl.h>
+#endif
 #if defined(__linux__)
 #include <linux/fs.h>
 #endif
-#include <sys/ioctl.h>
 #ifdef HAVE_ERR_H
 #include <err.h>
 #endif
@@ -132,7 +134,7 @@ int			logcount = 0;	/* total ops */
 #define OP_SKIPPED	101
 
 #undef PAGE_SIZE
-#define PAGE_SIZE       getpagesize()
+#define PAGE_SIZE       get_page_size()
 #undef PAGE_MASK
 #define PAGE_MASK       (PAGE_SIZE - 1)
 
@@ -277,11 +279,6 @@ struct ReplayHandler : public journal::ReplayHandler {
                   on_finish(on_finish) {
         }
 
-        void get() override {
-        }
-        void put() override {
-        }
-
         void handle_entries_available() override {
                 while (true) {
                         journal::ReplayEntry replay_entry;
@@ -329,7 +326,8 @@ int register_journal(rados_ioctx_t ioctx, const char *image_name) {
                 return r;
         }
 
-        journal::Journaler journaler(io_ctx, image_id, JOURNAL_CLIENT_ID, {});
+        journal::Journaler journaler(io_ctx, image_id, JOURNAL_CLIENT_ID, {},
+                                     nullptr);
         r = journaler.register_client(bufferlist());
         if (r < 0) {
                 simple_err("failed to register journal client", r);
@@ -348,7 +346,8 @@ int unregister_journal(rados_ioctx_t ioctx, const char *image_name) {
                 return r;
         }
 
-        journal::Journaler journaler(io_ctx, image_id, JOURNAL_CLIENT_ID, {});
+        journal::Journaler journaler(io_ctx, image_id, JOURNAL_CLIENT_ID, {},
+                                     nullptr);
         r = journaler.unregister_client();
         if (r < 0) {
                 simple_err("failed to unregister journal client", r);
@@ -404,7 +403,8 @@ int replay_journal(rados_ioctx_t ioctx, const char *image_name,
                 return r;
         }
 
-        journal::Journaler journaler(io_ctx, image_id, JOURNAL_CLIENT_ID, {});
+        journal::Journaler journaler(io_ctx, image_id, JOURNAL_CLIENT_ID, {},
+                                     nullptr);
         C_SaferCond init_ctx;
         journaler.init(&init_ctx);
         BOOST_SCOPE_EXIT_ALL( (&journaler) ) {
@@ -417,7 +417,8 @@ int replay_journal(rados_ioctx_t ioctx, const char *image_name,
                 return r;
         }
 
-        journal::Journaler replay_journaler(io_ctx, replay_image_id, "", {});
+        journal::Journaler replay_journaler(io_ctx, replay_image_id, "", {},
+                                            nullptr);
 
         C_SaferCond replay_init_ctx;
         replay_journaler.init(&replay_init_ctx);
@@ -856,7 +857,7 @@ __librbd_deep_copy(struct rbd_ctx *ctx, const char *src_snapname,
 int
 __librbd_clone(struct rbd_ctx *ctx, const char *src_snapname,
 	       const char *dst_imagename, int *order, int stripe_unit,
-	       int stripe_count, bool krbd)
+	       int stripe_count)
 {
 	int ret;
 
@@ -880,12 +881,6 @@ __librbd_clone(struct rbd_ctx *ctx, const char *src_snapname,
                 return ret;
         }
 
-	if (krbd) {
-		features &= ~(RBD_FEATURE_OBJECT_MAP     |
-                              RBD_FEATURE_FAST_DIFF      |
-                              RBD_FEATURE_DEEP_FLATTEN   |
-                              RBD_FEATURE_JOURNALING);
-	}
 	if (deep_copy) {
 		ret = __librbd_deep_copy(ctx, src_snapname, dst_imagename, features,
 					 order, stripe_unit, stripe_count);
@@ -914,7 +909,7 @@ librbd_clone(struct rbd_ctx *ctx, const char *src_snapname,
 	     int stripe_count)
 {
 	return __librbd_clone(ctx, src_snapname, dst_imagename, order,
-			      stripe_unit, stripe_count, false);
+			      stripe_unit, stripe_count);
 }
 
 int
@@ -1190,7 +1185,7 @@ krbd_clone(struct rbd_ctx *ctx, const char *src_snapname,
 		return ret;
 
 	return __librbd_clone(ctx, src_snapname, dst_imagename, order,
-			      stripe_unit, stripe_count, true);
+			      stripe_unit, stripe_count);
 }
 
 int
@@ -1234,7 +1229,7 @@ nbd_open(const char *name, struct rbd_ctx *ctx)
 	SubProcess process("rbd-nbd", SubProcess::KEEP, SubProcess::PIPE,
 			   SubProcess::KEEP);
 	process.add_cmd_arg("map");
-	process.add_cmd_arg("--timeout=600");
+	process.add_cmd_arg("--io-timeout=600");
 	std::string img;
 	img.append(pool);
 	img.append("/");
@@ -1330,7 +1325,7 @@ nbd_clone(struct rbd_ctx *ctx, const char *src_snapname,
 		return ret;
 
 	return __librbd_clone(ctx, src_snapname, dst_imagename, order,
-			      stripe_unit, stripe_count, false);
+			      stripe_unit, stripe_count);
 }
 
 const struct rbd_operations nbd_operations = {
@@ -1578,7 +1573,7 @@ ggate_clone(struct rbd_ctx *ctx, const char *src_snapname,
 	}
 
 	return __librbd_clone(ctx, src_snapname, dst_imagename, order,
-			      stripe_unit, stripe_count, false);
+			      stripe_unit, stripe_count);
 }
 
 int
@@ -2452,11 +2447,12 @@ void clone_filename(char *buf, size_t len, int clones)
 
 void clone_imagename(char *buf, size_t len, int clones)
 {
-	if (clones > 0)
+	if (clones > 0) {
 		snprintf(buf, len, "%s-clone%d", iname, clones);
-	else
-		strncpy(buf, iname, len);
-        buf[len - 1] = '\0';
+	} else {
+		strncpy(buf, iname, len - 1);
+		buf[len - 1] = '\0';
+	}
 }
 
 void replay_imagename(char *buf, size_t len, int clones)
@@ -3076,7 +3072,7 @@ main(int argc, char **argv)
 	goodfile[0] = 0;
 	logfile[0] = 0;
 
-	page_size = getpagesize();
+	page_size = PAGE_SIZE;
 	page_mask = page_size - 1;
 	mmap_mask = page_mask;
 
@@ -3277,7 +3273,9 @@ main(int argc, char **argv)
 				fprintf(stdout, "mapped writes DISABLED\n");
 			break;
 		case 'Z':
+            #ifdef O_DIRECT
 			o_direct = O_DIRECT;
+            #endif
 			break;
 		default:
 			usage();
@@ -3291,6 +3289,7 @@ main(int argc, char **argv)
 	pool = argv[0];
 	iname = argv[1];
 
+    #ifndef _WIN32
 	signal(SIGHUP,	cleanup);
 	signal(SIGINT,	cleanup);
 	signal(SIGPIPE,	cleanup);
@@ -3301,6 +3300,7 @@ main(int argc, char **argv)
 	signal(SIGVTALRM,	cleanup);
 	signal(SIGUSR1,	cleanup);
 	signal(SIGUSR2,	cleanup);
+    #endif
 
 	random_generator.seed(seed);
 

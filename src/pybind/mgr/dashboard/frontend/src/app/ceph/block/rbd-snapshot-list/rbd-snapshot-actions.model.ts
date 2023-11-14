@@ -1,12 +1,10 @@
-import { I18n } from '@ngx-translate/i18n-polyfill';
-
-import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
-import { CdTableAction } from '../../../shared/models/cd-table-action';
-import { CdTableSelection } from '../../../shared/models/cd-table-selection';
+import { RbdService } from '~/app/shared/api/rbd.service';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { CdTableAction } from '~/app/shared/models/cd-table-action';
+import { CdTableSelection } from '~/app/shared/models/cd-table-selection';
 
 export class RbdSnapshotActionsModel {
-  i18n: I18n;
-
   create: CdTableAction;
   rename: CdTableAction;
   protect: CdTableAction;
@@ -17,60 +15,80 @@ export class RbdSnapshotActionsModel {
   deleteSnap: CdTableAction;
   ordering: CdTableAction[];
 
-  constructor(i18n: I18n, actionLabels: ActionLabelsI18n) {
-    this.i18n = i18n;
+  cloneFormatVersion = 1;
+
+  constructor(
+    actionLabels: ActionLabelsI18n,
+    public featuresName: string[],
+    rbdService: RbdService
+  ) {
+    rbdService.cloneFormatVersion().subscribe((version: number) => {
+      this.cloneFormatVersion = version;
+    });
 
     this.create = {
       permission: 'create',
-      icon: 'fa-plus',
+      icon: Icons.add,
       name: actionLabels.CREATE
     };
     this.rename = {
       permission: 'update',
-      icon: 'fa-pencil',
-      name: actionLabels.RENAME
+      icon: Icons.edit,
+      name: actionLabels.RENAME,
+      disable: (selection: CdTableSelection) => this.disableForMirrorSnapshot(selection)
     };
     this.protect = {
       permission: 'update',
-      icon: 'fa-lock',
+      icon: Icons.lock,
       visible: (selection: CdTableSelection) =>
         selection.hasSingleSelection && !selection.first().is_protected,
-      name: actionLabels.PROTECT
+      name: actionLabels.PROTECT,
+      disable: (selection: CdTableSelection) => this.disableForMirrorSnapshot(selection)
     };
     this.unprotect = {
       permission: 'update',
-      icon: 'fa-unlock',
+      icon: Icons.unlock,
       visible: (selection: CdTableSelection) =>
         selection.hasSingleSelection && selection.first().is_protected,
-      name: actionLabels.UNPROTECT
+      name: actionLabels.UNPROTECT,
+      disable: (selection: CdTableSelection) => this.disableForMirrorSnapshot(selection)
     };
     this.clone = {
       permission: 'create',
       canBePrimary: (selection: CdTableSelection) => selection.hasSingleSelection,
       disable: (selection: CdTableSelection) =>
-        !selection.hasSingleSelection || selection.first().cdExecuting,
-      icon: 'fa-clone',
+        this.getCloneDisableDesc(selection, this.featuresName) ||
+        this.disableForMirrorSnapshot(selection),
+      icon: Icons.clone,
       name: actionLabels.CLONE
     };
     this.copy = {
       permission: 'create',
       canBePrimary: (selection: CdTableSelection) => selection.hasSingleSelection,
       disable: (selection: CdTableSelection) =>
-        !selection.hasSingleSelection || selection.first().cdExecuting,
-      icon: 'fa-copy',
+        !selection.hasSingleSelection ||
+        selection.first().cdExecuting ||
+        this.disableForMirrorSnapshot(selection),
+      icon: Icons.copy,
       name: actionLabels.COPY
     };
     this.rollback = {
       permission: 'update',
-      icon: 'fa-undo',
-      name: actionLabels.ROLLBACK
+      icon: Icons.undo,
+      name: actionLabels.ROLLBACK,
+      disable: (selection: CdTableSelection) => this.disableForMirrorSnapshot(selection)
     };
     this.deleteSnap = {
       permission: 'delete',
-      icon: 'fa-times',
+      icon: Icons.destroy,
       disable: (selection: CdTableSelection) => {
         const first = selection.first();
-        return !selection.hasSingleSelection || first.cdExecuting || first.is_protected;
+        return (
+          !selection.hasSingleSelection ||
+          first.cdExecuting ||
+          first.is_protected ||
+          this.disableForMirrorSnapshot(selection)
+        );
       },
       name: actionLabels.DELETE
     };
@@ -85,5 +103,29 @@ export class RbdSnapshotActionsModel {
       this.rollback,
       this.deleteSnap
     ];
+  }
+
+  getCloneDisableDesc(selection: CdTableSelection, featuresName: string[]): boolean | string {
+    if (selection.hasSingleSelection && !selection.first().cdExecuting) {
+      if (!featuresName?.includes('layering')) {
+        return $localize`Parent image must support Layering`;
+      }
+
+      if (this.cloneFormatVersion === 1 && !selection.first().is_protected) {
+        return $localize`Snapshot must be protected in order to clone.`;
+      }
+
+      return false;
+    }
+
+    return true;
+  }
+
+  disableForMirrorSnapshot(selection: CdTableSelection) {
+    return (
+      selection.hasSingleSelection &&
+      selection.first().mirror_mode === 'snapshot' &&
+      selection.first().name.includes('.mirror.')
+    );
   }
 }

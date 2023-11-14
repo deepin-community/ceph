@@ -25,10 +25,12 @@ private:
   Dentry *_old_dentry; //associated with path2
   int abort_rc;
 public:
+  ceph::coarse_mono_time created = ceph::coarse_mono_clock::zero();
   uint64_t tid;
   utime_t  op_stamp;
   ceph_mds_request_head head;
   filepath path, path2;
+  std::string alternate_name;
   bufferlist data;
   int inode_drop; //the inode caps this operation will drop
   int inode_unless; //unless we have these caps already
@@ -49,7 +51,7 @@ public:
   int      retry_attempt;
   std::atomic<uint64_t> ref = { 1 };
   
-  MClientReply::const_ref reply;         // the reply
+  ceph::cref_t<MClientReply> reply;         // the reply
   bool kick;
   bool success;
   
@@ -64,9 +66,9 @@ public:
   xlist<MetaRequest*>::item unsafe_dir_item;
   xlist<MetaRequest*>::item unsafe_target_item;
 
-  Cond  *caller_cond;          // who to take up
-  Cond  *dispatch_cond;        // who to kick back
-  list<Cond*> waitfor_safe;
+  ceph::condition_variable *caller_cond;          // who to take up
+  ceph::condition_variable *dispatch_cond;        // who to kick back
+  list<ceph::condition_variable*> waitfor_safe;
 
   InodeRef target;
   UserPerm perms;
@@ -169,6 +171,7 @@ public:
   void set_retry_attempt(int a) { head.num_retry = a; }
   void set_filepath(const filepath& fp) { path = fp; }
   void set_filepath2(const filepath& fp) { path2 = fp; }
+  void set_alternate_name(std::string an) { alternate_name = an; }
   void set_string2(const char *s) { path2.set_path(std::string_view(s), 0); }
   void set_caller_perms(const UserPerm& _perms) {
     perms.shallow_copy(_perms);
@@ -197,11 +200,45 @@ public:
       return false;
     return true;
   }
-  bool auth_is_best() {
-    if ((head.op & CEPH_MDS_OP_WRITE) || head.op == CEPH_MDS_OP_OPEN ||
-	head.op == CEPH_MDS_OP_READDIR || send_to_auth) 
+  bool auth_is_best(int issued) {
+    if (send_to_auth)
       return true;
-    return false;    
+
+    /* Any write op ? */
+    if (head.op & CEPH_MDS_OP_WRITE)
+      return true;
+
+    switch (head.op) {
+    case CEPH_MDS_OP_OPEN:
+    case CEPH_MDS_OP_READDIR:
+      return true;
+    case CEPH_MDS_OP_GETATTR:
+      /*
+       * If any 'x' caps is issued we can just choose the auth MDS
+       * instead of the random replica MDSes. Because only when the
+       * Locker is in LOCK_EXEC state will the loner client could
+       * get the 'x' caps. And if we send the getattr requests to
+       * any replica MDS it must auth pin and tries to rdlock from
+       * the auth MDS, and then the auth MDS need to do the Locker
+       * state transition to LOCK_SYNC. And after that the lock state
+       * will change back.
+       *
+       * This cost much when doing the Locker state transition and
+       * usually will need to revoke caps from clients.
+       *
+       * And for the 'Xs' caps for getxattr we will also choose the
+       * auth MDS, because the MDS side code is buggy due to setxattr
+       * won't notify the replica MDSes when the values changed and
+       * the replica MDS will return the old values. Though we will
+       * fix it in MDS code, but this still makes sense for old ceph.
+       */
+      if (((head.args.getattr.mask & CEPH_CAP_ANY_SHARED) &&
+	   (issued & CEPH_CAP_ANY_EXCL)) ||
+          (head.args.getattr.mask & (CEPH_STAT_RSTAT | CEPH_STAT_CAP_XATTR)))
+        return true;
+    default:
+      return false;
+    }
   }
 
   void dump(Formatter *f) const;

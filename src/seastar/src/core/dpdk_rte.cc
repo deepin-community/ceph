@@ -37,16 +37,23 @@ void eal::init(cpuset cpus, boost::program_options::variables_map opts)
     }
 
     std::stringstream mask;
-    mask << std::hex << cpus.to_ulong();
+    cpuset nibble = 0xF;
+    while (cpus.any()) {
+        mask << std::hex << (cpus & nibble).to_ulong();
+        cpus >>= 4;
+    }
+
+    std::string mask_str = mask.str();
+    std::reverse(mask_str.begin(), mask_str.end());
 
     // TODO: Inherit these from the app parameters - "opts"
     std::vector<std::vector<char>> args {
         string2vector(opts["argv0"].as<std::string>()),
-        string2vector("-c"), string2vector(mask.str()),
+        string2vector("-c"), string2vector(mask_str),
         string2vector("-n"), string2vector("1")
     };
 
-    compat::optional<std::string> hugepages_path;
+    std::optional<std::string> hugepages_path;
     if (opts.count("hugepages")) {
         hugepages_path = opts["hugepages"].as<std::string>();
     }

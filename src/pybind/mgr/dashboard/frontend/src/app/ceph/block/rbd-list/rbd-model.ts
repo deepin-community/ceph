@@ -3,6 +3,7 @@ export class RbdModel {
   unique_id: string;
   name: string;
   pool_name: string;
+  namespace: string;
   image_format: RBDImageFormat;
 
   cdExecuting: string;

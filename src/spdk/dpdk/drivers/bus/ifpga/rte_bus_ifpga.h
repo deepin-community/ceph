@@ -13,10 +13,12 @@
 
 #ifdef __cplusplus
 extern "C" {
-#endif
+#endif /* __cplusplus */
 
 #include <rte_bus.h>
 #include <rte_pci.h>
+#include <rte_interrupts.h>
+#include <rte_spinlock.h>
 
 /** Name of Intel FPGA Bus */
 #define IFPGA_BUS_NAME ifpga
@@ -35,7 +37,7 @@ TAILQ_HEAD(ifpga_afu_drv_list, rte_afu_driver);
 struct rte_afu_uuid {
 	uint64_t uuid_low;
 	uint64_t uuid_high;
-} __attribute__ ((packed));
+} __rte_packed;
 
 #define IFPGA_BUS_DEV_PORT_MAX 4
 
@@ -46,7 +48,7 @@ struct rte_afu_uuid {
 struct rte_afu_id {
 	struct rte_afu_uuid uuid;
 	int      port; /**< port number */
-} __attribute__ ((packed));
+} __rte_packed;
 
 /**
  * A structure PR (Partial Reconfiguration) configuration AFU driver.
@@ -60,6 +62,11 @@ struct rte_afu_pr_conf {
 
 #define AFU_PRI_STR_SIZE (PCI_PRI_STR_SIZE + 8)
 
+struct rte_afu_shared {
+	rte_spinlock_t lock;
+	void *data;
+};
+
 /**
  * A structure describing a AFU device.
  */
@@ -71,10 +78,11 @@ struct rte_afu_device {
 	uint32_t num_region;   /**< number of regions found */
 	struct rte_mem_resource mem_resource[PCI_MAX_RESOURCE];
 						/**< AFU Memory Resource */
+	struct rte_afu_shared shared;
 	struct rte_intr_handle intr_handle;     /**< Interrupt handle */
 	struct rte_afu_driver *driver;          /**< Associated driver */
 	char path[IFPGA_BUS_BITSTREAM_PATH_MAX_LEN];
-} __attribute__ ((packed));
+} __rte_packed;
 
 /**
  * @internal
@@ -82,9 +90,6 @@ struct rte_afu_device {
  */
 #define RTE_DEV_TO_AFU(ptr) \
 	container_of(ptr, struct rte_afu_device, device)
-
-#define RTE_DRV_TO_AFU_CONST(ptr) \
-	container_of(ptr, const struct rte_afu_driver, driver)
 
 /**
  * Initialization function for the driver called during FPGA BUS probing.
@@ -116,6 +121,15 @@ rte_ifpga_device_name(const struct rte_afu_device *afu)
 }
 
 /**
+ * Find AFU by AFU name.
+ *
+ * @param name
+ *   A pointer to AFU name string.
+ */
+struct rte_afu_device *
+rte_ifpga_find_afu_by_name(const char *name);
+
+/**
  * Register a ifpga afu device driver.
  *
  * @param driver
@@ -145,5 +159,9 @@ RTE_PMD_EXPORT_NAME(nm, __COUNTER__)
 
 #define RTE_PMD_REGISTER_AFU_ALIAS(nm, alias)\
 static const char *afudrvinit_ ## nm ## _alias = RTE_STR(alias)
+
+#ifdef __cplusplus
+}
+#endif /* __cplusplus */
 
 #endif /* _RTE_BUS_IFPGA_H_ */

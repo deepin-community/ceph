@@ -1,5 +1,5 @@
 /*******************************************************************************
-  Copyright (c) 2012-2018, Intel Corporation
+  Copyright (c) 2012-2019, Intel Corporation
 
   Redistribution and use in source and binary forms, with or without
   modification, are permitted provided that the following conditions are met:
@@ -44,8 +44,8 @@ typedef struct {
 /*
  * Macros for aligning data structures and function inlines
  */
-#ifdef __linux__
-/* Linux */
+#if defined __linux__ || defined __FreeBSD__
+/* Linux/FreeBSD */
 #define DECLARE_ALIGNED(decl, alignval) \
         decl __attribute__((aligned(alignval)))
 #define __forceinline \
@@ -70,6 +70,13 @@ typedef struct {
 #define IMB_DLL_EXPORT
 #define IMB_DLL_LOCAL
 #endif
+
+/* Library version */
+#define IMB_VERSION_STR "0.53.0"
+#define IMB_VERSION_NUM 0x3500
+
+/* Macro to translate version number */
+#define IMB_VERSION(a,b,c) (((a) << 16) + ((b) << 8) + (c))
 
 /*
  * Custom ASSERT and DIM macros
@@ -101,9 +108,18 @@ typedef struct {
 #define NUM_SHA_512_DIGEST_WORDS 8
 #define NUM_SHA_384_DIGEST_WORDS 6
 
+#define SHA_DIGEST_WORD_SIZE      4
+#define SHA224_DIGEST_WORD_SIZE   4
+#define SHA256_DIGEST_WORD_SIZE   4
 #define SHA384_DIGEST_WORD_SIZE   8
 #define SHA512_DIGEST_WORD_SIZE   8
 
+#define SHA1_DIGEST_SIZE_IN_BYTES \
+        (NUM_SHA_DIGEST_WORDS * SHA_DIGEST_WORD_SIZE)
+#define SHA224_DIGEST_SIZE_IN_BYTES \
+        (NUM_SHA_224_DIGEST_WORDS * SHA224_DIGEST_WORD_SIZE)
+#define SHA256_DIGEST_SIZE_IN_BYTES \
+        (NUM_SHA_256_DIGEST_WORDS * SHA256_DIGEST_WORD_SIZE)
 #define SHA384_DIGEST_SIZE_IN_BYTES \
         (NUM_SHA_384_DIGEST_WORDS * SHA384_DIGEST_WORD_SIZE)
 #define SHA512_DIGEST_SIZE_IN_BYTES \
@@ -113,6 +129,11 @@ typedef struct {
 #define SHA_256_BLOCK_SIZE 64 /* 512 bits is 64 byte blocks */
 #define SHA_384_BLOCK_SIZE 128
 #define SHA_512_BLOCK_SIZE 128
+
+#define KASUMI_KEY_SIZE         16
+#define KASUMI_IV_SIZE          8
+#define KASUMI_BLOCK_SIZE       8
+#define KASUMI_DIGEST_SIZE      4
 
 /* Number of lanes AVX512, AVX2, AVX and SSE */
 #define AVX512_NUM_SHA1_LANES   16
@@ -172,7 +193,10 @@ typedef enum {
         DES,
         DOCSIS_DES,
         CCM,
-        DES3
+        DES3,
+        PON_AES_CNTR,
+        ECB,
+        CNTR_BITLEN, /* 128-EEA2/NIA2 (3GPP) */
 } JOB_CIPHER_MODE;
 
 typedef enum {
@@ -181,20 +205,27 @@ typedef enum {
 } JOB_CIPHER_DIRECTION;
 
 typedef enum {
-        SHA1 = 1,
-        SHA_224,
-        SHA_256,
-        SHA_384,
-        SHA_512,
+        SHA1 = 1,  /* HMAC-SHA1 */
+        SHA_224,   /* HMAC-SHA224 */
+        SHA_256,   /* HMAC-SHA256 */
+        SHA_384,   /* HMAC-SHA384 */
+        SHA_512,   /* HMAC-SHA512 */
         AES_XCBC,
-        MD5,
+        MD5,       /* HMAC-MD5 */
         NULL_HASH,
 #ifndef NO_GCM
         AES_GMAC,
 #endif /* !NO_GCM */
         CUSTOM_HASH,
-        AES_CCM,
-        AES_CMAC,
+        AES_CCM,         /* AES128-CCM */
+        AES_CMAC,        /* AES128-CMAC */
+        PLAIN_SHA1,      /* SHA1 */
+        PLAIN_SHA_224,   /* SHA224 */
+        PLAIN_SHA_256,   /* SHA256 */
+        PLAIN_SHA_384,   /* SHA384 */
+        PLAIN_SHA_512,   /* SHA512 */
+        AES_CMAC_BITLEN, /* 128-EIA2 (3GPP) */
+        PON_CRC_BIP
 } JOB_HASH_ALG;
 
 typedef enum {
@@ -212,7 +243,7 @@ typedef struct JOB_AES_HMAC {
         /*
          * For AES, aes_enc_key_expanded and aes_dec_key_expanded are
          * expected to point to expanded keys structure.
-         * - AES-CTR and AES-CCM, only aes_enc_key_expanded is used
+         * - AES-CTR, AES-ECB and AES-CCM, only aes_enc_key_expanded is used
          * - DOCSIS (AES-CBC + AES-CFB), both pointers are used
          *   aes_enc_key_expanded has to be set always for the partial block
          *
@@ -234,17 +265,25 @@ typedef struct JOB_AES_HMAC {
         uint8_t *dst; /*Output. May be cipher text or plaintext.
                        * In-place ciphering allowed, i.e. dst = src. */
         uint64_t cipher_start_src_offset_in_bytes;
-        uint64_t msg_len_to_cipher_in_bytes; /* Max len = 65472 bytes.
-                                              * IPSec case, the maximum cipher
-                                              * length would be:
-                                              * 65535 -
-                                              * 20 (outer IP header) -
-                                              * 24 (ESP header + IV) -
-                                              * 12 (supported ICV length) */
+        /* Max len = 65472 bytes.
+         * IPSec case, the maximum cipher
+         * length would be:
+         * 65535 -
+         * 20 (outer IP header) -
+         * 24 (ESP header + IV) -
+         * 12 (supported ICV length) */
+        union {
+                uint64_t msg_len_to_cipher_in_bytes;
+                uint64_t msg_len_to_cipher_in_bits;
+        };
         uint64_t hash_start_src_offset_in_bytes;
-        uint64_t msg_len_to_hash_in_bytes; /* Max len = 65496 bytes.
-                                            * (Max cipher len +
-                                            * 24 bytes ESP header) */
+        /* Max len = 65496 bytes.
+         * (Max cipher len +
+         * 24 bytes ESP header) */
+        union {
+                uint64_t msg_len_to_hash_in_bytes;
+                uint64_t msg_len_to_hash_in_bits;
+        };
         const uint8_t *iv; /* AES IV. */
         uint64_t iv_len_in_bytes; /* AES IV length in bytes. */
         uint8_t *auth_tag_output; /* HMAC Tag output. This may point to
@@ -290,9 +329,12 @@ typedef struct JOB_AES_HMAC {
         JOB_STS status;
         JOB_CIPHER_MODE cipher_mode; /* CBC, CNTR, DES, GCM etc. */
         JOB_CIPHER_DIRECTION cipher_direction; /* Encrypt/decrypt */
-        /* Ignored as the direction is implied by the chain _order field. */
         JOB_HASH_ALG hash_alg; /* SHA-1 or others... */
-        JOB_CHAIN_ORDER chain_order; /* CIPHER_HASH or HASH_CIPHER */
+        JOB_CHAIN_ORDER chain_order; /* CIPHER_HASH or HASH_CIPHER.
+                                      * For AES-CCM, when encrypting,
+                                      * HASH_CIPHER must be selected,
+                                      * and when decrypting,
+                                      * CIPHER_HASH must be selected. */
 
         void *user_data;
         void *user_data2;
@@ -311,11 +353,12 @@ typedef struct JOB_AES_HMAC {
  * Argument structures for various algorithms
  */
 typedef struct {
-        const uint8_t *in[8];
-        uint8_t *out[8];
-        const uint32_t *keys[8];
-        DECLARE_ALIGNED(uint128_t IV[8], 32);
-} AES_ARGS_x8;
+        const uint8_t *in[16];
+        uint8_t *out[16];
+        const uint32_t *keys[16];
+        DECLARE_ALIGNED(uint128_t IV[16], 64);
+        DECLARE_ALIGNED(uint128_t key_tab[15][16], 64);
+} AES_ARGS;
 
 typedef struct {
         DECLARE_ALIGNED(uint32_t digest[SHA1_DIGEST_SZ], 32);
@@ -356,13 +399,14 @@ typedef struct {
 
 /* AES out-of-order scheduler fields */
 typedef struct {
-        AES_ARGS_x8 args;
-        DECLARE_ALIGNED(uint16_t lens[8], 16);
-        /* each nibble is index (0...7) of an unused lane,
+        AES_ARGS args;
+        DECLARE_ALIGNED(uint16_t lens[16], 16);
+        /* each nibble is index (0...15) of an unused lane,
          * the last nibble is set to F as a flag
          */
         uint64_t unused_lanes;
-        JOB_AES_HMAC *job_in_lane[8];
+        JOB_AES_HMAC *job_in_lane[16];
+        uint64_t num_lanes_inuse;
 } MB_MGR_AES_OOO;
 
 /* AES XCBC out-of-order scheduler fields */
@@ -384,7 +428,7 @@ typedef struct {
 
 /* AES-CCM out-of-order scheduler structure */
 typedef struct {
-        AES_ARGS_x8 args; /* need to re-use AES arguments */
+        AES_ARGS args; /* need to re-use AES arguments */
         DECLARE_ALIGNED(uint16_t lens[8], 16);
         DECLARE_ALIGNED(uint16_t init_done[8], 16);
         /* each byte is index (0...3) of unused lanes
@@ -398,7 +442,7 @@ typedef struct {
 
 /* AES-CMAC out-of-order scheduler structure */
 typedef struct {
-        AES_ARGS_x8 args; /* need to re-use AES arguments */
+        AES_ARGS args; /* need to re-use AES arguments */
         DECLARE_ALIGNED(uint16_t lens[8], 16);
         DECLARE_ALIGNED(uint16_t init_done[8], 16);
         /* each byte is index (0...3) of unused lanes
@@ -419,7 +463,7 @@ typedef struct {
          */
         uint64_t unused_lanes;
         JOB_AES_HMAC *job_in_lane[16];
-        uint32_t num_lanes_inuse;
+        uint64_t num_lanes_inuse;
 } MB_MGR_DES_OOO;
 
 
@@ -488,6 +532,124 @@ typedef struct {
         uint32_t num_lanes_inuse;
 } MB_MGR_HMAC_MD5_OOO;
 
+
+/* KASUMI */
+
+/* 64 precomputed words for key schedule */
+#define KASUMI_KEY_SCHEDULE_SIZE  64
+
+/**
+ * Structure to maintain internal key scheduling
+ */
+typedef struct kasumi_key_sched_s {
+    /* Kasumi internal scheduling */
+    uint16_t sk16[KASUMI_KEY_SCHEDULE_SIZE];      /* key schedule */
+    uint16_t msk16[KASUMI_KEY_SCHEDULE_SIZE];     /* modified key schedule */
+} kasumi_key_sched_t;
+
+/* GCM data structures */
+#define GCM_BLOCK_LEN   16
+
+/**
+ * @brief holds GCM operation context
+ */
+struct gcm_context_data {
+        /* init, update and finalize context data */
+        uint8_t  aad_hash[GCM_BLOCK_LEN];
+        uint64_t aad_length;
+        uint64_t in_length;
+        uint8_t  partial_block_enc_key[GCM_BLOCK_LEN];
+        uint8_t  orig_IV[GCM_BLOCK_LEN];
+        uint8_t  current_counter[GCM_BLOCK_LEN];
+        uint64_t partial_block_length;
+};
+
+/* Authenticated Tag Length in bytes.
+ * Valid values are 16 (most likely), 12 or 8. */
+#define MAX_TAG_LEN (16)
+
+/*
+ * IV data is limited to 16 bytes as follows:
+ * 12 bytes is provided by an application -
+ *    pre-counter block j0: 4 byte salt (from Security Association)
+ *    concatenated with 8 byte Initialization Vector (from IPSec ESP
+ *    Payload).
+ * 4 byte value 0x00000001 is padded automatically by the library -
+ *    there is no need to add these 4 bytes on application side anymore.
+ */
+#define GCM_IV_DATA_LEN (12)
+
+#define LONGEST_TESTED_AAD_LENGTH (2 * 1024)
+
+/* Key lengths of 128 and 256 supported */
+#define GCM_128_KEY_LEN (16)
+#define GCM_192_KEY_LEN (24)
+#define GCM_256_KEY_LEN (32)
+
+/* #define GCM_BLOCK_LEN   16 */
+#define GCM_ENC_KEY_LEN 16
+#define GCM_KEY_SETS    (15) /*exp key + 14 exp round keys*/
+
+/**
+ * @brief holds intermediate key data needed to improve performance
+ *
+ * gcm_key_data hold internal key information used by gcm128, gcm192 and gcm256.
+ */
+#ifdef __WIN32
+__declspec(align(64))
+#endif /* WIN32 */
+struct gcm_key_data {
+        uint8_t expanded_keys[GCM_ENC_KEY_LEN * GCM_KEY_SETS];
+        union {
+                /* Storage for precomputed hash keys */
+                struct {
+                        /*
+                         * This is needed for schoolbook multiply purposes.
+                         * (HashKey<<1 mod poly), (HashKey^2<<1 mod poly), ...,
+                         * (Hashkey^48<<1 mod poly)
+                         */
+                        uint8_t shifted_hkey[GCM_ENC_KEY_LEN * 8];
+                        /*
+                         * This is needed for Karatsuba multiply purposes.
+                         * Storage for XOR of High 64 bits and low 64 bits
+                         * of HashKey mod poly.
+                         *
+                         * (HashKey<<1 mod poly), (HashKey^2<<1 mod poly), ...,
+                         * (Hashkey^128<<1 mod poly)
+                         */
+                        uint8_t shifted_hkey_k[GCM_ENC_KEY_LEN * 8];
+                } sse_avx;
+                struct {
+                        /*
+                         * This is needed for schoolbook multiply purposes.
+                         * (HashKey<<1 mod poly), (HashKey^2<<1 mod poly), ...,
+                         * (Hashkey^48<<1 mod poly)
+                         */
+                        uint8_t shifted_hkey[GCM_ENC_KEY_LEN * 8];
+                } avx2_avx512;
+                struct {
+#ifdef GCM_BIG_DATA
+                        /*
+                         * (HashKey<<1 mod poly), (HashKey^2<<1 mod poly), ...,
+                         * (Hashkey^128<<1 mod poly)
+                         */
+                        uint8_t shifted_hkey[GCM_ENC_KEY_LEN * 128];
+#else
+                        /*
+                         * (HashKey<<1 mod poly), (HashKey^2<<1 mod poly), ...,
+                         * (Hashkey^48<<1 mod poly)
+                         */
+                        uint8_t shifted_hkey[GCM_ENC_KEY_LEN * 48];
+#endif
+                } vaes_avx512;
+        } ghash_keys;
+}
+#ifdef LINUX
+__attribute__((aligned(64)));
+#else
+;
+#endif
+
 /* ========================================================================== */
 /* API data type definitions */
 struct MB_MGR;
@@ -501,18 +663,189 @@ typedef uint32_t (*queue_size_t)(struct MB_MGR *);
 typedef void (*keyexp_t)(const void *, void *, void *);
 typedef void (*cmac_subkey_gen_t)(const void *, void *, void *);
 typedef void (*hash_one_block_t)(const void *, void *);
+typedef void (*hash_fn_t)(const void *, const uint64_t, void *);
 typedef void (*xcbc_keyexp_t)(const void *, void *, void *, void *);
 typedef int (*des_keysched_t)(uint64_t *, const void *);
+typedef void (*aes128_cfb_t)(void *, const void *, const void *, const void *,
+                             uint64_t);
+typedef void (*aes_gcm_enc_dec_t)(const struct gcm_key_data *,
+                                  struct gcm_context_data *,
+                                  uint8_t *, uint8_t const *, uint64_t,
+                                  const uint8_t *, uint8_t const *, uint64_t,
+                                  uint8_t *, uint64_t);
+typedef void (*aes_gcm_init_t)(const struct gcm_key_data *,
+                               struct gcm_context_data *,
+                               const uint8_t *, uint8_t const *, uint64_t);
+typedef void (*aes_gcm_enc_dec_update_t)(const struct gcm_key_data *,
+                                         struct gcm_context_data *,
+                                         uint8_t *, const uint8_t *, uint64_t);
+typedef void (*aes_gcm_enc_dec_finalize_t)(const struct gcm_key_data *,
+                                           struct gcm_context_data *,
+                                           uint8_t *, uint64_t);
+typedef void (*aes_gcm_precomp_t)(struct gcm_key_data *);
+typedef void (*aes_gcm_pre_t)(const void *, struct gcm_key_data *);
+
+typedef void (*zuc_eea3_1_buffer_t)(const void *, const void *, const void *,
+                                    void *, const uint32_t);
+
+typedef void (*zuc_eea3_4_buffer_t)(const void * const *, const void * const *,
+                                    const void * const *, void **,
+                                    const uint32_t *);
+
+typedef void (*zuc_eea3_n_buffer_t)(const void * const *, const void * const *,
+                                    const void * const *, void **,
+                                    const uint32_t *, const uint32_t);
+
+typedef void (*zuc_eia3_1_buffer_t)(const void *, const void *, const void *,
+                                    const uint32_t, uint32_t *);
+
+typedef void (*kasumi_f8_1_buffer_t)(const kasumi_key_sched_t *,
+                                     const uint64_t, const void *, void *,
+                                     const uint32_t);
+typedef void (*kasumi_f8_1_buffer_bit_t)(const kasumi_key_sched_t *,
+                                         const uint64_t, const void *,
+                                         void *,
+                                         const uint32_t, const uint32_t);
+typedef void (*kasumi_f8_2_buffer_t)(const kasumi_key_sched_t *,
+                                     const uint64_t,  const uint64_t,
+                                     const void *, void *,
+                                     const uint32_t,
+                                     const void *, void *,
+                                     const uint32_t);
+typedef void (*kasumi_f8_3_buffer_t)(const kasumi_key_sched_t *,
+                                     const uint64_t,  const uint64_t,
+                                     const uint64_t,
+                                     const void *, void *,
+                                     const void *, void *,
+                                     const void *, void *,
+                                     const uint32_t);
+typedef void (*kasumi_f8_4_buffer_t)(const kasumi_key_sched_t *,
+                                     const uint64_t,  const uint64_t,
+                                     const uint64_t,  const uint64_t,
+                                     const void *, void *,
+                                     const void *, void *,
+                                     const void *, void *,
+                                     const void *, void *,
+                                     const uint32_t);
+typedef void (*kasumi_f8_n_buffer_t)(const kasumi_key_sched_t *,
+                                     const uint64_t *, const void * const *,
+                                     void **, const uint32_t *,
+                                     const uint32_t);
+typedef void (*kasumi_f9_1_buffer_user_t)(const kasumi_key_sched_t *,
+                                          const uint64_t, const void *,
+                                          const uint32_t, void *,
+                                          const uint32_t);
+typedef void (*kasumi_f9_1_buffer_t)(const kasumi_key_sched_t *,
+                                     const void *,
+                                     const uint32_t, void *);
+typedef int (*kasumi_init_f8_key_sched_t)(const void *,
+                                          kasumi_key_sched_t *);
+typedef int (*kasumi_init_f9_key_sched_t)(const void *,
+                                          kasumi_key_sched_t *);
+typedef size_t (*kasumi_key_sched_size_t)(void);
+
+
+/**
+ * Snow3G key scheduling structure
+ */
+typedef struct snow3g_key_schedule_s {
+        /* KEY */
+        uint32_t k[4];
+} snow3g_key_schedule_t;
+
+typedef void (*snow3g_f8_1_buffer_t)(const snow3g_key_schedule_t *,
+                                     const void *, const void *,
+                                     void *, const uint32_t);
+
+typedef void (*snow3g_f8_1_buffer_bit_t)(const snow3g_key_schedule_t *,
+                                         const void *, const void *, void *,
+                                         const uint32_t, const uint32_t);
+
+typedef void (*snow3g_f8_2_buffer_t)(const snow3g_key_schedule_t *,
+                                     const void *, const void *,
+                                     const void *, void *, const uint32_t,
+                                     const void *, void *,const uint32_t);
+
+typedef void (*snow3g_f8_4_buffer_t)(const snow3g_key_schedule_t *,
+                                     const void *, const void *,const void *,
+                                     const void *, const void *, void *,
+                                     const uint32_t, const void *, void *,
+                                     const uint32_t, const void *, void *,
+                                     const uint32_t, const void *, void *,
+                                     const uint32_t);
+
+typedef void (*snow3g_f8_8_buffer_t)(const snow3g_key_schedule_t *,
+                                     const void *, const void *,const void *,
+                                     const void *, const void *, const void *,
+                                     const void *, const void *, const void *,
+                                     void *, const uint32_t, const void *,
+                                     void *, const uint32_t, const void *,
+                                     void *, const uint32_t, const void *,
+                                     void *, const uint32_t, const void *,
+                                     void *, const uint32_t, const void *,
+                                     void *, const uint32_t, const void *,
+                                     void *, const uint32_t, const void *,
+                                     void *, const uint32_t);
+
+typedef void
+(*snow3g_f8_8_buffer_multikey_t)(const snow3g_key_schedule_t * const [],
+                                 const void * const [], const void * const [],
+                                 void *[], const uint32_t[]);
+
+typedef void (*snow3g_f8_n_buffer_t)(const snow3g_key_schedule_t *,
+                                     const void * const [],
+                                     const void * const [],
+                                     void *[], const uint32_t[],
+                                     const uint32_t);
+
+typedef void
+(*snow3g_f8_n_buffer_multikey_t)(const snow3g_key_schedule_t * const [],
+                                 const void * const [],
+                                 const void * const [],
+                                 void *[], const uint32_t[],
+                                 const uint32_t);
+
+typedef void (*snow3g_f9_1_buffer_t)(const snow3g_key_schedule_t *,
+                                     const void *, const void *,
+                                     const uint64_t, void *);
+
+typedef int (*snow3g_init_key_sched_t)(const void *,
+                                       snow3g_key_schedule_t *);
+
+typedef size_t (*snow3g_key_sched_size_t)(void);
 
 /* ========================================================================== */
 /* Multi-buffer manager flags passed to alloc_mb_mgr() */
 
 #define IMB_FLAG_SHANI_OFF (1ULL << 0) /* disable use of SHANI extension */
+#define IMB_FLAG_AESNI_OFF (1ULL << 1) /* disable use of AESNI extension */
 
 /* ========================================================================== */
-/* Multi-buffer manager features - valid after call to init_mb_mgr() */
+/* Multi-buffer manager detected features
+ * - if bit is set then hardware supports given extension
+ * - valid after call to init_mb_mgr() or alloc_mb_mgr()
+ * - some HW supported features can be disabled via IMB_FLAG_xxx (see above)
+ */
 
-#define IMB_FEATURE_SHANI  (1ULL << 0) /* if set SHANI extensions is used */
+#define IMB_FEATURE_SHANI      (1ULL << 0)
+#define IMB_FEATURE_AESNI      (1ULL << 1)
+#define IMB_FEATURE_PCLMULQDQ  (1ULL << 2)
+#define IMB_FEATURE_CMOV       (1ULL << 3)
+#define IMB_FEATURE_SSE4_2     (1ULL << 4)
+#define IMB_FEATURE_AVX        (1ULL << 5)
+#define IMB_FEATURE_AVX2       (1ULL << 6)
+#define IMB_FEATURE_AVX512F    (1ULL << 7)
+#define IMB_FEATURE_AVX512DQ   (1ULL << 8)
+#define IMB_FEATURE_AVX512CD   (1ULL << 9)
+#define IMB_FEATURE_AVX512BW   (1ULL << 10)
+#define IMB_FEATURE_AVX512VL   (1ULL << 11)
+#define IMB_FEATURE_AVX512_SKX (IMB_FEATURE_AVX512F | IMB_FEATURE_AVX512DQ | \
+                                IMB_FEATURE_AVX512CD | IMB_FEATURE_AVX512BW | \
+                                IMB_FEATURE_AVX512VL)
+#define IMB_FEATURE_VAES       (1ULL << 12)
+#define IMB_FEATURE_VPCLMULQDQ (1ULL << 13)
+#define IMB_FEATURE_SAFE_DATA  (1ULL << 14)
+#define IMB_FEATURE_SAFE_PARAM (1ULL << 15)
 
 /* ========================================================================== */
 /* TOP LEVEL (MB_MGR) Data structure fields */
@@ -526,6 +859,11 @@ typedef struct MB_MGR {
          */
         uint64_t flags;
         uint64_t features;
+
+        /*
+         * Reserved for the future
+         */
+        uint64_t reserved[6];
 
         /*
          * ARCH handlers / API
@@ -549,6 +887,69 @@ typedef struct MB_MGR {
         hash_one_block_t        sha384_one_block;
         hash_one_block_t        sha512_one_block;
         hash_one_block_t        md5_one_block;
+        hash_fn_t               sha1;
+        hash_fn_t               sha224;
+        hash_fn_t               sha256;
+        hash_fn_t               sha384;
+        hash_fn_t               sha512;
+        aes128_cfb_t            aes128_cfb_one;
+
+        aes_gcm_enc_dec_t       gcm128_enc;
+        aes_gcm_enc_dec_t       gcm192_enc;
+        aes_gcm_enc_dec_t       gcm256_enc;
+        aes_gcm_enc_dec_t       gcm128_dec;
+        aes_gcm_enc_dec_t       gcm192_dec;
+        aes_gcm_enc_dec_t       gcm256_dec;
+        aes_gcm_init_t          gcm128_init;
+        aes_gcm_init_t          gcm192_init;
+        aes_gcm_init_t          gcm256_init;
+        aes_gcm_enc_dec_update_t gcm128_enc_update;
+        aes_gcm_enc_dec_update_t gcm192_enc_update;
+        aes_gcm_enc_dec_update_t gcm256_enc_update;
+        aes_gcm_enc_dec_update_t gcm128_dec_update;
+        aes_gcm_enc_dec_update_t gcm192_dec_update;
+        aes_gcm_enc_dec_update_t gcm256_dec_update;
+        aes_gcm_enc_dec_finalize_t gcm128_enc_finalize;
+        aes_gcm_enc_dec_finalize_t gcm192_enc_finalize;
+        aes_gcm_enc_dec_finalize_t gcm256_enc_finalize;
+        aes_gcm_enc_dec_finalize_t gcm128_dec_finalize;
+        aes_gcm_enc_dec_finalize_t gcm192_dec_finalize;
+        aes_gcm_enc_dec_finalize_t gcm256_dec_finalize;
+        aes_gcm_precomp_t       gcm128_precomp;
+        aes_gcm_precomp_t       gcm192_precomp;
+        aes_gcm_precomp_t       gcm256_precomp;
+        aes_gcm_pre_t           gcm128_pre;
+        aes_gcm_pre_t           gcm192_pre;
+        aes_gcm_pre_t           gcm256_pre;
+
+        zuc_eea3_1_buffer_t eea3_1_buffer;
+        zuc_eea3_4_buffer_t eea3_4_buffer;
+        zuc_eea3_n_buffer_t eea3_n_buffer;
+        zuc_eia3_1_buffer_t eia3_1_buffer;
+
+        kasumi_f8_1_buffer_t      f8_1_buffer;
+        kasumi_f8_1_buffer_bit_t  f8_1_buffer_bit;
+        kasumi_f8_2_buffer_t      f8_2_buffer;
+        kasumi_f8_3_buffer_t      f8_3_buffer;
+        kasumi_f8_4_buffer_t      f8_4_buffer;
+        kasumi_f8_n_buffer_t      f8_n_buffer;
+        kasumi_f9_1_buffer_t      f9_1_buffer;
+        kasumi_f9_1_buffer_user_t f9_1_buffer_user;
+        kasumi_init_f8_key_sched_t kasumi_init_f8_key_sched;
+        kasumi_init_f9_key_sched_t kasumi_init_f9_key_sched;
+        kasumi_key_sched_size_t    kasumi_key_sched_size;
+
+        snow3g_f8_1_buffer_bit_t snow3g_f8_1_buffer_bit;
+        snow3g_f8_1_buffer_t snow3g_f8_1_buffer;
+        snow3g_f8_2_buffer_t snow3g_f8_2_buffer;
+        snow3g_f8_4_buffer_t snow3g_f8_4_buffer;
+        snow3g_f8_8_buffer_t snow3g_f8_8_buffer;
+        snow3g_f8_n_buffer_t snow3g_f8_n_buffer;
+        snow3g_f8_8_buffer_multikey_t snow3g_f8_8_buffer_multikey;
+        snow3g_f8_n_buffer_multikey_t snow3g_f8_n_buffer_multikey;
+        snow3g_f9_1_buffer_t snow3g_f9_1_buffer;
+        snow3g_init_key_sched_t snow3g_init_key_sched;
+        snow3g_key_sched_size_t snow3g_key_sched_size;
 
         /* in-order scheduler fields */
         int              earliest_job; /* byte offset, -1 if none */
@@ -581,6 +982,23 @@ typedef struct MB_MGR {
 /* ========================================================================== */
 /* API definitions */
 
+/**
+ * @brief Get library version in string format
+ *
+ * @return library version string
+ */
+IMB_DLL_EXPORT const char *imb_get_version_str(void);
+
+/**
+ * @brief Get library version in numerical format
+ *
+ * Use IMB_VERSION() macro to compare this
+ * numerical version against known library version.
+ *
+ * @return library version number
+ */
+IMB_DLL_EXPORT unsigned imb_get_version(void);
+
 /*
  * get_next_job returns a job object. This must be filled in and returned
  * via submit_job before get_next_job is called again.
@@ -597,81 +1015,32 @@ IMB_DLL_EXPORT JOB_AES_HMAC *submit_job_avx(MB_MGR *state);
 IMB_DLL_EXPORT JOB_AES_HMAC *submit_job_nocheck_avx(MB_MGR *state);
 IMB_DLL_EXPORT JOB_AES_HMAC *flush_job_avx(MB_MGR *state);
 IMB_DLL_EXPORT uint32_t queue_size_avx(MB_MGR *state);
+IMB_DLL_EXPORT JOB_AES_HMAC *get_completed_job_avx(MB_MGR *state);
+IMB_DLL_EXPORT JOB_AES_HMAC *get_next_job_avx(MB_MGR *state);
 
 IMB_DLL_EXPORT void init_mb_mgr_avx2(MB_MGR *state);
 IMB_DLL_EXPORT JOB_AES_HMAC *submit_job_avx2(MB_MGR *state);
 IMB_DLL_EXPORT JOB_AES_HMAC *submit_job_nocheck_avx2(MB_MGR *state);
 IMB_DLL_EXPORT JOB_AES_HMAC *flush_job_avx2(MB_MGR *state);
 IMB_DLL_EXPORT uint32_t queue_size_avx2(MB_MGR *state);
+IMB_DLL_EXPORT JOB_AES_HMAC *get_completed_job_avx2(MB_MGR *state);
+IMB_DLL_EXPORT JOB_AES_HMAC *get_next_job_avx2(MB_MGR *state);
 
 IMB_DLL_EXPORT void init_mb_mgr_avx512(MB_MGR *state);
 IMB_DLL_EXPORT JOB_AES_HMAC *submit_job_avx512(MB_MGR *state);
 IMB_DLL_EXPORT JOB_AES_HMAC *submit_job_nocheck_avx512(MB_MGR *state);
 IMB_DLL_EXPORT JOB_AES_HMAC *flush_job_avx512(MB_MGR *state);
 IMB_DLL_EXPORT uint32_t queue_size_avx512(MB_MGR *state);
+IMB_DLL_EXPORT JOB_AES_HMAC *get_completed_job_avx512(MB_MGR *state);
+IMB_DLL_EXPORT JOB_AES_HMAC *get_next_job_avx512(MB_MGR *state);
 
 IMB_DLL_EXPORT void init_mb_mgr_sse(MB_MGR *state);
 IMB_DLL_EXPORT JOB_AES_HMAC *submit_job_sse(MB_MGR *state);
 IMB_DLL_EXPORT JOB_AES_HMAC *submit_job_nocheck_sse(MB_MGR *state);
 IMB_DLL_EXPORT JOB_AES_HMAC *flush_job_sse(MB_MGR *state);
 IMB_DLL_EXPORT uint32_t queue_size_sse(MB_MGR *state);
-
-#define get_completed_job_avx  get_completed_job_sse
-#define get_next_job_avx       get_next_job_sse
-
-#define get_completed_job_avx2 get_completed_job_sse
-#define get_next_job_avx2      get_next_job_sse
-
-#define get_completed_job_avx512 get_completed_job_sse
-#define get_next_job_avx512      get_next_job_sse
-
-/*
- * JOBS() and ADV_JOBS() also used in mb_mgr_code.h
- * index in JOBS array using byte offset rather than object index
- */
-__forceinline
-JOB_AES_HMAC *JOBS(MB_MGR *state, const int offset)
-{
-        char *cp = (char *)state->jobs;
-
-        return (JOB_AES_HMAC *)(cp + offset);
-}
-
-__forceinline
-void ADV_JOBS(int *ptr)
-{
-        *ptr += sizeof(JOB_AES_HMAC);
-        if (*ptr >= (int) (MAX_JOBS * sizeof(JOB_AES_HMAC)))
-                *ptr = 0;
-}
-
-__forceinline
-JOB_AES_HMAC *
-get_completed_job_sse(MB_MGR *state)
-{
-        JOB_AES_HMAC *job;
-
-        if (state->earliest_job < 0)
-                return NULL;
-
-        job = JOBS(state, state->earliest_job);
-        if (job->status < STS_COMPLETED)
-                return NULL;
-
-        ADV_JOBS(&state->earliest_job);
-
-        if (state->earliest_job == state->next_job)
-                state->earliest_job = -1;
-
-        return job;
-}
-
-__forceinline
-JOB_AES_HMAC *
-get_next_job_sse(MB_MGR *state)
-{
-        return JOBS(state, state->next_job);
-}
+IMB_DLL_EXPORT JOB_AES_HMAC *get_completed_job_sse(MB_MGR *state);
+IMB_DLL_EXPORT JOB_AES_HMAC *get_next_job_sse(MB_MGR *state);
 
 /*
  * Wrapper macros to call arch API's set up
@@ -688,6 +1057,7 @@ get_next_job_sse(MB_MGR *state)
  *   mgr.keyexp_128 will point to aes_keyexp_128_sse()
  *   mgr.keyexp_192 will point to aes_keyexp_192_sse()
  *   mgr.keyexp_256 will point to aes_keyexp_256_sse()
+ *   etc.
  *
  * Direct use of arch API's may result in better performance.
  * Using below indirect interface may produce slightly worse performance but
@@ -700,30 +1070,615 @@ get_next_job_sse(MB_MGR *state)
 #define IMB_GET_COMPLETED_JOB(_mgr)  ((_mgr)->get_completed_job((_mgr)))
 #define IMB_FLUSH_JOB(_mgr)          ((_mgr)->flush_job((_mgr)))
 #define IMB_QUEUE_SIZE(_mgr)         ((_mgr)->queue_size((_mgr)))
+
+/* Key expansion and generation API's */
 #define IMB_AES_KEYEXP_128(_mgr, _raw, _enc, _dec)      \
         ((_mgr)->keyexp_128((_raw), (_enc), (_dec)))
 #define IMB_AES_KEYEXP_192(_mgr, _raw, _enc, _dec)      \
         ((_mgr)->keyexp_192((_raw), (_enc), (_dec)))
 #define IMB_AES_KEYEXP_256(_mgr, _raw, _enc, _dec)      \
         ((_mgr)->keyexp_256((_raw), (_enc), (_dec)))
+
 #define IMB_AES_CMAC_SUBKEY_GEN_128(_mgr, _key_exp, _k1, _k2)   \
         ((_mgr)->cmac_subkey_gen_128((_key_exp), (_k1), (_k2)))
+
 #define IMB_AES_XCBC_KEYEXP(_mgr, _key, _k1_exp, _k2, _k3)      \
         ((_mgr)->xcbc_keyexp((_key), (_k1_exp), (_k2), (_k3)))
+
 #define IMB_DES_KEYSCHED(_mgr, _ks, _key)       \
         ((_mgr)->des_key_sched((_ks), (_key)))
+
+/* Hash API's */
 #define IMB_SHA1_ONE_BLOCK(_mgr, _data, _digest)        \
         ((_mgr)->sha1_one_block((_data), (_digest)))
+#define IMB_SHA1(_mgr, _data, _length, _digest)         \
+        ((_mgr)->sha1((_data), (_length), (_digest)))
 #define IMB_SHA224_ONE_BLOCK(_mgr, _data, _digest)      \
         ((_mgr)->sha224_one_block((_data), (_digest)))
+#define IMB_SHA224(_mgr, _data, _length, _digest)       \
+        ((_mgr)->sha224((_data), (_length), (_digest)))
 #define IMB_SHA256_ONE_BLOCK(_mgr, _data, _digest)      \
         ((_mgr)->sha256_one_block((_data), (_digest)))
+#define IMB_SHA256(_mgr, _data, _length, _digest)       \
+        ((_mgr)->sha256((_data), (_length), (_digest)))
 #define IMB_SHA384_ONE_BLOCK(_mgr, _data, _digest)      \
         ((_mgr)->sha384_one_block((_data), (_digest)))
+#define IMB_SHA384(_mgr, _data, _length, _digest)       \
+        ((_mgr)->sha384((_data), (_length), (_digest)))
 #define IMB_SHA512_ONE_BLOCK(_mgr, _data, _digest)      \
         ((_mgr)->sha512_one_block((_data), (_digest)))
+#define IMB_SHA512(_mgr, _data, _length, _digest)       \
+        ((_mgr)->sha512((_data), (_length), (_digest)))
 #define IMB_MD5_ONE_BLOCK(_mgr, _data, _digest)         \
         ((_mgr)->md5_one_block((_data), (_digest)))
+
+/* AES-CFB API */
+#define IMB_AES128_CFB_ONE(_mgr, _out, _in, _iv, _enc, _len)            \
+        ((_mgr)->aes128_cfb_one((_out), (_in), (_iv), (_enc), (_len)))
+
+/* AES-GCM API's */
+#define IMB_AES128_GCM_ENC(_mgr, _key, _ctx, _out, _in, _len, _iv, _aad, _aadl,\
+                           _tag, _tagl)                                 \
+        ((_mgr)->gcm128_enc((_key), (_ctx), (_out), (_in), (_len), (_iv), \
+                            (_aad), (_aadl), (_tag), (_tagl)))
+#define IMB_AES192_GCM_ENC(_mgr, _key, _ctx, _out, _in, _len, _iv, _aad, _aadl,\
+                           _tag, _tagl)                                 \
+        ((_mgr)->gcm192_enc((_key), (_ctx), (_out), (_in), (_len), (_iv), \
+                            (_aad), (_aadl), (_tag), (_tagl)))
+#define IMB_AES256_GCM_ENC(_mgr, _key, _ctx, _out, _in, _len, _iv, _aad, _aadl,\
+                           _tag, _tagl)                                 \
+        ((_mgr)->gcm256_enc((_key), (_ctx), (_out), (_in), (_len), (_iv), \
+                            (_aad), (_aadl), (_tag), (_tagl)))
+
+#define IMB_AES128_GCM_DEC(_mgr, _key, _ctx, _out, _in, _len, _iv, _aad, _aadl,\
+                           _tag, _tagl)                                 \
+        ((_mgr)->gcm128_dec((_key), (_ctx), (_out), (_in), (_len), (_iv), \
+                            (_aad), (_aadl), (_tag), (_tagl)))
+#define IMB_AES192_GCM_DEC(_mgr, _key, _ctx, _out, _in, _len, _iv, _aad, _aadl,\
+                           _tag, _tagl)                                 \
+        ((_mgr)->gcm192_dec((_key), (_ctx), (_out), (_in), (_len), (_iv), \
+                            (_aad), (_aadl), (_tag), (_tagl)))
+#define IMB_AES256_GCM_DEC(_mgr, _key, _ctx, _out, _in, _len, _iv, _aad, _aadl,\
+                           _tag, _tagl)                                 \
+        ((_mgr)->gcm256_dec((_key), (_ctx), (_out), (_in), (_len), (_iv), \
+                            (_aad), (_aadl), (_tag), (_tagl)))
+
+#define IMB_AES128_GCM_INIT(_mgr, _key, _ctx, _iv, _aad, _aadl)        \
+        ((_mgr)->gcm128_init((_key), (_ctx), (_iv), (_aad), (_aadl)))
+#define IMB_AES192_GCM_INIT(_mgr, _key, _ctx, _iv, _aad, _aadl)        \
+        ((_mgr)->gcm192_init((_key), (_ctx), (_iv), (_aad), (_aadl)))
+#define IMB_AES256_GCM_INIT(_mgr, _key, _ctx, _iv, _aad, _aadl)        \
+        ((_mgr)->gcm256_init((_key), (_ctx), (_iv), (_aad), (_aadl)))
+
+#define IMB_AES128_GCM_ENC_UPDATE(_mgr, _key, _ctx, _out, _in, _len)    \
+        ((_mgr)->gcm128_enc_update((_key), (_ctx), (_out), (_in), (_len)))
+#define IMB_AES192_GCM_ENC_UPDATE(_mgr, _key, _ctx, _out, _in, _len)    \
+        ((_mgr)->gcm192_enc_update((_key), (_ctx), (_out), (_in), (_len)))
+#define IMB_AES256_GCM_ENC_UPDATE(_mgr, _key, _ctx, _out, _in, _len)    \
+        ((_mgr)->gcm256_enc_update((_key), (_ctx), (_out), (_in), (_len)))
+
+#define IMB_AES128_GCM_DEC_UPDATE(_mgr, _key, _ctx, _out, _in, _len)    \
+        ((_mgr)->gcm128_dec_update((_key), (_ctx), (_out), (_in), (_len)))
+#define IMB_AES192_GCM_DEC_UPDATE(_mgr, _key, _ctx, _out, _in, _len)    \
+        ((_mgr)->gcm192_dec_update((_key), (_ctx), (_out), (_in), (_len)))
+#define IMB_AES256_GCM_DEC_UPDATE(_mgr, _key, _ctx, _out, _in, _len)    \
+        ((_mgr)->gcm256_dec_update((_key), (_ctx), (_out), (_in), (_len)))
+
+#define IMB_AES128_GCM_ENC_FINALIZE(_mgr, _key, _ctx, _tag, _tagl)      \
+        ((_mgr)->gcm128_enc_finalize((_key), (_ctx), (_tag), (_tagl)))
+#define IMB_AES192_GCM_ENC_FINALIZE(_mgr, _key, _ctx, _tag, _tagl)      \
+        ((_mgr)->gcm192_enc_finalize((_key), (_ctx), (_tag), (_tagl)))
+#define IMB_AES256_GCM_ENC_FINALIZE(_mgr, _key, _ctx, _tag, _tagl)      \
+        ((_mgr)->gcm256_enc_finalize((_key), (_ctx), (_tag), (_tagl)))
+
+#define IMB_AES128_GCM_DEC_FINALIZE(_mgr, _key, _ctx, _tag, _tagl)      \
+        ((_mgr)->gcm128_dec_finalize((_key), (_ctx), (_tag), (_tagl)))
+#define IMB_AES192_GCM_DEC_FINALIZE(_mgr, _key, _ctx, _tag, _tagl)      \
+        ((_mgr)->gcm192_dec_finalize((_key), (_ctx), (_tag), (_tagl)))
+#define IMB_AES256_GCM_DEC_FINALIZE(_mgr, _key, _ctx, _tag, _tagl)      \
+        ((_mgr)->gcm256_dec_finalize((_key), (_ctx), (_tag), (_tagl)))
+
+#define IMB_AES128_GCM_PRECOMP(_mgr, _key) \
+        ((_mgr)->gcm128_precomp((_key)))
+#define IMB_AES192_GCM_PRECOMP(_mgr, _key) \
+        ((_mgr)->gcm192_precomp((_key)))
+#define IMB_AES256_GCM_PRECOMP(_mgr, _key) \
+        ((_mgr)->gcm256_precomp((_key)))
+
+#define IMB_AES128_GCM_PRE(_mgr, _key_in, _key_exp)     \
+        ((_mgr)->gcm128_pre((_key_in), (_key_exp)))
+#define IMB_AES192_GCM_PRE(_mgr, _key_in, _key_exp)     \
+        ((_mgr)->gcm192_pre((_key_in), (_key_exp)))
+#define IMB_AES256_GCM_PRE(_mgr, _key_in, _key_exp)     \
+        ((_mgr)->gcm256_pre((_key_in), (_key_exp)))
+
+/* ZUC EEA3/EIA3 functions */
+
+/**
+ * @brief ZUC EEA3 Confidentiality functions
+ *
+ * @param mgr   Pointer to multi-buffer structure
+ * @param key   Pointer to key
+ * @param iv    Pointer to 16-byte IV
+ * @param in    Pointer to Plaintext/Ciphertext input.
+ * @param out   Pointer to Ciphertext/Plaintext output.
+ * @param len   Length of input data in bytes.
+ */
+#define IMB_ZUC_EEA3_1_BUFFER(_mgr, _key, _iv, _in, _out, _len) \
+        ((_mgr)->eea3_1_buffer((_key), (_iv), (_in), (_out), (_len)))
+#define IMB_ZUC_EEA3_4_BUFFER(_mgr, _key, _iv, _in, _out, _len) \
+        ((_mgr)->eea3_4_buffer((_key), (_iv), (_in), (_out), (_len)))
+#define IMB_ZUC_EEA3_N_BUFFER(_mgr, _key, _iv, _in, _out, _len, _num) \
+        ((_mgr)->eea3_n_buffer((_key), (_iv), (_in), (_out), (_len), (_num)))
+
+
+/**
+ * @brief ZUC EIA3 Integrity function
+ *
+ * @param mgr   Pointer to multi-buffer structure
+ * @param key   Pointer to key
+ * @param iv    Pointer to 16-byte IV
+ * @param in    Pointer to Plaintext/Ciphertext input.
+ * @param len   Length of input data in bits.
+ * @param tag   Pointer to Authenticated Tag output (4 bytes)
+ */
+#define IMB_ZUC_EIA3_1_BUFFER(_mgr, _key, _iv, _in, _len, _tag) \
+        ((_mgr)->eia3_1_buffer((_key), (_iv), (_in), (_len), (_tag)))
+
+
+/* KASUMI F8/F9 functions */
+
+/**
+ * @brief Kasumi byte-level f8 operation on a single buffer
+ *
+ * This function performs kasumi f8 operation on a single buffer. The key has
+ * already been scheduled with kasumi_init_f8_key_sched().
+ * No extra bits are modified.
+ *
+ * @param [in]  ctx     Context where the scheduled keys are stored
+ * @param [in]  iv      Initialization vector
+ * @param [in]  in      Input buffer
+ * @param [out] out     Output buffer
+ * @param [in]  len     Length in BYTES
+ *
+ ******************************************************************************/
+#define IMB_KASUMI_F8_1_BUFFER(_mgr, _ctx, _iv, _in, _out, _len) \
+        ((_mgr)->f8_1_buffer((_ctx), (_iv), (_in), (_out), (_len)))
+
+/**
+ * @brief Kasumi bit-level f8 operation on a single buffer
+ *
+ * This function performs kasumi f8 operation on a single buffer. The key has
+ * already been scheduled with kasumi_init_f8_key_sched().
+ * No extra bits are modified.
+ *
+ * @param [in]  ctx     Context where the scheduled keys are stored
+ * @param [in]  iv      Initialization vector
+ * @param [in]  in      Input buffer
+ * @param [out] out     Output buffer
+ * @param [in]  len     Length in BITS
+ * @param [in]  offset  Offset in BITS from begin of input buffer
+ *
+ ******************************************************************************/
+#define IMB_KASUMI_F8_1_BUFFER_BIT(_mgr, _ctx, _iv, _in, _out, _len, _offset) \
+        ((_mgr)->f8_1_buffer_bit((_ctx), (_iv), (_in), (_out), (_len), \
+                                 (_offset)))
+
+/**
+ * @brief Kasumi byte-level f8 operation in parallel on two buffers
+ *
+ * This function performs kasumi f8 operation on a two buffers.
+ * They will be processed with the same key, which has already been scheduled
+ * with kasumi_init_f8_key_sched().
+ *
+ * @param [in]  ctx     Context where the scheduled keys are stored
+ * @param [in]  iv1     Initialization vector for buffer in1
+ * @param [in]  iv2     Initialization vector for buffer in2
+ * @param [in]  in1     Input buffer 1
+ * @param [out] out1    Output buffer 1
+ * @param [in]  len1    Length in BYTES of input buffer 1
+ * @param [in]  in2     Input buffer 2
+ * @param [out] out2    Output buffer 2
+ * @param [in]  len2    Length in BYTES of input buffer 2
+ *
+ ******************************************************************************/
+#define IMB_KASUMI_F8_2_BUFFER(_mgr, _ctx, _iv1, _iv2, _in1, _out1, _len1, \
+                               _in2, _out2, _len2) \
+        ((_mgr)->f8_2_buffer((_ctx), (_iv1), (_iv2), (_in1), (_out1), (_len1), \
+                             (_in2), (_out2), (_len2)))
+/**
+ * @brief kasumi byte-level f8 operation in parallel on three buffers
+ *
+ * This function performs kasumi f8 operation on a three buffers.
+ * They must all have the same length and they will be processed with the same
+ * key, which has already been scheduled with kasumi_init_f8_key_sched().
+ *
+ * @param [in]  ctx     Context where the scheduled keys are stored
+ * @param [in]  iv1     Initialization vector for buffer in1
+ * @param [in]  iv2     Initialization vector for buffer in2
+ * @param [in]  iv3     Initialization vector for buffer in3
+ * @param [in]  in1     Input buffer 1
+ * @param [out] out1    Output buffer 1
+ * @param [in]  in2     Input buffer 2
+ * @param [out] out2    Output buffer 2
+ * @param [in]  in3     Input buffer 3
+ * @param [out] out3    Output buffer 3
+ * @param [in]  len     Common length in bytes for all buffers
+ *
+ ******************************************************************************/
+#define IMB_KASUMI_F8_3_BUFFER(_mgr, _ctx, _iv1, _iv2, _iv3, _in1, _out1, \
+                               _in2, _out2, _in3, _out3, _len) \
+        ((_mgr)->f8_3_buffer((_ctx), (_iv1), (_iv2), (_iv3), (_in1), (_out1), \
+                             (_in2), (_out2), (_in3), (_out3), (_len)))
+/**
+ * @brief kasumi byte-level f8 operation in parallel on four buffers
+ *
+ * This function performs kasumi f8 operation on four buffers.
+ * They must all have the same length and they will be processed with the same
+ * key, which has already been scheduled with kasumi_init_f8_key_sched().
+ *
+ * @param [in]  ctx     Context where the scheduled keys are stored
+ * @param [in]  iv1     Initialization vector for buffer in1
+ * @param [in]  iv2     Initialization vector for buffer in2
+ * @param [in]  iv3     Initialization vector for buffer in3
+ * @param [in]  iv4     Initialization vector for buffer in4
+ * @param [in]  in1     Input buffer 1
+ * @param [out] out1    Output buffer 1
+ * @param [in]  in2     Input buffer 2
+ * @param [out] out2    Output buffer 2
+ * @param [in]  in3     Input buffer 3
+ * @param [out] out3    Output buffer 3
+ * @param [in]  in4     Input buffer 4
+ * @param [out] out4    Output buffer 4
+ * @param [in]  len     Common length in bytes for all buffers
+ *
+ ******************************************************************************/
+#define IMB_KASUMI_F8_4_BUFFER(_mgr, _ctx, _iv1, _iv2, _iv3, _iv4, \
+                               _in1, _out1, _in2, _out2, _in3, _out3, \
+                               _in4, _out4, _len) \
+        ((_mgr)->f8_4_buffer((_ctx), (_iv1), (_iv2), (_iv3), (_iv4), \
+                             (_in1), (_out1), (_in2), (_out2), \
+                             (_in3), (_out3), (_in4), (_out4), (_len)))
+/**
+ * @brief Kasumi f8 operation on N buffers
+ *
+ * All input buffers can have different lengths and they will be processed
+ * with the same key, which has already been scheduled
+ * with kasumi_init_f8_key_sched().
+ *
+ * @param [in]  ctx     Context where the scheduled keys are stored
+ * @param [in]  iv      Array of IV values
+ * @param [in]  in      Array of input buffers
+ * @param [out] out     Array of output buffers
+ * @param [in]  len     Array of corresponding input buffer lengths in BITS
+ * @param [in]  count   Number of input buffers
+ */
+#define IMB_KASUMI_F8_N_BUFFER(_mgr, _ctx, _iv, _in, _out, _len, _count) \
+        ((_mgr)->f8_n_buffer((_ctx), (_iv), (_in), (_out), (_len), \
+                             (_count)))
+/**
+ * @brief Kasumi bit-level f9 operation on a single buffer.
+ *
+ * The first QWORD of in represents the COUNT and FRESH, the last QWORD
+ * represents the DIRECTION and PADDING. (See 3GPP TS 35.201 v10.0 section 4)
+ *
+ * The key has already been scheduled with kasumi_init_f9_key_sched().
+ *
+ * @param [in]  ctx     Context where the scheduled keys are stored
+ * @param [in]  in      Input buffer
+ * @param [in]  len     Length in BYTES of the data to be hashed
+ * @param [out] tag     Computed digest
+ *
+ */
+#define IMB_KASUMI_F9_1_BUFFER(_mgr, _ctx,  _in, _len, _tag) \
+        ((_mgr)->f9_1_buffer((_ctx), (_in), (_len), (_tag)))
+
+/**
+ * @brief Kasumi bit-level f9 operation on a single buffer.
+ *
+ * The key has already been scheduled with kasumi_init_f9_key_sched().
+ *
+ * @param [in]  ctx     Context where the scheduled keys are stored
+ * @param [in]  iv      Initialization vector
+ * @param [in]  in      Input buffer
+ * @param [in]  len     Length in BITS of the data to be hashed
+ * @param [out] tag     Computed digest
+ * @param [in]  dir     Direction bit
+ *
+ */
+#define IMB_KASUMI_F9_1_BUFFER_USER(_mgr, _ctx, _iv, _in, _len, _tag, _dir) \
+        ((_mgr)->f9_1_buffer_user((_ctx), (_iv), (_in), (_len), \
+                                  (_tag), (_dir)))
+
+/**
+ * KASUMI F8 key schedule init function.
+ *
+ * @param[in]  mgr      Pointer to multi-buffer structure
+ * @param[in]  key      Confidentiality key (expected in LE format)
+ * @param[out] ctx      Key schedule context to be initialised
+ * @return 0 on success, -1 on failure
+ *
+ ******************************************************************************/
+#define IMB_KASUMI_INIT_F8_KEY_SCHED(_mgr, _key, _ctx)     \
+        ((_mgr)->kasumi_init_f8_key_sched((_key), (_ctx)))
+
+/**
+ * KASUMI F9 key schedule init function.
+ *
+ * @param[in]  mgr      Pointer to multi-buffer structure
+ * @param[in]  key      Integrity key (expected in LE format)
+ * @param[out] ctx      Key schedule context to be initialised
+ * @return 0 on success, -1 on failure
+ *
+ ******************************************************************************/
+#define IMB_KASUMI_INIT_F9_KEY_SCHED(_mgr, _key, _ctx)     \
+        ((_mgr)->kasumi_init_f9_key_sched((_key), (_ctx)))
+
+/**
+ *******************************************************************************
+ * This function returns the size of the kasumi_key_sched_t, used
+ * to store the key schedule.
+ *
+ * @param[in]  mgr      Pointer to multi-buffer structure
+ * @return size of kasumi_key_sched_t type success
+ *
+ ******************************************************************************/
+#define IMB_KASUMI_KEY_SCHED_SIZE(_mgr)((_mgr)->kasumi_key_sched_size())
+
+
+/* SNOW3G F8/F9 functions */
+
+/**
+ * This function performs snow3g f8 operation on a single buffer. The key has
+ * already been scheduled with snow3g_init_key_sched().
+ *
+ * @param[in]  mgr           Pointer to multi-buffer structure
+ * @param[in]  ctx           Context where the scheduled keys are stored
+ * @param[in]  iv            iv[3] = count
+ *                           iv[2] = (bearer << 27) | ((dir & 0x1) << 26)
+ *                           iv[1] = pIV[3]
+ *                           iv[0] = pIV[2]
+ * @param[in]  in            Input buffer
+ * @param[out] out           Output buffer
+ * @param[in]  len           Length in bits of input buffer
+ * @param[in]  offset        Offset in input/output buffer (in bits)
+ */
+#define IMB_SNOW3G_F8_1_BUFFER_BIT(_mgr, _ctx, _iv, _in, _out, _len, _offset) \
+        ((_mgr)->snow3g_f8_1_buffer_bit((_ctx), (_iv), (_in),           \
+                                        (_out), (_len), (_offset)))
+
+/**
+ * This function performs snow3g f8 operation on a single buffer. The key has
+ * already been scheduled with snow3g_init_key_sched().
+ *
+ * @param[in]  mgr           Pointer to multi-buffer structure
+ * @param[in]  ctx           Context where the scheduled keys are stored
+ * @param[in]  iv            iv[3] = count
+ *                           iv[2] = (bearer << 27) | ((dir & 0x1) << 26)
+ *                           iv[1] = pIV[3]
+ *                           iv[0] = pIV[2]
+ * @param[in]  in            Input buffer
+ * @param[out] out           Output buffer
+ * @param[in]  len           Length in bits of input buffer
+ */
+#define IMB_SNOW3G_F8_1_BUFFER(_mgr, _ctx, _iv, _in, _out, _len)        \
+        ((_mgr)->snow3g_f8_1_buffer((_ctx), (_iv), (_in), (_out), (_len)))
+
+/**
+ * This function performs snow3g f8 operation on two buffers. They will
+ * be processed with the same key, which has already been scheduled with
+ * snow3g_init_key_sched().
+ *
+ * @param[in]  mgr           Pointer to multi-buffer structure
+ * @param[in]  ctx           Context where the scheduled keys are stored
+ * @param[in]  iv1           IV to use for buffer pBufferIn1
+ * @param[in]  iv2           IV to use for buffer pBufferIn2
+ * @param[in]  in1           Input buffer 1
+ * @param[out] out1          Output buffer 1
+ * @param[in]  len1          Length in bytes of input buffer 1
+ * @param[in]  in2           Input buffer 2
+ * @param[out] out2          Output buffer 2
+ * @param[in]  len2          Length in bytes of input buffer 2
+ */
+#define IMB_SNOW3G_F8_2_BUFFER(_mgr, _ctx, _iv1, _iv2,        \
+                               _in1, _out1, _len1,            \
+                               _in2, _out2, _len2)            \
+        ((_mgr)->snow3g_f8_2_buffer((_ctx), (_iv1), (_iv2),   \
+                                    (_in1), (_out1), (_len1), \
+                                    (_in2), (_out2), (_len2)))
+
+/**
+ *******************************************************************************
+ * This function performs snow3g f8 operation on four buffers. They will
+ * be processed with the same key, which has already been scheduled with
+ * snow3g_init_key_sched().
+ *
+ * @param[in]  mgr           Pointer to multi-buffer structure
+ * @param[in]  ctx           Context where the scheduled keys are stored
+ * @param[in]  iv1           IV to use for buffer pBufferIn1
+ * @param[in]  iv2           IV to use for buffer pBufferIn2
+ * @param[in]  iv3           IV to use for buffer pBufferIn3
+ * @param[in]  iv4           IV to use for buffer pBufferIn4
+ * @param[in]  in1           Input buffer 1
+ * @param[out] out1          Output buffer 1
+ * @param[in]  len1          Length in bytes of input buffer 1
+ * @param[in]  in2           Input buffer 2
+ * @param[out] out2          Output buffer 2
+ * @param[in]  len2          Length in bytes of input buffer 2
+ * @param[in]  in3           Input buffer 3
+ * @param[out] out3          Output buffer 3
+ * @param[in]  len3          Length in bytes of input buffer 3
+ * @param[in]  in4           Input buffer 4
+ * @param[out] out4          Output buffer 4
+ * @param[in]  len4          Length in bytes of input buffer 4
+ */
+#define IMB_SNOW3G_F8_4_BUFFER(_mgr, _ctx, _iv1, _iv2, _iv3, _iv4,      \
+                               _in1, _out1, _len1,                      \
+                               _in2, _out2, _len2,                      \
+                               _in3, _out3, _len3,                      \
+                               _in4, _out4, _len4)                      \
+        ((_mgr)->snow3g_f8_4_buffer((_ctx), (_iv1), (_iv2), (_iv3), (_iv4), \
+                                    (_in1), (_out1), (_len1), \
+                                    (_in2), (_out2), (_len2), \
+                                    (_in3), (_out3), (_len3), \
+                                    (_in4), (_out4), (_len4)))
+
+/**
+ *******************************************************************************
+ * This function performs snow3g f8 operation on eight buffers. They will
+ * be processed with the same key, which has already been scheduled with
+ * snow3g_init_key_sched().
+ *
+ * @param[in]  mgr           Pointer to multi-buffer structure
+ * @param[in]  ctx           Context where the scheduled keys are stored
+ * @param[in]  iv1           IV to use for buffer pBufferIn1
+ * @param[in]  iv2           IV to use for buffer pBufferIn2
+ * @param[in]  iv3           IV to use for buffer pBufferIn3
+ * @param[in]  iv4           IV to use for buffer pBufferIn4
+ * @param[in]  iv5           IV to use for buffer pBufferIn5
+ * @param[in]  iv6           IV to use for buffer pBufferIn6
+ * @param[in]  iv7           IV to use for buffer pBufferIn7
+ * @param[in]  iv8           IV to use for buffer pBufferIn8
+ * @param[in]  in1           Input buffer 1
+ * @param[out] out1          Output buffer 1
+ * @param[in]  len1          Length in bytes of input buffer 1
+ * @param[in]  in2           Input buffer 2
+ * @param[out] out2          Output buffer 2
+ * @param[in]  len2          Length in bytes of input buffer 2
+ * @param[in]  in3           Input buffer 3
+ * @param[out] out3          Output buffer 3
+ * @param[in]  len3          Length in bytes of input buffer 3
+ * @param[in]  in4           Input buffer 4
+ * @param[out] out4          Output buffer 4
+ * @param[in]  len4          Length in bytes of input buffer 4
+ * @param[in]  in5           Input buffer 5
+ * @param[out] out5          Output buffer 5
+ * @param[in]  len5          Length in bytes of input buffer 5
+ * @param[in]  in6           Input buffer 6
+ * @param[out] out6          Output buffer 6
+ * @param[in]  len6          Length in bytes of input buffer 6
+ * @param[in]  in7           Input buffer 7
+ * @param[out] out7          Output buffer 7
+ * @param[in]  len7          Length in bytes of input buffer 7
+ * @param[in]  in8           Input buffer 8
+ * @param[out] out8          Output buffer 8
+ * @param[in]  len8          Length in bytes of input buffer 8
+ */
+#define IMB_SNOW3G_F8_8_BUFFER(_mgr, _ctx, _iv1, _iv2, _iv3, _iv4,      \
+                               _iv5, _iv6, _iv7, _iv8,                  \
+                               _in1, _out1, _len1,                      \
+                               _in2, _out2, _len2,                      \
+                               _in3, _out3, _len3,                      \
+                               _in4, _out4, _len4,                      \
+                               _in5, _out5, _len5,                      \
+                               _in6, _out6, _len6,                      \
+                               _in7, _out7, _len7,                      \
+                               _in8, _out8, _len8)                      \
+        ((_mgr)->snow3g_f8_8_buffer((_ctx), (_iv1), (_iv2), (_iv3), (_iv4), \
+                                    (_iv5), (_iv6), (_iv7), (_iv8),     \
+                                    (_in1), (_out1), (_len1),           \
+                                    (_in2), (_out2), (_len2),           \
+                                    (_in3), (_out3), (_len3),           \
+                                    (_in4), (_out4), (_len4),           \
+                                    (_in5), (_out5), (_len5),           \
+                                    (_in6), (_out6), (_len6),           \
+                                    (_in7), (_out7), (_len7),           \
+                                    (_in8), (_out8), (_len8)))
+/**
+ * This function performs snow3g f8 operation on eight buffers. They will
+ * be processed with individual keys, which have already been scheduled
+ * with snow3g_init_key_sched().
+ *
+ * @param[in]  mgr      Pointer to multi-buffer structure
+ * @param[in]  ctx      Array of 8 Contexts, where the scheduled keys are stored
+ * @param[in]  iv       Array of 8 IV values
+ * @param[in]  in       Array of 8 input buffers
+ * @param[out] out      Array of 8 output buffers
+ * @param[in]  lens     Array of 8 corresponding input buffer lengths
+ */
+#define IMB_SNOW3G_F8_8_BUFFER_MULTIKEY(_mgr, _ctx, _iv, _in, _out, _len) \
+        ((_mgr)->snow3g_f8_8_buffer_multikey((_ctx), (_iv), (_in), (_out),\
+                                             (_len)))
+
+/**
+ * This function performs snow3g f8 operation in parallel on N buffers. All
+ * input buffers can have different lengths and they will be processed with the
+ * same key, which has already been scheduled with snow3g_init_key_sched().
+ *
+ * @param[in]  mgr      Pointer to multi-buffer structure
+ * @param[in]  ctx      Context where the scheduled keys are stored
+ * @param[in]  iv       Array of IV values
+ * @param[in]  in       Array of input buffers
+ * @param[out] out      Array of output buffers - out[0] set to NULL on failure
+ * @param[in]  len      Array of corresponding input buffer lengths
+ * @param[in]  count    Number of input buffers
+ *
+ ******************************************************************************/
+#define IMB_SNOW3G_F8_N_BUFFER(_mgr, _ctx, _iv, _in, _out, _len, _count) \
+        ((_mgr)->snow3g_f8_n_buffer((_ctx), (_iv), (_in), \
+                                    (_out), (_len), (_count)))
+
+/**
+ * This function performs snow3g f8 operation in parallel on N buffers. All
+ * input buffers can have different lengths. Confidentiallity keys can vary,
+ * schedules with snow3g_init_key_sched_multi().
+ *
+ * @param[in]  mgr      Pointer to multi-buffer structure
+ * @param[in]  ctx      Array of Contexts, where the scheduled keys are stored
+ * @param[in]  iv       Array of IV values
+ * @param[in]  in       Array of input buffers
+ * @param[out] out      Array of output buffers
+ *                      - out[0] set to NULL on failure
+ * @param[in]  len      Array of corresponding input buffer lengths
+ * @param[in]  count    Number of input buffers
+ */
+#define IMB_SNOW3G_F8_N_BUFFER_MULTIKEY(_mgr, _ctx, _iv, _in,           \
+                                        _out, _len, _count)             \
+        ((_mgr)->snow3g_f8_n_buffer_multikey((_ctx), (_iv), (_in),      \
+                                             (_out), (_len), (_count)))
+
+/**
+ * This function performs a snow3g f9 operation on a single block of data. The
+ * key has already been scheduled with snow3g_init_f8_key_sched().
+ *
+ * @param[in]  mgr      Pointer to multi-buffer structure
+ * @param[in]  ctx      Context where the scheduled keys are stored
+ * @param[in]  iv       iv[3] = _BSWAP32(fresh^(dir<<15))
+ *                      iv[2] = _BSWAP32(count^(dir<<31))
+ *                      iv[1] = _BSWAP32(fresh)
+ *                      iv[0] = _BSWAP32(count)
+ *
+ * @param[in]  in       Input buffer
+ * @param[in]  len      Length in bits of the data to be hashed
+ * @param[out] digest   Computed digest
+ */
+#define IMB_SNOW3G_F9_1_BUFFER(_mgr, _ctx, _iv, _in, _len, _digest)     \
+        ((_mgr)->snow3g_f9_1_buffer((_ctx), (_iv), (_in), (_len), (_digest)))
+
+/**
+ * Snow3g key schedule init function.
+ *
+ * @param[in]  mgr      Pointer to multi-buffer structure
+ * @param[in]  key      Confidentiality/Integrity key (expected in LE format)
+ * @param[out] ctx      Key schedule context to be initialised
+ * @return 0 on success
+ * @return -1 on error
+ *
+ ******************************************************************************/
+#define IMB_SNOW3G_INIT_KEY_SCHED(_mgr, _key, _ctx)     \
+        ((_mgr)->snow3g_init_key_sched((_key), (_ctx)))
+
+/**
+ *******************************************************************************
+ * This function returns the size of the snow3g_key_schedule_t, used
+ * to store the key schedule.
+ *
+ * @param[in]  mgr      Pointer to multi-buffer structure
+ * @return size of snow3g_key_schedule_t type
+ *
+ ******************************************************************************/
+#define IMB_SNOW3G_KEY_SCHED_SIZE(_mgr)((_mgr)->snow3g_key_sched_size())
+
 
 /* Auxiliary functions */
 
@@ -743,10 +1698,20 @@ IMB_DLL_EXPORT int
 des_key_schedule(uint64_t *ks, const void *key);
 
 /* SSE */
+IMB_DLL_EXPORT void sha1_sse(const void *data, const uint64_t length,
+                             void *digest);
 IMB_DLL_EXPORT void sha1_one_block_sse(const void *data, void *digest);
+IMB_DLL_EXPORT void sha224_sse(const void *data, const uint64_t length,
+                               void *digest);
 IMB_DLL_EXPORT void sha224_one_block_sse(const void *data, void *digest);
+IMB_DLL_EXPORT void sha256_sse(const void *data, const uint64_t length,
+                               void *digest);
 IMB_DLL_EXPORT void sha256_one_block_sse(const void *data, void *digest);
+IMB_DLL_EXPORT void sha384_sse(const void *data, const uint64_t length,
+                               void *digest);
 IMB_DLL_EXPORT void sha384_one_block_sse(const void *data, void *digest);
+IMB_DLL_EXPORT void sha512_sse(const void *data, const uint64_t length,
+                               void *digest);
 IMB_DLL_EXPORT void sha512_one_block_sse(const void *data, void *digest);
 IMB_DLL_EXPORT void md5_one_block_sse(const void *data, void *digest);
 IMB_DLL_EXPORT void aes_keyexp_128_sse(const void *key, void *enc_exp_keys,
@@ -768,13 +1733,24 @@ IMB_DLL_EXPORT void aes_cmac_subkey_gen_sse(const void *key_exp, void *key1,
 IMB_DLL_EXPORT void aes_cfb_128_one_sse(void *out, const void *in,
                                         const void *iv, const void *keys,
                                         uint64_t len);
+
 /* AVX */
+IMB_DLL_EXPORT void sha1_avx(const void *data, const uint64_t length,
+                             void *digest);
 IMB_DLL_EXPORT void sha1_one_block_avx(const void *data, void *digest);
+IMB_DLL_EXPORT void sha224_avx(const void *data, const uint64_t length,
+                               void *digest);
 IMB_DLL_EXPORT void sha224_one_block_avx(const void *data, void *digest);
+IMB_DLL_EXPORT void sha256_avx(const void *data, const uint64_t length,
+                               void *digest);
 IMB_DLL_EXPORT void sha256_one_block_avx(const void *data, void *digest);
+IMB_DLL_EXPORT void sha384_avx(const void *data, const uint64_t length,
+                               void *digest);
 IMB_DLL_EXPORT void sha384_one_block_avx(const void *data, void *digest);
+IMB_DLL_EXPORT void sha512_avx(const void *data, const uint64_t length,
+                               void *digest);
 IMB_DLL_EXPORT void sha512_one_block_avx(const void *data, void *digest);
-#define md5_one_block_avx       md5_one_block_sse
+IMB_DLL_EXPORT void md5_one_block_avx(const void *data, void *digest);
 IMB_DLL_EXPORT void aes_keyexp_128_avx(const void *key, void *enc_exp_keys,
                                        void *dec_exp_keys);
 IMB_DLL_EXPORT void aes_keyexp_192_avx(const void *key, void *enc_exp_keys,
@@ -796,121 +1772,84 @@ IMB_DLL_EXPORT void aes_cfb_128_one_avx(void *out, const void *in,
                                         uint64_t len);
 
 /* AVX2 */
-#define sha1_one_block_avx2      sha1_one_block_avx
-#define sha224_one_block_avx2    sha224_one_block_avx
-#define sha256_one_block_avx2    sha256_one_block_avx
-#define sha384_one_block_avx2    sha384_one_block_avx
-#define sha512_one_block_avx2    sha512_one_block_avx
-#define md5_one_block_avx2       md5_one_block_avx
-#define aes_keyexp_128_avx2      aes_keyexp_128_avx
-#define aes_keyexp_192_avx2      aes_keyexp_192_avx
-#define aes_keyexp_256_avx2      aes_keyexp_256_avx
-#define aes_xcbc_expand_key_avx2 aes_xcbc_expand_key_avx
-#define aes_keyexp_128_enc_avx2  aes_keyexp_128_enc_avx
-#define aes_keyexp_192_enc_avx2  aes_keyexp_192_enc_avx
-#define aes_keyexp_256_enc_avx2  aes_keyexp_256_enc_avx
-#define aes_cmac_subkey_gen_avx2 aes_cmac_subkey_gen_avx
-#define aes_cfb_128_one_avx2     aes_cfb_128_one_avx
+IMB_DLL_EXPORT void sha1_avx2(const void *data, const uint64_t length,
+                              void *digest);
+IMB_DLL_EXPORT void sha1_one_block_avx2(const void *data, void *digest);
+IMB_DLL_EXPORT void sha224_avx2(const void *data, const uint64_t length,
+                                void *digest);
+IMB_DLL_EXPORT void sha224_one_block_avx2(const void *data, void *digest);
+IMB_DLL_EXPORT void sha256_avx2(const void *data, const uint64_t length,
+                                void *digest);
+IMB_DLL_EXPORT void sha256_one_block_avx2(const void *data, void *digest);
+IMB_DLL_EXPORT void sha384_avx2(const void *data, const uint64_t length,
+                                void *digest);
+IMB_DLL_EXPORT void sha384_one_block_avx2(const void *data, void *digest);
+IMB_DLL_EXPORT void sha512_avx2(const void *data, const uint64_t length,
+                                void *digest);
+IMB_DLL_EXPORT void sha512_one_block_avx2(const void *data, void *digest);
+IMB_DLL_EXPORT void md5_one_block_avx2(const void *data, void *digest);
+IMB_DLL_EXPORT void aes_keyexp_128_avx2(const void *key, void *enc_exp_keys,
+                                        void *dec_exp_keys);
+IMB_DLL_EXPORT void aes_keyexp_192_avx2(const void *key, void *enc_exp_keys,
+                                        void *dec_exp_keys);
+IMB_DLL_EXPORT void aes_keyexp_256_avx2(const void *key, void *enc_exp_keys,
+                                        void *dec_exp_keys);
+IMB_DLL_EXPORT void aes_xcbc_expand_key_avx2(const void *key, void *k1_exp,
+                                             void *k2, void *k3);
+IMB_DLL_EXPORT void aes_keyexp_128_enc_avx2(const void *key,
+                                            void *enc_exp_keys);
+IMB_DLL_EXPORT void aes_keyexp_192_enc_avx2(const void *key,
+                                            void *enc_exp_keys);
+IMB_DLL_EXPORT void aes_keyexp_256_enc_avx2(const void *key,
+                                            void *enc_exp_keys);
+IMB_DLL_EXPORT void aes_cmac_subkey_gen_avx2(const void *key_exp, void *key1,
+                                             void *key2);
+IMB_DLL_EXPORT void aes_cfb_128_one_avx2(void *out, const void *in,
+                                         const void *iv, const void *keys,
+                                         uint64_t len);
 
 /* AVX512 */
-#define sha1_one_block_avx512      sha1_one_block_avx2
-#define sha224_one_block_avx512    sha224_one_block_avx2
-#define sha256_one_block_avx512    sha256_one_block_avx2
-#define sha384_one_block_avx512    sha384_one_block_avx2
-#define sha512_one_block_avx512    sha512_one_block_avx2
-#define md5_one_block_avx512       md5_one_block_avx2
-#define aes_keyexp_128_avx512      aes_keyexp_128_avx2
-#define aes_keyexp_192_avx512      aes_keyexp_192_avx2
-#define aes_keyexp_256_avx512      aes_keyexp_256_avx2
-#define aes_xcbc_expand_key_avx512 aes_xcbc_expand_key_avx2
-#define aes_keyexp_128_enc_avx512  aes_keyexp_128_enc_avx2
-#define aes_keyexp_192_enc_avx512  aes_keyexp_192_enc_avx2
-#define aes_keyexp_256_enc_avx512  aes_keyexp_256_enc_avx2
-#define aes_cmac_subkey_gen_avx512 aes_cmac_subkey_gen_avx2
-#define aes_cfb_128_one_avx512     aes_cfb_128_one_avx2
+IMB_DLL_EXPORT void sha1_avx512(const void *data, const uint64_t length,
+                                 void *digest);
+IMB_DLL_EXPORT void sha1_one_block_avx512(const void *data, void *digest);
+IMB_DLL_EXPORT void sha224_avx512(const void *data, const uint64_t length,
+                                  void *digest);
+IMB_DLL_EXPORT void sha224_one_block_avx512(const void *data, void *digest);
+IMB_DLL_EXPORT void sha256_avx512(const void *data, const uint64_t length,
+                                  void *digest);
+IMB_DLL_EXPORT void sha256_one_block_avx512(const void *data, void *digest);
+IMB_DLL_EXPORT void sha384_avx512(const void *data, const uint64_t length,
+                                  void *digest);
+IMB_DLL_EXPORT void sha384_one_block_avx512(const void *data, void *digest);
+IMB_DLL_EXPORT void sha512_avx512(const void *data, const uint64_t length,
+                                  void *digest);
+IMB_DLL_EXPORT void sha512_one_block_avx512(const void *data, void *digest);
+IMB_DLL_EXPORT void md5_one_block_avx512(const void *data, void *digest);
+IMB_DLL_EXPORT void aes_keyexp_128_avx512(const void *key, void *enc_exp_keys,
+                                          void *dec_exp_keys);
+IMB_DLL_EXPORT void aes_keyexp_192_avx512(const void *key, void *enc_exp_keys,
+                                          void *dec_exp_keys);
+IMB_DLL_EXPORT void aes_keyexp_256_avx512(const void *key, void *enc_exp_keys,
+                                          void *dec_exp_keys);
+IMB_DLL_EXPORT void aes_xcbc_expand_key_avx512(const void *key, void *k1_exp,
+                                               void *k2, void *k3);
+IMB_DLL_EXPORT void aes_keyexp_128_enc_avx512(const void *key,
+                                              void *enc_exp_keys);
+IMB_DLL_EXPORT void aes_keyexp_192_enc_avx512(const void *key,
+                                              void *enc_exp_keys);
+IMB_DLL_EXPORT void aes_keyexp_256_enc_avx512(const void *key,
+                                              void *enc_exp_keys);
+IMB_DLL_EXPORT void aes_cmac_subkey_gen_avx512(const void *key_exp, void *key1,
+                                               void *key2);
+IMB_DLL_EXPORT void aes_cfb_128_one_avx512(void *out, const void *in,
+                                           const void *iv, const void *keys,
+                                           uint64_t len);
 
 /*
  * Direct GCM API.
  * Note that GCM is also availabe through job API.
  */
 #ifndef NO_GCM
-/* Authenticated Tag Length in bytes.
- * Valid values are 16 (most likely), 12 or 8. */
-#define MAX_TAG_LEN (16)
-/*
- * IV data is limited to 16 bytes as follows:
- * 12 bytes is provided by an application -
- *    pre-counter block j0: 4 byte salt (from Security Association)
- *    concatenated with 8 byte Initialization Vector (from IPSec ESP
- *    Payload).
- * 4 byte value 0x00000001 is padded automatically by the library -
- *    there is no need to add these 4 bytes on application side anymore.
- */
-#define GCM_IV_DATA_LEN (12)
-
-#define LONGEST_TESTED_AAD_LENGTH (2 * 1024)
-
-/* Key lengths of 128 and 256 supported */
-#define GCM_128_KEY_LEN (16)
-#define GCM_192_KEY_LEN (24)
-#define GCM_256_KEY_LEN (32)
-
-#define GCM_BLOCK_LEN   16
-#define GCM_ENC_KEY_LEN 16
-#define GCM_KEY_SETS    (15) /*exp key + 14 exp round keys*/
-
-/**
- * @brief holds intermediate key data needed to improve performance
- *
- * gcm_key_data hold internal key information used by gcm128, gcm192 and gcm256.
- */
-#ifdef __WIN32
-__declspec(align(16))
-#endif /* WIN32 */
-struct gcm_key_data {
-        uint8_t expanded_keys[GCM_ENC_KEY_LEN * GCM_KEY_SETS];
-        /* storage for HashKey mod poly */
-        uint8_t shifted_hkey_1[GCM_ENC_KEY_LEN]; /* HashKey<<1 mod poly */
-        uint8_t shifted_hkey_2[GCM_ENC_KEY_LEN]; /* HashKey^2<<1 mod poly */
-        uint8_t shifted_hkey_3[GCM_ENC_KEY_LEN]; /* HashKey^3<<1 mod poly */
-        uint8_t shifted_hkey_4[GCM_ENC_KEY_LEN]; /* HashKey^4<<1 mod poly */
-        uint8_t shifted_hkey_5[GCM_ENC_KEY_LEN]; /* HashKey^5<<1 mod poly */
-        uint8_t shifted_hkey_6[GCM_ENC_KEY_LEN]; /* HashKey^6<<1 mod poly */
-        uint8_t shifted_hkey_7[GCM_ENC_KEY_LEN]; /* HashKey^7<<1 mod poly */
-        uint8_t shifted_hkey_8[GCM_ENC_KEY_LEN]; /* HashKey^8<<1 mod poly */
-        /*
-         * Storage for XOR of High 64 bits and low 64 bits of HashKey mod poly.
-         * This is needed for Karatsuba purposes.
-         */
-        uint8_t shifted_hkey_1_k[GCM_ENC_KEY_LEN]; /* HashKey<<1 mod poly */
-        uint8_t shifted_hkey_2_k[GCM_ENC_KEY_LEN]; /* HashKey^2<<1 mod poly */
-        uint8_t shifted_hkey_3_k[GCM_ENC_KEY_LEN]; /* HashKey^3<<1 mod poly */
-        uint8_t shifted_hkey_4_k[GCM_ENC_KEY_LEN]; /* HashKey^4<<1 mod poly */
-        uint8_t shifted_hkey_5_k[GCM_ENC_KEY_LEN]; /* HashKey^5<<1 mod poly */
-        uint8_t shifted_hkey_6_k[GCM_ENC_KEY_LEN]; /* HashKey^6<<1 mod poly */
-        uint8_t shifted_hkey_7_k[GCM_ENC_KEY_LEN]; /* HashKey^7<<1 mod poly */
-        uint8_t shifted_hkey_8_k[GCM_ENC_KEY_LEN]; /* HashKey^8<<1 mod poly */
-}
-#ifdef LINUX
-__attribute__((aligned(16)));
-#else
-;
-#endif
-
-/**
- * @brief holds GCM operation context
- */
-struct gcm_context_data {
-        /* init, update and finalize context data */
-        uint8_t  aad_hash[GCM_BLOCK_LEN];
-        uint64_t aad_length;
-        uint64_t in_length;
-        uint8_t  partial_block_enc_key[GCM_BLOCK_LEN];
-        uint8_t  orig_IV[GCM_BLOCK_LEN];
-        uint8_t  current_counter[GCM_BLOCK_LEN];
-        uint64_t  partial_block_length;
-};
-
 /**
  * @brief GCM-AES Encryption
  *
@@ -1352,65 +2291,116 @@ IMB_DLL_EXPORT void aes_gcm_precomp_256_avx_gen4(struct gcm_key_data *key_data);
  * @param key_data GCM expanded key data
  *
  */
-__forceinline
-void aes_gcm_pre_128_sse(const void *key, struct gcm_key_data *key_data)
-{
-        aes_keyexp_128_enc_sse(key, key_data->expanded_keys);
-        aes_gcm_precomp_128_sse(key_data);
-}
-__forceinline
-void aes_gcm_pre_128_avx_gen2(const void *key, struct gcm_key_data *key_data)
-{
-        aes_keyexp_128_enc_avx(key, key_data->expanded_keys);
-        aes_gcm_precomp_128_avx_gen2(key_data);
-}
-__forceinline
-void aes_gcm_pre_128_avx_gen4(const void *key, struct gcm_key_data *key_data)
-{
-        aes_keyexp_128_enc_avx2(key, key_data->expanded_keys);
-        aes_gcm_precomp_128_avx_gen4(key_data);
-}
-
-__forceinline
-void aes_gcm_pre_192_sse(const void *key, struct gcm_key_data *key_data)
-{
-        aes_keyexp_192_enc_sse(key, key_data->expanded_keys);
-        aes_gcm_precomp_192_sse(key_data);
-}
-__forceinline
-void aes_gcm_pre_192_avx_gen2(const void *key, struct gcm_key_data *key_data)
-{
-        aes_keyexp_192_enc_avx(key, key_data->expanded_keys);
-        aes_gcm_precomp_192_avx_gen2(key_data);
-}
-__forceinline
-void aes_gcm_pre_192_avx_gen4(const void *key, struct gcm_key_data *key_data)
-{
-        aes_keyexp_192_enc_avx2(key, key_data->expanded_keys);
-        aes_gcm_precomp_192_avx_gen4(key_data);
-}
-
-__forceinline
-void aes_gcm_pre_256_sse(const void *key, struct gcm_key_data *key_data)
-{
-        struct gcm_key_data tmp;
-
-        aes_keyexp_256_sse(key, key_data->expanded_keys, tmp.expanded_keys);
-        aes_gcm_precomp_256_sse(key_data);
-}
-__forceinline
-void aes_gcm_pre_256_avx_gen2(const void *key, struct gcm_key_data *key_data)
-{
-        aes_keyexp_256_enc_avx(key, key_data->expanded_keys);
-        aes_gcm_precomp_256_avx_gen2(key_data);
-}
-__forceinline
-void aes_gcm_pre_256_avx_gen4(const void *key, struct gcm_key_data *key_data)
-{
-        aes_keyexp_256_enc_avx2(key, key_data->expanded_keys);
-        aes_gcm_precomp_256_avx_gen4(key_data);
-}
+IMB_DLL_EXPORT void aes_gcm_pre_128_sse(const void *key,
+                                        struct gcm_key_data *key_data);
+IMB_DLL_EXPORT void aes_gcm_pre_128_avx_gen2(const void *key,
+                                             struct gcm_key_data *key_data);
+IMB_DLL_EXPORT void aes_gcm_pre_128_avx_gen4(const void *key,
+                                             struct gcm_key_data *key_data);
+IMB_DLL_EXPORT void aes_gcm_pre_192_sse(const void *key,
+                                        struct gcm_key_data *key_data);
+IMB_DLL_EXPORT void aes_gcm_pre_192_avx_gen2(const void *key,
+                                             struct gcm_key_data *key_data);
+IMB_DLL_EXPORT void aes_gcm_pre_192_avx_gen4(const void *key,
+                                             struct gcm_key_data *key_data);
+IMB_DLL_EXPORT void aes_gcm_pre_256_sse(const void *key,
+                                        struct gcm_key_data *key_data);
+IMB_DLL_EXPORT void aes_gcm_pre_256_avx_gen2(const void *key,
+                                             struct gcm_key_data *key_data);
+IMB_DLL_EXPORT void aes_gcm_pre_256_avx_gen4(const void *key,
+                                             struct gcm_key_data *key_data);
 #endif /* !NO_GCM */
+
+/**
+ * @brief Generation of ZUC Initialization Vectors (for EEA3 and EIA3)
+ *
+ * @param [in]  count  COUNT (4 bytes in Little Endian)
+ * @param [in]  bearer BEARER (5 bits)
+ * @param [in]  dir    DIRECTION (1 bit)
+ * @param [out] iv_ptr Pointer to generated IV (16 bytes)
+ *
+ * @return
+ *      - 0 if success
+ *      - 1 if one or more parameters are wrong
+ */
+IMB_DLL_EXPORT int zuc_eea3_iv_gen(const uint32_t count,
+                                   const uint8_t bearer,
+                                   const uint8_t dir,
+                                   void *iv_ptr);
+IMB_DLL_EXPORT int zuc_eia3_iv_gen(const uint32_t count,
+                                   const uint8_t bearer,
+                                   const uint8_t dir,
+                                   void *iv_ptr);
+
+/**
+ * @brief Generation of KASUMI F8 Initialization Vector
+ *
+ * @param [in]  count  COUNT (4 bytes in Little Endian)
+ * @param [in]  bearer BEARER (5 bits)
+ * @param [in]  dir    DIRECTION (1 bit)
+ * @param [out] iv_ptr Pointer to generated IV (16 bytes)
+ *
+ * @return
+ *      - 0 if success
+ *      - 1 if one or more parameters are wrong
+ */
+IMB_DLL_EXPORT int kasumi_f8_iv_gen(const uint32_t count,
+                                    const uint8_t bearer,
+                                    const uint8_t dir,
+                                    void *iv_ptr);
+/**
+ * @brief Generation of KASUMI F9 Initialization Vector
+ *
+ * @param [in]  count  COUNT (4 bytes in Little Endian)
+ * @param [in]  fresh  FRESH (4 bytes in Little Endian)
+ * @param [out] iv_ptr Pointer to generated IV (16 bytes)
+ *
+ * @return
+ *      - 0 if success
+ *      - 1 if one or more parameters are wrong
+ */
+IMB_DLL_EXPORT int kasumi_f9_iv_gen(const uint32_t count,
+                                    const uint32_t fresh,
+                                    void *iv_ptr);
+
+/**
+ * @brief Generation of SNOW3G F8 Initialization Vector
+ *
+ * Parameters are passed in Little Endian format and
+ * used to generate the IV in Big Endian format
+ *
+ * @param [in]  count  COUNT (4 bytes in Little Endian)
+ * @param [in]  bearer BEARER (5 bits)
+ * @param [in]  dir    DIRECTION (1 bit)
+ * @param [out] iv_ptr Pointer to generated IV (16 bytes) in Big Endian format
+ *
+ * @return
+ *      - 0 if success
+ *      - 1 if one or more parameters are wrong
+ */
+IMB_DLL_EXPORT int snow3g_f8_iv_gen(const uint32_t count,
+                                    const uint8_t bearer,
+                                    const uint8_t dir,
+                                    void *iv_ptr);
+/**
+ * @brief Generation of SNOW3G F9 Initialization Vector
+ *
+ * Parameters are passed in Little Endian format and
+ * used to generate the IV in Big Endian format
+ *
+ * @param [in]  count  COUNT (4 bytes in Little Endian)
+ * @param [in]  fresh  FRESH (4 bytes in Little Endian)
+ * @param [in]  dir    DIRECTION (1 bit)
+ * @param [out] iv_ptr Pointer to generated IV (16 bytes) in Big Endian format
+ *
+ * @return
+ *      - 0 if success
+ *      - 1 if one or more parameters are wrong
+ */
+IMB_DLL_EXPORT int snow3g_f9_iv_gen(const uint32_t count,
+                                    const uint32_t fresh,
+                                    const uint8_t dir,
+                                    void *iv_ptr);
 
 #ifdef __cplusplus
 }

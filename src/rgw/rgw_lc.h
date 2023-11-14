@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 #ifndef CEPH_RGW_LC_H
 #define CEPH_RGW_LC_H
@@ -12,15 +12,15 @@
 
 #include "include/types.h"
 #include "include/rados/librados.hpp"
-#include "common/Mutex.h"
+#include "common/ceph_mutex.h"
 #include "common/Cond.h"
 #include "common/iso_8601.h"
 #include "common/Thread.h"
 #include "rgw_common.h"
-#include "rgw_rados.h"
-#include "rgw_multi.h"
 #include "cls/rgw/cls_rgw_types.h"
 #include "rgw_tag.h"
+#include "rgw_sal.h"
+#include "rgw_rados.h"
 
 #include <atomic>
 #include <tuple>
@@ -184,9 +184,6 @@ class LCFilter
   bool has_multi_condition() const {
     if (obj_tags.count() > 1)
       return true;
-    else if (has_prefix() && has_tags())
-      return true;
-
     return false;
   }
 
@@ -464,45 +461,68 @@ WRITE_CLASS_ENCODER(RGWLifecycleConfiguration)
 
 class RGWLC : public DoutPrefixProvider {
   CephContext *cct;
-  RGWRados *store;
+  rgw::sal::RGWRadosStore *store;
+  std::unique_ptr<rgw::sal::Lifecycle> sal_lc;
   int max_objs{0};
   string *obj_names{nullptr};
   std::atomic<bool> down_flag = { false };
   string cookie;
 
-  class LCWorker : public Thread {
+public:
+
+  class WorkPool;
+
+  class LCWorker : public Thread
+  {
     const DoutPrefixProvider *dpp;
     CephContext *cct;
     RGWLC *lc;
-    Mutex lock;
-    Cond cond;
+    int ix;
+    std::mutex lock;
+    std::condition_variable cond;
+    WorkPool* workpool{nullptr};
 
   public:
-    LCWorker(const DoutPrefixProvider* _dpp, CephContext *_cct, RGWLC *_lc) : dpp(_dpp), cct(_cct), lc(_lc), lock("LCWorker") {}
+
+    using lock_guard = std::lock_guard<std::mutex>;
+    using unique_lock = std::unique_lock<std::mutex>;
+
+    LCWorker(const DoutPrefixProvider* dpp, CephContext *_cct, RGWLC *_lc,
+	     int ix);
+    RGWLC* get_lc() { return lc; }
     void *entry() override;
     void stop();
     bool should_work(utime_t& now);
     int schedule_next_start_time(utime_t& start, utime_t& now);
-  };
-  
-  public:
-  LCWorker *worker;
-  RGWLC() : cct(NULL), store(NULL), worker(NULL) {}
-  ~RGWLC() {
-    stop_processor();
-    finalize();
-  }
+    ~LCWorker();
 
-  void initialize(CephContext *_cct, RGWRados *_store);
+    friend class RGWRados;
+    friend class RGWLC;
+    friend class WorkQ;
+  }; /* LCWorker */
+
+  friend class RGWRados;
+
+  std::vector<std::unique_ptr<RGWLC::LCWorker>> workers;
+
+  RGWLC() : cct(nullptr), store(nullptr) {}
+  ~RGWLC();
+
+  void initialize(CephContext *_cct, rgw::sal::RGWRadosStore *_store);
   void finalize();
 
-  int process();
-  int process(int index, int max_secs);
-  bool if_already_run_today(time_t& start_date);
-  int list_lc_progress(const string& marker, uint32_t max_entries, map<string, int> *progress_map);
-  int bucket_lc_prepare(int index);
-  int bucket_lc_process(string& shard_id);
-  int bucket_lc_post(int index, int max_lock_sec, pair<string, int >& entry, int& result);
+  int process(LCWorker* worker, bool once);
+  int process(int index, int max_secs, LCWorker* worker, bool once);
+  bool if_already_run_today(time_t start_date);
+  bool expired_session(time_t started);
+  time_t thread_stop_at();
+  int list_lc_progress(string& marker, uint32_t max_entries,
+		       vector<rgw::sal::Lifecycle::LCEntry>&, int& index);
+  int bucket_lc_prepare(int index, LCWorker* worker);
+  int bucket_lc_process(string& shard_id, LCWorker* worker, time_t stop_at,
+			bool once);
+  int bucket_lc_post(int index, int max_lock_sec,
+		     rgw::sal::Lifecycle::LCEntry& entry, int& result, LCWorker* worker);
   bool going_down();
   void start_processor();
   void stop_processor();
@@ -512,19 +532,24 @@ class RGWLC : public DoutPrefixProvider {
   int remove_bucket_config(RGWBucketInfo& bucket_info,
                            const map<string, bufferlist>& bucket_attrs);
 
-  CephContext *get_cct() const override { return store->ctx(); }
+  CephContext *get_cct() const override { return cct; }
+  rgw::sal::Lifecycle *get_lc() const { return sal_lc.get(); }
   unsigned get_subsys() const;
   std::ostream& gen_prefix(std::ostream& out) const;
 
   private:
 
-  int handle_multipart_expiration(RGWRados::Bucket *target,
-				  const multimap<string, lc_op>& prefix_map);
+  int handle_multipart_expiration(rgw::sal::RGWBucket* target,
+				  const multimap<string, lc_op>& prefix_map,
+				  LCWorker* worker, time_t stop_at, bool once);
 };
 
 namespace rgw::lc {
 
-int fix_lc_shard_entry(RGWRados *store, const RGWBucketInfo& bucket_info,
+int fix_lc_shard_entry(const DoutPrefixProvider *dpp, 
+                       rgw::sal::RGWRadosStore *store,
+		       rgw::sal::Lifecycle* sal_lc,
+		       const RGWBucketInfo& bucket_info,
 		       const map<std::string,bufferlist>& battrs);
 
 std::string s3_expiration_header(
@@ -533,6 +558,14 @@ std::string s3_expiration_header(
   const RGWObjTags& obj_tagset,
   const ceph::real_time& mtime,
   const std::map<std::string, buffer::list>& bucket_attrs);
+
+bool s3_multipart_abort_header(
+  DoutPrefixProvider* dpp,
+  const rgw_obj_key& obj_key,
+  const ceph::real_time& mtime,
+  const std::map<std::string, buffer::list>& bucket_attrs,
+  ceph::real_time& abort_date,
+  std::string& rule_id);
 
 } // namespace rgw::lc
 

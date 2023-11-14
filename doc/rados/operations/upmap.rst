@@ -1,3 +1,5 @@
+.. _upmap:
+
 Using the pg-upmap
 ==================
 
@@ -12,22 +14,33 @@ clients understand the new *pg-upmap* structure in the OSDMap.
 Enabling
 --------
 
-To allow use of the feature, you must tell the cluster that it only
-needs to support luminous (and newer) clients with::
+New clusters will have this module on by default. The cluster must only
+have luminous (and newer) clients. You can the turn the balancer off with:
 
-  ceph osd set-require-min-compat-client luminous
+.. prompt:: bash $
+
+   ceph balancer off
+
+To allow use of the feature on existing clusters, you must tell the
+cluster that it only needs to support luminous (and newer) clients with:
+
+.. prompt:: bash $
+
+   ceph osd set-require-min-compat-client luminous
 
 This command will fail if any pre-luminous clients or daemons are
 connected to the monitors.  You can see what client versions are in
-use with::
+use with:
 
-  ceph features
+.. prompt:: bash $
+
+   ceph features
 
 Balancer module
 -----------------
 
-The new `balancer` module for ceph-mgr will automatically balance
-the number of PGs per OSD.  See ``Balancer``
+The `balancer` module for ceph-mgr will automatically balance
+the number of PGs per OSD.  See :ref:`balancer`
 
 
 Offline optimization
@@ -35,15 +48,20 @@ Offline optimization
 
 Upmap entries are updated with an offline optimizer built into ``osdmaptool``.
 
-#. Grab the latest copy of your osdmap::
+#. Grab the latest copy of your osdmap:
 
-     ceph osd getmap -o om
+   .. prompt:: bash $
 
-#. Run the optimizer::
+      ceph osd getmap -o om
 
-     osdmaptool om --upmap out.txt [--upmap-pool <pool>]
-              [--upmap-max <max-optimizations>] [--upmap-deviation <max-deviation>]
-              [--upmap-active]
+#. Run the optimizer:
+
+   .. prompt:: bash $
+
+      osdmaptool om --upmap out.txt [--upmap-pool <pool>] \ 
+      [--upmap-max <max-optimizations>] \ 
+      [--upmap-deviation <max-deviation>] \ 
+      [--upmap-active]
 
    It is highly recommended that optimization be done for each pool
    individually, or for sets of similarly-utilized pools.  You can
@@ -68,9 +86,11 @@ Upmap entries are updated with an offline optimizer built into ``osdmaptool``.
    elapsed time for rounds indicates the CPU load ceph-mgr will be
    consuming when it tries to compute the next optimization plan.
 
-#. Apply the changes::
+#. Apply the changes:
 
-     source out.txt
+   .. prompt:: bash $
+
+      source out.txt
 
    The proposed changes are written to the output file ``out.txt`` in
    the example above.  These are normal ceph CLI commands that can be

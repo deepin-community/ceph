@@ -1,5 +1,7 @@
 :orphan:
 
+.. _ceph_osd-daemon:
+
 ========================================
  ceph-osd -- ceph object storage daemon
 ========================================
@@ -10,7 +12,7 @@ Synopsis
 ========
 
 | **ceph-osd** -i *osdnum* [ --osd-data *datapath* ] [ --osd-journal
-  *journal* ] [ --mkfs ] [ --mkjournal ] [--flush-journal] [--check-allows-journal] [--check-wants-journal] [--check-needs-journal] [ --mkkey ]
+  *journal* ] [ --mkfs ] [ --mkjournal ] [--flush-journal] [--check-allows-journal] [--check-wants-journal] [--check-needs-journal] [ --mkkey ] [ --osdspec-affinity ]
 
 
 Description
@@ -118,6 +120,10 @@ Options
    Connect to specified monitor (instead of looking through
    ``ceph.conf``).
 
+.. option:: --osdspec-affinity
+
+   Set an affinity to a certain OSDSpec.
+   This option can only be used in conjunction with --mkfs.
 
 Availability
 ============

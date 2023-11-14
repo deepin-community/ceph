@@ -13,7 +13,13 @@
  */
 
 #include <boost/type_traits.hpp>
-
+#if __has_include(<filesystem>)
+#include <filesystem>
+namespace fs = std::filesystem;
+#else
+#include <experimental/filesystem>
+namespace fs = std::experimental::filesystem;
+#endif
 #include "common/ceph_argparse.h"
 #include "common/common_init.h"
 #include "common/config.h"
@@ -37,15 +43,28 @@
 // set set_mon_vals()
 #define dout_subsys ceph_subsys_monc
 
+using std::cerr;
+using std::cout;
 using std::map;
+using std::less;
 using std::list;
+using std::ostream;
 using std::ostringstream;
 using std::pair;
 using std::string;
+using std::string_view;
+using std::vector;
 
-static const char *CEPH_CONF_FILE_DEFAULT = "$data_dir/config, /etc/ceph/$cluster.conf, $home/.ceph/$cluster.conf, $cluster.conf"
+using ceph::bufferlist;
+using ceph::decode;
+using ceph::encode;
+using ceph::Formatter;
+
+static const char *CEPH_CONF_FILE_DEFAULT = "$data_dir/config,/etc/ceph/$cluster.conf,$home/.ceph/$cluster.conf,$cluster.conf"
 #if defined(__FreeBSD__)
-    ", /usr/local/etc/ceph/$cluster.conf"
+    ",/usr/local/etc/ceph/$cluster.conf"
+#elif defined(_WIN32)
+    ",$programdata/ceph/$cluster.conf"
 #endif
     ;
 
@@ -70,7 +89,7 @@ int ceph_resolve_file_search(const std::string& filename_list,
 			     std::string& result)
 {
   list<string> ls;
-  get_str_list(filename_list, ls);
+  get_str_list(filename_list, ";,", ls);
 
   int ret = -ENOENT;
   list<string>::iterator iter;
@@ -111,9 +130,7 @@ md_config_t::md_config_t(ConfigValues& values,
                 << std::endl;
       ceph_abort();
     }
-    schema.emplace(std::piecewise_construct,
-		   std::forward_as_tuple(i.name),
-		   std::forward_as_tuple(i));
+    schema.emplace(i.name, i);
   }
 
   // Define the debug_* options as well.
@@ -166,7 +183,7 @@ md_config_t::md_config_t(ConfigValues& values,
   // members if present.
   legacy_values = {
 #define OPTION(name, type) \
-    {std::string(STRINGIFY(name)), &ConfigValues::name},
+    {STRINGIFY(name), &ConfigValues::name},
 #define SAFE_OPTION(name, type) OPTION(name, type)
 #include "common/legacy_config_opts.h"
 #undef OPTION
@@ -242,7 +259,7 @@ void md_config_t::validate_schema()
   }
 }
 
-const Option *md_config_t::find_option(const string& name) const
+const Option *md_config_t::find_option(const std::string_view name) const
 {
   auto p = schema.find(name);
   if (p != schema.end()) {
@@ -253,7 +270,7 @@ const Option *md_config_t::find_option(const string& name) const
 
 void md_config_t::set_val_default(ConfigValues& values,
 				  const ConfigTracker& tracker,
-				  const string& name, const std::string& val)
+				  const string_view name, const std::string& val)
 {
   const Option *o = find_option(name);
   ceph_assert(o);
@@ -265,7 +282,7 @@ void md_config_t::set_val_default(ConfigValues& values,
 int md_config_t::set_mon_vals(CephContext *cct,
     ConfigValues& values,
     const ConfigTracker& tracker,
-    const map<string,string>& kv,
+    const map<string,string,less<>>& kv,
     config_callback config_cb)
 {
   ignored_mon_values.clear();
@@ -337,125 +354,125 @@ int md_config_t::parse_config_files(ConfigValues& values,
 				    std::ostream *warnings,
 				    int flags)
 {
-
   if (safe_to_start_threads)
     return -ENOSYS;
 
-  if (!values.cluster.size() && !conf_files_str) {
-    /*
-     * set the cluster name to 'ceph' when neither cluster name nor
-     * configuration file are specified.
-     */
-    values.cluster = "ceph";
+  if (values.cluster.empty() && !conf_files_str) {
+    values.cluster = get_cluster_name(nullptr);
   }
+  // open new conf
+  for (auto& fn : get_conffile_paths(values, conf_files_str, warnings, flags)) {
+    bufferlist bl;
+    std::string error;
+    if (bl.read_file(fn.c_str(), &error)) {
+      parse_error = error;
+      continue;
+    }
+    ostringstream oss;
+    int ret = parse_buffer(values, tracker, bl.c_str(), bl.length(), &oss);
+    if (ret == 0) {
+      parse_error.clear();
+      conf_path = fn;
+      break;
+    }
+    parse_error = oss.str();
+    if (ret != -ENOENT) {
+      return ret;
+    }
+  }
+  // it must have been all ENOENTs, that's the only way we got here
+  if (conf_path.empty()) {
+    return -ENOENT;
+  }
+  if (values.cluster.empty()) {
+    values.cluster = get_cluster_name(conf_path.c_str());
+  }
+  update_legacy_vals(values);
+  return 0;
+}
 
+int
+md_config_t::parse_buffer(ConfigValues& values,
+			  const ConfigTracker& tracker,
+			  const char* buf, size_t len,
+			  std::ostream* warnings)
+{
+  if (!cf.parse_buffer(string_view{buf, len}, warnings)) {
+    return -EINVAL;
+  }
+  const auto my_sections = get_my_sections(values);
+  for (const auto &i : schema) {
+    const auto &opt = i.second;
+    std::string val;
+    if (_get_val_from_conf_file(my_sections, opt.name, val)) {
+      continue;
+    }
+    std::string error_message;
+    if (_set_val(values, tracker, val, opt, CONF_FILE, &error_message) < 0) {
+      if (warnings != nullptr) {
+        *warnings << "parse error setting " << std::quoted(opt.name)
+                  << " to " << std::quoted(val);
+        if (!error_message.empty()) {
+          *warnings << " (" << error_message << ")";
+        }
+        *warnings << '\n';
+      }
+    }
+  }
+  cf.check_old_style_section_names({"mds", "mon", "osd"}, cerr);
+  return 0;
+}
+
+std::list<std::string>
+md_config_t::get_conffile_paths(const ConfigValues& values,
+				const char *conf_files_str,
+				std::ostream *warnings,
+				int flags) const
+{
   if (!conf_files_str) {
     const char *c = getenv("CEPH_CONF");
     if (c) {
       conf_files_str = c;
-    }
-    else {
+    } else {
       if (flags & CINIT_FLAG_NO_DEFAULT_CONFIG_FILE)
-	return 0;
+	return {};
       conf_files_str = CEPH_CONF_FILE_DEFAULT;
     }
   }
 
-  std::list<std::string> conf_files;
-  get_str_list(conf_files_str, conf_files);
-  auto p = conf_files.begin();
-  while (p != conf_files.end()) {
-    string &s = *p;
-    if (s.find("$data_dir") != string::npos &&
+  std::list<std::string> paths;
+  get_str_list(conf_files_str, ";,", paths);
+  for (auto i = paths.begin(); i != paths.end(); ) {
+    string& path = *i;
+    if (path.find("$data_dir") != path.npos &&
 	data_dir_option.empty()) {
       // useless $data_dir item, skip
-      p = conf_files.erase(p);
+      i = paths.erase(i);
     } else {
-      early_expand_meta(values, s, warnings);
-      ++p;
+      early_expand_meta(values, path, warnings);
+      ++i;
     }
   }
+  return paths;
+}
 
-  // open new conf
-  list<string>::const_iterator c;
-  for (c = conf_files.begin(); c != conf_files.end(); ++c) {
-    cf.clear();
-    string fn = *c;
-
-    int ret = cf.parse_file(fn.c_str(), &parse_errors, warnings);
-    if (ret == 0)
-      break;
-    else if (ret != -ENOENT)
-      return ret;
-  }
-  // it must have been all ENOENTs, that's the only way we got here
-  if (c == conf_files.end())
-    return -ENOENT;
-
-  if (values.cluster.size() == 0) {
-    /*
-     * If cluster name is not set yet, use the prefix of the
-     * basename of configuration file as cluster name.
-     */
-    auto start = c->rfind('/') + 1;
-    auto end = c->find(".conf", start);
-    if (end == c->npos) {
-        /*
-         * If the configuration file does not follow $cluster.conf
-         * convention, we do the last try and assign the cluster to
-         * 'ceph'.
-         */
-        values.cluster = "ceph";
+std::string md_config_t::get_cluster_name(const char* conffile)
+{
+  if (conffile) {
+    // If cluster name is not set yet, use the prefix of the
+    // basename of configuration file as cluster name.
+    if (fs::path path{conffile}; path.extension() == ".conf") {
+      return path.stem().string();
     } else {
-      values.cluster = c->substr(start, end - start);
+      // If the configuration file does not follow $cluster.conf
+      // convention, we do the last try and assign the cluster to
+      // 'ceph'.
+      return "ceph";
     }
+  } else {
+    // set the cluster name to 'ceph' when configuration file is not specified.
+    return "ceph";
   }
-
-  std::vector <std::string> my_sections;
-  _get_my_sections(values, my_sections);
-  for (const auto &i : schema) {
-    const auto &opt = i.second;
-    std::string val;
-    int ret = _get_val_from_conf_file(my_sections, opt.name, val);
-    if (ret == 0) {
-      std::string error_message;
-      int r = _set_val(values, tracker, val, opt, CONF_FILE, &error_message);
-      if (warnings != nullptr && (r < 0 || !error_message.empty())) {
-        *warnings << "parse error setting '" << opt.name << "' to '" << val
-                  << "'";
-        if (!error_message.empty()) {
-          *warnings << " (" << error_message << ")";
-        }
-        *warnings << std::endl;
-      }
-    }
-  }
-
-  // Warn about section names that look like old-style section names
-  std::deque < std::string > old_style_section_names;
-  for (ConfFile::const_section_iter_t s = cf.sections_begin();
-       s != cf.sections_end(); ++s) {
-    const string &str(s->first);
-    if (((str.find("mds") == 0) || (str.find("mon") == 0) ||
-	 (str.find("osd") == 0)) && (str.size() > 3) && (str[3] != '.')) {
-      old_style_section_names.push_back(str);
-    }
-  }
-  if (!old_style_section_names.empty()) {
-    ostringstream oss;
-    cerr << "ERROR! old-style section name(s) found: ";
-    string sep;
-    for (std::deque < std::string >::const_iterator os = old_style_section_names.begin();
-	 os != old_style_section_names.end(); ++os) {
-      cerr << sep << *os;
-      sep = ", ";
-    }
-    cerr << ". Please use the new style section names that include a period.";
-  }
-
-  update_legacy_vals(values);
-
-  return 0;
 }
 
 void md_config_t::parse_env(unsigned entity_type,
@@ -650,9 +667,6 @@ int md_config_t::parse_argv(ConfigValues& values,
     }
     else if (ceph_argparse_flag(args, i, "--no-mon-config", (char*)NULL)) {
       values.no_mon_config = true;
-    }
-    else if (ceph_argparse_flag(args, i, "--log-early", (char*)NULL)) {
-      values.log_early = true;
     }
     else if (ceph_argparse_flag(args, i, "--mon-config", (char*)NULL)) {
       values.no_mon_config = false;
@@ -886,7 +900,7 @@ int md_config_t::injectargs(ConfigValues& values,
 
 void md_config_t::set_val_or_die(ConfigValues& values,
 				 const ConfigTracker& tracker,
-				 const std::string &key,
+				 const std::string_view key,
 				 const std::string &val)
 {
   std::stringstream err;
@@ -899,7 +913,7 @@ void md_config_t::set_val_or_die(ConfigValues& values,
 
 int md_config_t::set_val(ConfigValues& values,
 			 const ConfigTracker& tracker,
-			 const std::string &key, const char *val,
+			 const std::string_view key, const char *val,
 			 std::stringstream *err_ss)
 {
   if (key.empty()) {
@@ -932,7 +946,7 @@ int md_config_t::set_val(ConfigValues& values,
   return -ENOENT;
 }
 
-int md_config_t::rm_val(ConfigValues& values, const std::string& key)
+int md_config_t::rm_val(ConfigValues& values, const std::string_view key)
 {
   return _rm_val(values, key, CONF_OVERRIDE);
 }
@@ -1015,8 +1029,18 @@ void md_config_t::get_config_bl(
   }
 }
 
+std::optional<std::string> md_config_t::get_val_default(std::string_view key)
+{
+  std::string val;
+  const Option *opt = find_option(key);
+  if (opt && (conf_stringify(_get_val_default(*opt), &val) == 0)) {
+    return std::make_optional(std::move(val));
+  }
+  return std::nullopt;
+}
+
 int md_config_t::get_val(const ConfigValues& values,
-			 const std::string &key, char **buf, int len) const
+			 const std::string_view key, char **buf, int len) const
 {
   string k(ConfFile::normalize_key_name(key));
   return _get_val_cstr(values, k, buf, len);
@@ -1024,7 +1048,7 @@ int md_config_t::get_val(const ConfigValues& values,
 
 int md_config_t::get_val(
   const ConfigValues& values,
-  const std::string &key,
+  const std::string_view key,
   std::string *val) const
 {
   return conf_stringify(get_val_generic(values, key), val);
@@ -1032,15 +1056,14 @@ int md_config_t::get_val(
 
 Option::value_t md_config_t::get_val_generic(
   const ConfigValues& values,
-  const std::string &key) const
+  const std::string_view key) const
 {
-  string k(ConfFile::normalize_key_name(key));
-  return _get_val(values, k);
+  return _get_val(values, key);
 }
 
 Option::value_t md_config_t::_get_val(
   const ConfigValues& values,
-  const std::string &key,
+  const std::string_view key,
   expand_stack_t *stack,
   std::ostream *err) const
 {
@@ -1051,7 +1074,7 @@ Option::value_t md_config_t::_get_val(
   // In key names, leading and trailing whitespace are not significant.
   string k(ConfFile::normalize_key_name(key));
 
-  const Option *o = find_option(key);
+  const Option *o = find_option(k);
   if (!o) {
     // not a valid config option
     return Option::value_t(boost::blank());
@@ -1204,7 +1227,12 @@ Option::value_t md_config_t::_expand_meta(
       } else if (var == "id") {
 	out += values.name.get_id();
       } else if (var == "pid") {
-	out += stringify(getpid());
+        char *_pid = getenv("PID");
+        if (_pid) {
+          out += _pid;
+        } else {
+          out += stringify(getpid());
+        }
         if (o) {
           may_reexpand_meta.push_back(o->name);
         }
@@ -1213,7 +1241,10 @@ Option::value_t md_config_t::_expand_meta(
       } else if (var == "home") {
 	const char *home = getenv("HOME");
 	out = home ? std::string(home) : std::string();
-      } else {
+      } else if (var == "programdata") {
+        const char *home = getenv("ProgramData");
+        out = home ? std::string(home) : std::string();
+      }else {
 	if (var == "data_dir") {
 	  var = data_dir_option;
 	}
@@ -1261,7 +1292,7 @@ Option::value_t md_config_t::_expand_meta(
 
 int md_config_t::_get_val_cstr(
   const ConfigValues& values,
-  const std::string &key, char **buf, int len) const
+  const std::string& key, char **buf, int len) const
 {
   if (key.empty())
     return -EINVAL;
@@ -1279,8 +1310,6 @@ int md_config_t::_get_val_cstr(
     snprintf(*buf, len, "%s", val.c_str());
     return (l > len) ? -ENAMETOOLONG : 0;
   }
-
-  string k(ConfFile::normalize_key_name(key));
 
   // couldn't find a configuration option with key 'k'
   return -ENOENT;
@@ -1305,28 +1334,20 @@ void md_config_t::get_all_keys(std::vector<std::string> *keys) const {
  * looking. The lowest priority section is the one we look in only if all
  * others had nothing.  This should always be the global section.
  */
-void md_config_t::get_my_sections(const ConfigValues& values,
-				  std::vector <std::string> &sections) const
+std::vector <std::string>
+md_config_t::get_my_sections(const ConfigValues& values) const
 {
-  _get_my_sections(values, sections);
-}
-
-void md_config_t::_get_my_sections(const ConfigValues& values,
-				   std::vector <std::string> &sections) const
-{
-  sections.push_back(values.name.to_str());
-
-  sections.push_back(values.name.get_type_name());
-
-  sections.push_back("global");
+  return {values.name.to_str(),
+	  values.name.get_type_name().data(),
+	  "global"};
 }
 
 // Return a list of all sections
 int md_config_t::get_all_sections(std::vector <std::string> &sections) const
 {
-  for (ConfFile::const_section_iter_t s = cf.sections_begin();
-       s != cf.sections_end(); ++s) {
-    sections.push_back(s->first);
+  for (auto [section_name, section] : cf) {
+    sections.push_back(section_name);
+    std::ignore = section;
   }
   return 0;
 }
@@ -1334,7 +1355,7 @@ int md_config_t::get_all_sections(std::vector <std::string> &sections) const
 int md_config_t::get_val_from_conf_file(
   const ConfigValues& values,
   const std::vector <std::string> &sections,
-  const std::string &key,
+  const std::string_view key,
   std::string &out,
   bool emeta) const
 {
@@ -1352,13 +1373,11 @@ int md_config_t::get_val_from_conf_file(
 
 int md_config_t::_get_val_from_conf_file(
   const std::vector <std::string> &sections,
-  const std::string &key,
+  const std::string_view key,
   std::string &out) const
 {
-  std::vector <std::string>::const_iterator s = sections.begin();
-  std::vector <std::string>::const_iterator s_end = sections.end();
-  for (; s != s_end; ++s) {
-    int ret = cf.read(s->c_str(), key, out);
+  for (auto &s : sections) {
+    int ret = cf.read(s, key, out);
     if (ret == 0) {
       return 0;
     } else if (ret != -ENOENT) {
@@ -1391,7 +1410,7 @@ int md_config_t::_set_val(
     if (new_value != _get_val_nometa(values, opt)) {
       *error_message = string("Configuration option '") + opt.name +
 	"' may not be modified at runtime";
-      return -ENOSYS;
+      return -EPERM;
     }
   }
 
@@ -1430,13 +1449,13 @@ void md_config_t::_refresh(ConfigValues& values, const Option& opt)
 }
 
 int md_config_t::_rm_val(ConfigValues& values,
-			 const std::string& key,
+			 const std::string_view key,
 			 int level)
 {
   if (schema.count(key) == 0) {
     return -EINVAL;
   }
-  auto ret = values.rm_val(key, level);
+  auto ret = values.rm_val(std::string{key}, level);
   if (ret < 0) {
     return ret;
   }
@@ -1543,7 +1562,7 @@ void md_config_t::diff(
     if (configs.empty()) {
       return;
     }
-    f->open_object_section(name.c_str());
+    f->open_object_section(std::string{name}.c_str());
     const Option *o = find_option(name);
     if (configs.size() &&
 	configs.begin()->first != CONF_DEFAULT) {
@@ -1558,7 +1577,7 @@ void md_config_t::diff(
   });
 }
 
-void md_config_t::complain_about_parse_errors(CephContext *cct)
+void md_config_t::complain_about_parse_error(CephContext *cct)
 {
-  ::complain_about_parse_errors(cct, &parse_errors);
+  ::complain_about_parse_error(cct, parse_error);
 }

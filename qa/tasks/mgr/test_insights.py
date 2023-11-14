@@ -119,7 +119,7 @@ class TestInsights(MgrTestCase):
             check_names.add(unique_check_name)
 
             # and also set the same health check to test deduplication
-            dupe_check_name = "insights_health_check".format(hours)
+            dupe_check_name = "insights_health_check"
             health_check = {
                 dupe_check_name: {
                     "severity": "warning",
@@ -148,17 +148,6 @@ class TestInsights(MgrTestCase):
         # restart the manager
         active_id = self.mgr_cluster.get_active_id()
         self.mgr_cluster.mgr_restart(active_id)
-
-        # ensure that at least one of the checks is present after the restart.
-        # we don't for them all to be present because "earlier" checks may not
-        # have sat in memory long enough to be flushed.
-        all_missing = True
-        report = self._insights()
-        for check in check_names:
-            if check in report["health"]["history"]["checks"]:
-                all_missing = False
-                break
-        self.assertFalse(all_missing)
 
         # pruning really removes history
         self.mgr_cluster.mon_manager.raw_cluster_cmd_result(

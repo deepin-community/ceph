@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2017-2018, Intel Corporation
+# Copyright (c) 2017-2019, Intel Corporation
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -26,10 +26,18 @@
 #
 
 # Available build options:
-# DEBUG=y   - this option will produce library fit for debugging
-# DEBUG=n   - this option will produce library not fit for debugging (default)
-# SHARED=y  - this option will produce shared library (DLL) (default)
-# SHARED=n  - this option will produce static library (lib)
+# DEBUG=y   	- this option will produce library fit for debugging
+# DEBUG=n   	- this option will produce library not fit for debugging (default)
+# SHARED=y  	- this option will produce shared library (DLL) (default)
+# SHARED=n  	- this option will produce static library (lib)
+# SAFE_DATA=y   - this option will clear memory and registers containing
+# 		  sensitive information (e.g. keys, IVs)
+# SAFE_PARAM=y  - this option will add extra input parameter checks
+# SAFE_LOOKUP=y - this option will perform constant-time lookups depending on
+# 		  sensitive data (default)
+# GCM_BIG_DATA=y
+#           - Better performing VAES GCM on big buffers using more ghash keys (~5% up).
+#             This option results in a much bigger gcm_key structure (>2K)
 
 !if !defined(SHARED)
 SHARED = y
@@ -51,20 +59,47 @@ LIBNAME = $(LIBBASE).lib
 !endif
 OBJ_DIR = obj
 
-
 !ifdef DEBUG
-DCFLAGS = /Od /DDEBUG /Z7
+OPT = /Od
+DCFLAGS = /DDEBUG /Z7
 DAFLAGS = -gcv8
 DLFLAGS = /DEBUG
 !else
-DCFLAGS = /O2 /Oi
+OPT = /O2 /Oi
+DCFLAGS =
 DAFLAGS =
 DLFLAGS = /RELEASE
 !endif
 
+!if "$(SAFE_DATA)" == "y"
+DCFLAGS = $(DCFLAGS) /DSAFE_DATA
+DAFLAGS = $(DAFLAGS) -DSAFE_DATA
+!endif
+
+!if "$(SAFE_PARAM)" == "y"
+DCFLAGS = $(DCFLAGS) /DSAFE_PARAM
+DAFLAGS = $(DAFLAGS) -DSAFE_PARAM
+!endif
+
+!if "$(SAFE_LOOKUP)" != "n"
+DCFLAGS = $(DCFLAGS) /DSAFE_LOOKUP
+DAFLAGS = $(DAFLAGS) -DSAFE_LOOKUP
+!endif
+
+!if "$(GCM_BIG_DATA)" == "y"
+GCM_AFLAGS = -DGCM_BIG_DATA
+GCM_CFLAGS = /DGCM_BIG_DATA
+!else
+GCM_AFLAGS =
+GCM_CFLAGS =
+!endif
+
 CC = cl
-CFLAGS = $(EXTRA_CFLAGS) $(DCFLAGS) /I. /Iinclude \
+CFLAGS_ALL = $(EXTRA_CFLAGS) $(GCM_CFLAGS) /I. /Iinclude /Ino-aesni \
 	/nologo /Y- /W3 /WX- /Gm- /fp:precise /EHsc
+
+CFLAGS = $(CFLAGS_ALL) $(OPT) $(DCFLAGS)
+CFLAGS_NO_SIMD = $(CFLAGS_ALL) /Od $(DCFLAGS)
 
 LIB_TOOL = lib
 LIBFLAGS = /nologo /machine:X64 /nodefaultlib
@@ -73,42 +108,77 @@ LINK_TOOL = link
 LINKFLAGS = $(DLFLAGS) /nologo /machine:X64
 
 AS = nasm
-AFLAGS = $(DAFLAGS) -fwin64 -Xvc -DWIN_ABI -Iinclude/ -I./ -Iavx/ -Iavx2/ -Iavx512/ -Isse/
+AFLAGS = $(DAFLAGS) $(GCM_AFLAGS) -fwin64 -Xvc -DWIN_ABI -Iinclude/ \
+       -I./ -Iavx/ -Iavx2/ -Iavx512/ -Isse/
+
+# warning messages
+
+SAFE_PARAM_MSG1=SAFE_PARAM option not set.
+SAFE_PARAM_MSG2=Input parameters will not be checked.
+SAFE_DATA_MSG1=SAFE_DATA option not set.
+SAFE_DATA_MSG2=Stack and registers containing sensitive information, \
+		such keys or IV will not be cleared \
+		at the end of function calls.
+SAFE_LOOKUP_MSG1=SAFE_LOOKUP option not set.
+SAFE_LOOKUP_MSG2=Lookups which depend on sensitive information \
+		are not guaranteed to be done in constant time.
 
 lib_objs1 = \
 	$(OBJ_DIR)\aes128_cbc_dec_by4_sse.obj \
+        $(OBJ_DIR)\aes128_cbc_dec_by4_sse_no_aesni.obj \
 	$(OBJ_DIR)\aes128_cbc_dec_by8_avx.obj \
+	$(OBJ_DIR)\aes_ecb_by4_sse.obj \
+	$(OBJ_DIR)\aes_ecb_by4_sse_no_aesni.obj \
+	$(OBJ_DIR)\aes_ecb_by4_avx.obj \
+	$(OBJ_DIR)\pon_sse.obj \
+	$(OBJ_DIR)\pon_sse_no_aesni.obj \
 	$(OBJ_DIR)\aes128_cntr_by4_sse.obj \
+        $(OBJ_DIR)\aes128_cntr_by4_sse_no_aesni.obj \
+	$(OBJ_DIR)\pon_avx.obj \
 	$(OBJ_DIR)\aes128_cntr_by8_avx.obj \
+	$(OBJ_DIR)\aes128_cntr_ccm_by4_sse.obj \
+	$(OBJ_DIR)\aes128_cntr_ccm_by4_sse_no_aesni.obj \
+	$(OBJ_DIR)\aes128_cntr_ccm_by8_avx.obj \
 	$(OBJ_DIR)\aes128_ecbenc_x3.obj \
 	$(OBJ_DIR)\aes192_cbc_dec_by4_sse.obj \
+        $(OBJ_DIR)\aes192_cbc_dec_by4_sse_no_aesni.obj \
 	$(OBJ_DIR)\aes192_cbc_dec_by8_avx.obj \
 	$(OBJ_DIR)\aes192_cntr_by4_sse.obj \
+        $(OBJ_DIR)\aes192_cntr_by4_sse_no_aesni.obj \
 	$(OBJ_DIR)\aes192_cntr_by8_avx.obj \
 	$(OBJ_DIR)\aes256_cbc_dec_by4_sse.obj \
+        $(OBJ_DIR)\aes256_cbc_dec_by4_sse_no_aesni.obj \
 	$(OBJ_DIR)\aes256_cbc_dec_by8_avx.obj \
 	$(OBJ_DIR)\aes256_cntr_by4_sse.obj \
+        $(OBJ_DIR)\aes256_cntr_by4_sse_no_aesni.obj \
 	$(OBJ_DIR)\aes256_cntr_by8_avx.obj \
 	$(OBJ_DIR)\aes_cfb_128_sse.obj \
+        $(OBJ_DIR)\aes_cfb_128_sse_no_aesni.obj \
 	$(OBJ_DIR)\aes_cfb_128_avx.obj \
 	$(OBJ_DIR)\aes128_cbc_mac_x4.obj \
+        $(OBJ_DIR)\aes128_cbc_mac_x4_no_aesni.obj \
 	$(OBJ_DIR)\aes128_cbc_mac_x8.obj \
 	$(OBJ_DIR)\aes_cbc_enc_128_x4.obj \
+        $(OBJ_DIR)\aes_cbc_enc_128_x4_no_aesni.obj \
 	$(OBJ_DIR)\aes_cbc_enc_128_x8.obj \
 	$(OBJ_DIR)\aes_cbc_enc_192_x4.obj \
+        $(OBJ_DIR)\aes_cbc_enc_192_x4_no_aesni.obj \
 	$(OBJ_DIR)\aes_cbc_enc_192_x8.obj \
 	$(OBJ_DIR)\aes_cbc_enc_256_x4.obj \
+        $(OBJ_DIR)\aes_cbc_enc_256_x4_no_aesni.obj \
 	$(OBJ_DIR)\aes_cbc_enc_256_x8.obj \
 	$(OBJ_DIR)\aes_keyexp_128.obj \
 	$(OBJ_DIR)\aes_keyexp_192.obj \
 	$(OBJ_DIR)\aes_keyexp_256.obj \
 	$(OBJ_DIR)\aes_cmac_subkey_gen.obj \
 	$(OBJ_DIR)\aes_xcbc_mac_128_x4.obj \
+        $(OBJ_DIR)\aes_xcbc_mac_128_x4_no_aesni.obj \
 	$(OBJ_DIR)\aes_xcbc_mac_128_x8.obj \
 	$(OBJ_DIR)\md5_x4x2_avx.obj \
 	$(OBJ_DIR)\md5_x4x2_sse.obj \
 	$(OBJ_DIR)\md5_x8x2_avx2.obj \
 	$(OBJ_DIR)\save_xmms.obj \
+	$(OBJ_DIR)\clear_regs_mem_fns.obj \
 	$(OBJ_DIR)\sha1_mult_avx.obj \
 	$(OBJ_DIR)\sha1_mult_sse.obj \
 	$(OBJ_DIR)\sha1_ni_x2_sse.obj \
@@ -133,29 +203,71 @@ lib_objs1 = \
 	$(OBJ_DIR)\sha512_x8_avx512.obj \
 	$(OBJ_DIR)\sha_256_mult_avx.obj \
 	$(OBJ_DIR)\sha_256_mult_sse.obj \
+	$(OBJ_DIR)\kasumi_avx.obj \
+	$(OBJ_DIR)\kasumi_iv.obj \
+	$(OBJ_DIR)\kasumi_sse.obj \
+	$(OBJ_DIR)\zuc_common.obj \
+	$(OBJ_DIR)\zuc_sse_top.obj \
+	$(OBJ_DIR)\zuc_avx_top.obj \
+	$(OBJ_DIR)\zuc_sse.obj \
+	$(OBJ_DIR)\zuc_avx.obj \
+	$(OBJ_DIR)\zuc_iv.obj \
+	$(OBJ_DIR)\snow3g_sse.obj \
+	$(OBJ_DIR)\snow3g_sse_no_aesni.obj \
+	$(OBJ_DIR)\snow3g_avx.obj \
+	$(OBJ_DIR)\snow3g_avx2.obj \
+	$(OBJ_DIR)\snow3g_tables.obj \
+        $(OBJ_DIR)\snow3g_iv.obj \
 	$(OBJ_DIR)\aes_xcbc_expand_key.obj \
 	$(OBJ_DIR)\md5_one_block.obj \
+	$(OBJ_DIR)\sha_one_block.obj \
 	$(OBJ_DIR)\des_key.obj \
 	$(OBJ_DIR)\des_basic.obj \
-	$(OBJ_DIR)\des_x16_avx512.obj
+	$(OBJ_DIR)\des_x16_avx512.obj \
+	$(OBJ_DIR)\cntr_vaes_avx512.obj \
+        $(OBJ_DIR)\aes_cbc_dec_vaes_avx512.obj \
+        $(OBJ_DIR)\aes_cbc_enc_vaes_avx512.obj \
+        $(OBJ_DIR)\mb_mgr_aes_submit_avx512.obj \
+        $(OBJ_DIR)\mb_mgr_aes_flush_avx512.obj \
+        $(OBJ_DIR)\mb_mgr_aes192_submit_avx512.obj \
+        $(OBJ_DIR)\mb_mgr_aes192_flush_avx512.obj \
+        $(OBJ_DIR)\mb_mgr_aes256_submit_avx512.obj \
+        $(OBJ_DIR)\mb_mgr_aes256_flush_avx512.obj \
+        $(OBJ_DIR)\const.obj \
+	$(OBJ_DIR)\wireless_common.obj \
+	$(OBJ_DIR)\constant_lookup.obj
 
 lib_objs2 = \
 	$(OBJ_DIR)\mb_mgr_aes192_flush_avx.obj \
 	$(OBJ_DIR)\mb_mgr_aes192_flush_sse.obj \
+        $(OBJ_DIR)\mb_mgr_aes192_flush_sse_no_aesni.obj \
 	$(OBJ_DIR)\mb_mgr_aes192_submit_avx.obj \
 	$(OBJ_DIR)\mb_mgr_aes192_submit_sse.obj \
+        $(OBJ_DIR)\mb_mgr_aes192_submit_sse_no_aesni.obj \
 	$(OBJ_DIR)\mb_mgr_aes256_flush_avx.obj \
 	$(OBJ_DIR)\mb_mgr_aes256_flush_sse.obj \
+        $(OBJ_DIR)\mb_mgr_aes256_flush_sse_no_aesni.obj \
 	$(OBJ_DIR)\mb_mgr_aes256_submit_avx.obj \
 	$(OBJ_DIR)\mb_mgr_aes256_submit_sse.obj \
+        $(OBJ_DIR)\mb_mgr_aes256_submit_sse_no_aesni.obj \
 	$(OBJ_DIR)\mb_mgr_aes_flush_avx.obj \
 	$(OBJ_DIR)\mb_mgr_aes_flush_sse.obj \
+        $(OBJ_DIR)\mb_mgr_aes_flush_sse_no_aesni.obj \
 	$(OBJ_DIR)\mb_mgr_aes_submit_avx.obj \
 	$(OBJ_DIR)\mb_mgr_aes_submit_sse.obj \
+        $(OBJ_DIR)\mb_mgr_aes_submit_sse_no_aesni.obj \
+	$(OBJ_DIR)\mb_mgr_aes_cmac_submit_flush_sse.obj \
+        $(OBJ_DIR)\mb_mgr_aes_cmac_submit_flush_sse_no_aesni.obj \
+        $(OBJ_DIR)\mb_mgr_aes_cmac_submit_flush_avx.obj \
+	$(OBJ_DIR)\mb_mgr_aes_ccm_auth_submit_flush_sse.obj \
+	$(OBJ_DIR)\mb_mgr_aes_ccm_auth_submit_flush_sse_no_aesni.obj \
+	$(OBJ_DIR)\mb_mgr_aes_ccm_auth_submit_flush_avx.obj \
 	$(OBJ_DIR)\mb_mgr_aes_xcbc_flush_avx.obj \
 	$(OBJ_DIR)\mb_mgr_aes_xcbc_flush_sse.obj \
+        $(OBJ_DIR)\mb_mgr_aes_xcbc_flush_sse_no_aesni.obj \
 	$(OBJ_DIR)\mb_mgr_aes_xcbc_submit_avx.obj \
 	$(OBJ_DIR)\mb_mgr_aes_xcbc_submit_sse.obj \
+        $(OBJ_DIR)\mb_mgr_aes_xcbc_submit_sse_no_aesni.obj \
 	$(OBJ_DIR)\mb_mgr_hmac_flush_avx.obj \
 	$(OBJ_DIR)\mb_mgr_hmac_flush_avx2.obj \
 	$(OBJ_DIR)\mb_mgr_hmac_flush_sse.obj \
@@ -213,18 +325,32 @@ lib_objs2 = \
 	$(OBJ_DIR)\mb_mgr_avx512.obj \
 	$(OBJ_DIR)\mb_mgr_des_avx512.obj \
 	$(OBJ_DIR)\mb_mgr_sse.obj \
-	$(OBJ_DIR)\alloc.obj
+	$(OBJ_DIR)\mb_mgr_sse_no_aesni.obj \
+	$(OBJ_DIR)\alloc.obj \
+	$(OBJ_DIR)\version.obj \
+	$(OBJ_DIR)\cpu_feature.obj \
+        $(OBJ_DIR)\aesni_emu.obj
 
 gcm_objs = \
+	$(OBJ_DIR)\gcm.obj \
         $(OBJ_DIR)\gcm128_sse.obj \
 	$(OBJ_DIR)\gcm128_avx_gen2.obj \
 	$(OBJ_DIR)\gcm128_avx_gen4.obj \
+	$(OBJ_DIR)\gcm128_avx512.obj \
+	$(OBJ_DIR)\gcm128_vaes_avx512.obj \
         $(OBJ_DIR)\gcm192_sse.obj \
 	$(OBJ_DIR)\gcm192_avx_gen2.obj \
 	$(OBJ_DIR)\gcm192_avx_gen4.obj \
+	$(OBJ_DIR)\gcm192_avx512.obj \
+	$(OBJ_DIR)\gcm192_vaes_avx512.obj \
         $(OBJ_DIR)\gcm256_sse.obj \
 	$(OBJ_DIR)\gcm256_avx_gen2.obj \
-	$(OBJ_DIR)\gcm256_avx_gen4.obj
+	$(OBJ_DIR)\gcm256_avx_gen4.obj \
+	$(OBJ_DIR)\gcm256_avx512.obj \
+	$(OBJ_DIR)\gcm256_vaes_avx512.obj \
+        $(OBJ_DIR)\gcm128_sse_no_aesni.obj \
+	$(OBJ_DIR)\gcm192_sse_no_aesni.obj \
+	$(OBJ_DIR)\gcm256_sse_no_aesni.obj
 
 !ifdef NO_GCM
 all_objs = $(lib_objs1) $(lib_objs2)
@@ -240,6 +366,16 @@ $(LIBNAME): $(all_objs)
 	$(LINK_TOOL) $(LINKFLAGS) /DLL /DEF:libIPSec_MB.def /OUT:$@  $(all_objs)
 !else
 	$(LIB_TOOL) $(LIBFLAGS) /out:$@ $(all_objs)
+!endif
+!if "$(SAFE_PARAM)" != "y"
+	@echo NOTE:  $(SAFE_PARAM_MSG1) $(SAFE_PARAM_MSG2)
+!endif
+!if "$(SAFE_DATA)" != "y"
+	@echo NOTE:  $(SAFE_DATA_MSG1) $(SAFE_DATA_MSG2)
+!endif
+
+!if "$(SAFE_LOOKUP)" == "n"
+	@echo NOTE:  $(SAFE_LOOKUP_MSG1) $(SAFE_LOOKUP_MSG2)
 !endif
 
 $(all_objs): $(OBJ_DIR)
@@ -257,21 +393,27 @@ $(all_objs): $(OBJ_DIR)
 	$(AS) -o $@ $(AFLAGS) $<
 
 {avx\}.c{$(OBJ_DIR)}.obj:
-	$(CC) /Fo$@ /c $(CFLAGS) $<
+	$(CC) /arch:AVX /Fo$@ /c $(CFLAGS) $<
 
 {avx\}.asm{$(OBJ_DIR)}.obj:
 	$(AS) -o $@ $(AFLAGS) $<
 
 {avx2\}.c{$(OBJ_DIR)}.obj:
-	$(CC) /Fo$@ /c $(CFLAGS) $<
+	$(CC) /arch:AVX /Fo$@ /c $(CFLAGS) $<
 
 {avx2\}.asm{$(OBJ_DIR)}.obj:
 	$(AS) -o $@ $(AFLAGS) $<
 
 {avx512\}.c{$(OBJ_DIR)}.obj:
-	$(CC) /Fo$@ /c $(CFLAGS) $<
+	$(CC) /arch:AVX /Fo$@ /c $(CFLAGS) $<
 
 {avx512\}.asm{$(OBJ_DIR)}.obj:
+	$(AS) -o $@ $(AFLAGS) $<
+
+{no-aesni\}.c{$(OBJ_DIR)}.obj:
+	$(CC) /Fo$@ /c $(CFLAGS_NO_SIMD) $<
+
+{no-aesni\}.asm{$(OBJ_DIR)}.obj:
 	$(AS) -o $@ $(AFLAGS) $<
 
 {include\}.asm{$(OBJ_DIR)}.obj:
@@ -279,6 +421,40 @@ $(all_objs): $(OBJ_DIR)
 
 $(OBJ_DIR):
 	mkdir $(OBJ_DIR)
+
+help:
+	@echo "Available build options:"
+	@echo "DEBUG=n (default)"
+	@echo "          - this option will produce library not fit for debugging"
+	@echo "SHARED=y (default)"
+	@echo "          - this option will produce shared library"
+	@echo "DEBUG=y   - this option will produce library fit for debugging"
+	@echo "SHARED=n  - this option will produce static library"
+	@echo "SAFE_DATA=n (default)"
+	@echo "          - Sensitive data not cleared from registers and memory"
+	@echo "            at operation end"
+	@echo "SAFE_DATA=y"
+	@echo "          - Sensitive data cleared from registers and memory"
+	@echo "            at operation end"
+	@echo "SAFE_PARAM=n (default)"
+	@echo "          - API input parameters not checked"
+	@echo "SAFE_PARAM=y"
+	@echo "          - API input parameters checked"
+	@echo "SAFE_LOOKUP=n"
+	@echo "          - Lookups depending on sensitive data might not be constant time"
+	@echo "SAFE_LOOKUP=y (default)"
+	@echo "          - Lookups depending on sensitive data are constant time"
+	@echo "GCM_BIG_DATA=n (default)"
+	@echo "  - Smaller AVX512VAES GCM key structure with"
+        @echo "    good performance level for buffers sizes below 2K."
+	@echo "  - 8 ghash keys used on SSE, AVX, AVX2 and AVX512."
+	@echo "  - 48 ghash keys used on AVX512VAES and AVX512VPCLMULQDQ."
+	@echo "GCM_BIG_DATA=y"
+	@echo "  - Better performing AVX512VAES GCM on big buffers that"
+        @echo "    uses more ghash keys, 128 instead of 48."
+	@echo "  - This option results in a much bigger gcm_key structure, more than 2K."
+	@echo "  - Performance improvement takes effect only on platforms with"
+        @echo "    AVX512VAES and AVX512VPCLMULQDQ."
 
 clean:
 	-del /q $(lib_objs1)

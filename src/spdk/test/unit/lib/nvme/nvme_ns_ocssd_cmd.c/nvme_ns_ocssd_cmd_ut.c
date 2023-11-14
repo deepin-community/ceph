@@ -39,13 +39,7 @@
 
 #include "common/lib/test_env.c"
 
-#ifndef PAGE_SIZE
-#define PAGE_SIZE 4096
-#endif
-
-DEFINE_STUB(spdk_nvme_qpair_process_completions, int32_t,
-	    (struct spdk_nvme_qpair *qpair,
-	     uint32_t max_completions), 0);
+#define OCSSD_SECTOR_SIZE 0x1000
 
 static struct nvme_driver _g_nvme_driver = {
 	.lock = PTHREAD_MUTEX_INITIALIZER,
@@ -72,7 +66,6 @@ nvme_ctrlr_proc_get_ref(struct spdk_nvme_ctrlr *ctrlr)
 	return;
 }
 
-
 int
 nvme_ctrlr_process_init(struct spdk_nvme_ctrlr *ctrlr)
 {
@@ -92,7 +85,7 @@ spdk_nvme_ctrlr_get_default_ctrlr_opts(struct spdk_nvme_ctrlr_opts *opts, size_t
 }
 
 bool
-spdk_nvme_transport_available(enum spdk_nvme_transport_type trtype)
+spdk_nvme_transport_available_by_name(const char *transport_name)
 {
 	return true;
 }
@@ -111,10 +104,7 @@ nvme_ctrlr_get_ref_count(struct spdk_nvme_ctrlr *ctrlr)
 }
 
 int
-nvme_transport_ctrlr_scan(const struct spdk_nvme_transport_id *trid,
-			  void *cb_ctx,
-			  spdk_nvme_probe_cb probe_cb,
-			  spdk_nvme_remove_cb remove_cb,
+nvme_transport_ctrlr_scan(struct spdk_nvme_probe_ctx *probe_ctx,
 			  bool direct_connect)
 {
 	return 0;
@@ -141,8 +131,8 @@ prepare_for_test(struct spdk_nvme_ns *ns, struct spdk_nvme_ctrlr *ctrlr,
 	 *  so that we test the SGL splitting path.
 	 */
 	ctrlr->flags = 0;
-	ctrlr->min_page_size = PAGE_SIZE;
-	ctrlr->page_size = PAGE_SIZE;
+	ctrlr->min_page_size = 4096;
+	ctrlr->page_size = 4096;
 	memset(&ctrlr->opts, 0, sizeof(ctrlr->opts));
 	memset(ns, 0, sizeof(*ns));
 	ns->ctrlr = ctrlr;
@@ -164,6 +154,7 @@ prepare_for_test(struct spdk_nvme_ns *ns, struct spdk_nvme_ctrlr *ctrlr,
 	for (i = 0; i < num_requests; i++) {
 		struct nvme_request *req = qpair->req_buf + i * sizeof(struct nvme_request);
 
+		req->qpair = qpair;
 		STAILQ_INSERT_HEAD(&qpair->free_req, req, stailq);
 	}
 
@@ -180,7 +171,7 @@ static void
 test_nvme_ocssd_ns_cmd_vector_reset_single_entry(void)
 {
 	const uint32_t	max_xfer_size = 0x10000;
-	const uint32_t	sector_size = 0x1000;
+	const uint32_t	sector_size = OCSSD_SECTOR_SIZE;
 
 	struct spdk_nvme_ns	ns;
 	struct spdk_nvme_ctrlr	ctrlr;
@@ -210,7 +201,7 @@ static void
 test_nvme_ocssd_ns_cmd_vector_reset(void)
 {
 	const uint32_t	max_xfer_size = 0x10000;
-	const uint32_t	sector_size = 0x1000;
+	const uint32_t	sector_size = OCSSD_SECTOR_SIZE;
 	const uint32_t	vector_size = 0x10;
 
 	struct spdk_nvme_ns	ns;
@@ -240,7 +231,7 @@ static void
 test_nvme_ocssd_ns_cmd_vector_read_with_md_single_entry(void)
 {
 	const uint32_t	max_xfer_size = 0x10000;
-	const uint32_t	sector_size = 0x1000;
+	const uint32_t	sector_size = OCSSD_SECTOR_SIZE;
 	const uint32_t	md_size = 0x80;
 
 	struct spdk_nvme_ns	ns;
@@ -265,7 +256,7 @@ test_nvme_ocssd_ns_cmd_vector_read_with_md_single_entry(void)
 	SPDK_CU_ASSERT_FATAL(g_request->num_children == 0);
 
 	CU_ASSERT(g_request->payload.md == metadata);
-	CU_ASSERT(g_request->payload_size == PAGE_SIZE);
+	CU_ASSERT(g_request->payload_size == OCSSD_SECTOR_SIZE);
 	CU_ASSERT(g_request->payload.contig_or_cb_arg == buffer);
 	CU_ASSERT(g_request->cmd.opc == SPDK_OCSSD_OPC_VECTOR_READ);
 	CU_ASSERT(g_request->cmd.nsid == ns.id);
@@ -283,7 +274,7 @@ static void
 test_nvme_ocssd_ns_cmd_vector_read_with_md(void)
 {
 	const uint32_t	max_xfer_size = 0x10000;
-	const uint32_t	sector_size = 0x1000;
+	const uint32_t	sector_size = OCSSD_SECTOR_SIZE;
 	const uint32_t	md_size = 0x80;
 	const uint32_t	vector_size = 0x10;
 
@@ -327,7 +318,7 @@ static void
 test_nvme_ocssd_ns_cmd_vector_read_single_entry(void)
 {
 	const uint32_t	max_xfer_size = 0x10000;
-	const uint32_t	sector_size = 0x1000;
+	const uint32_t	sector_size = OCSSD_SECTOR_SIZE;
 
 	struct spdk_nvme_ns	ns;
 	struct spdk_nvme_ctrlr	ctrlr;
@@ -348,7 +339,7 @@ test_nvme_ocssd_ns_cmd_vector_read_single_entry(void)
 	SPDK_CU_ASSERT_FATAL(g_request != NULL);
 	SPDK_CU_ASSERT_FATAL(g_request->num_children == 0);
 
-	CU_ASSERT(g_request->payload_size == PAGE_SIZE);
+	CU_ASSERT(g_request->payload_size == OCSSD_SECTOR_SIZE);
 	CU_ASSERT(g_request->payload.contig_or_cb_arg == buffer);
 	CU_ASSERT(g_request->cmd.opc == SPDK_OCSSD_OPC_VECTOR_READ);
 	CU_ASSERT(g_request->cmd.nsid == ns.id);
@@ -364,7 +355,7 @@ static void
 test_nvme_ocssd_ns_cmd_vector_read(void)
 {
 	const uint32_t	max_xfer_size = 0x10000;
-	const uint32_t	sector_size = 0x1000;
+	const uint32_t	sector_size = OCSSD_SECTOR_SIZE;
 	const uint32_t	vector_size = 0x10;
 
 	struct spdk_nvme_ns	ns;
@@ -401,7 +392,7 @@ static void
 test_nvme_ocssd_ns_cmd_vector_write_with_md_single_entry(void)
 {
 	const uint32_t	max_xfer_size = 0x10000;
-	const uint32_t	sector_size = 0x1000;
+	const uint32_t	sector_size = OCSSD_SECTOR_SIZE;
 	const uint32_t	md_size = 0x80;
 
 	struct spdk_nvme_ns	ns;
@@ -426,7 +417,7 @@ test_nvme_ocssd_ns_cmd_vector_write_with_md_single_entry(void)
 	SPDK_CU_ASSERT_FATAL(g_request->num_children == 0);
 
 	CU_ASSERT(g_request->payload.md == metadata);
-	CU_ASSERT(g_request->payload_size == PAGE_SIZE);
+	CU_ASSERT(g_request->payload_size == OCSSD_SECTOR_SIZE);
 	CU_ASSERT(g_request->payload.contig_or_cb_arg == buffer);
 	CU_ASSERT(g_request->cmd.opc == SPDK_OCSSD_OPC_VECTOR_WRITE);
 	CU_ASSERT(g_request->cmd.nsid == ns.id);
@@ -445,7 +436,7 @@ static void
 test_nvme_ocssd_ns_cmd_vector_write_with_md(void)
 {
 	const uint32_t	max_xfer_size = 0x10000;
-	const uint32_t	sector_size = 0x1000;
+	const uint32_t	sector_size = OCSSD_SECTOR_SIZE;
 	const uint32_t	md_size = 0x80;
 	const uint32_t	vector_size = 0x10;
 
@@ -489,7 +480,7 @@ static void
 test_nvme_ocssd_ns_cmd_vector_write_single_entry(void)
 {
 	const uint32_t	max_xfer_size = 0x10000;
-	const uint32_t	sector_size = 0x1000;
+	const uint32_t	sector_size = OCSSD_SECTOR_SIZE;
 
 	struct spdk_nvme_ns	ns;
 	struct spdk_nvme_ctrlr	ctrlr;
@@ -510,7 +501,7 @@ test_nvme_ocssd_ns_cmd_vector_write_single_entry(void)
 	SPDK_CU_ASSERT_FATAL(g_request != NULL);
 	SPDK_CU_ASSERT_FATAL(g_request->num_children == 0);
 
-	CU_ASSERT(g_request->payload_size == PAGE_SIZE);
+	CU_ASSERT(g_request->payload_size == OCSSD_SECTOR_SIZE);
 	CU_ASSERT(g_request->payload.contig_or_cb_arg == buffer);
 	CU_ASSERT(g_request->cmd.opc == SPDK_OCSSD_OPC_VECTOR_WRITE);
 	CU_ASSERT(g_request->cmd.nsid == ns.id);
@@ -527,7 +518,7 @@ static void
 test_nvme_ocssd_ns_cmd_vector_write(void)
 {
 	const uint32_t	max_xfer_size = 0x10000;
-	const uint32_t	sector_size = 0x1000;
+	const uint32_t	sector_size = OCSSD_SECTOR_SIZE;
 	const uint32_t	vector_size = 0x10;
 
 	struct spdk_nvme_ns	ns;
@@ -566,7 +557,7 @@ static void
 test_nvme_ocssd_ns_cmd_vector_copy_single_entry(void)
 {
 	const uint32_t	max_xfer_size = 0x10000;
-	const uint32_t	sector_size = 0x1000;
+	const uint32_t	sector_size = OCSSD_SECTOR_SIZE;
 
 	struct spdk_nvme_ns	ns;
 	struct spdk_nvme_ctrlr	ctrlr;
@@ -598,7 +589,7 @@ static void
 test_nvme_ocssd_ns_cmd_vector_copy(void)
 {
 	const uint32_t	max_xfer_size = 0x10000;
-	const uint32_t	sector_size = 0x1000;
+	const uint32_t	sector_size = OCSSD_SECTOR_SIZE;
 	const uint32_t	vector_size = 0x10;
 
 	struct spdk_nvme_ns	ns;
@@ -631,41 +622,23 @@ int main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	if (CU_initialize_registry() != CUE_SUCCESS) {
-		return CU_get_error();
-	}
+	CU_set_error_action(CUEA_ABORT);
+	CU_initialize_registry();
 
 	suite = CU_add_suite("nvme_ns_cmd", NULL, NULL);
-	if (suite == NULL) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
 
-	if (
-		CU_add_test(suite, "nvme_ns_ocssd_cmd_vector_reset", test_nvme_ocssd_ns_cmd_vector_reset) == NULL
-		|| CU_add_test(suite, "nvme_ocssd_ns_cmd_vector_reset_single_entry",
-			       test_nvme_ocssd_ns_cmd_vector_reset_single_entry) == NULL
-		|| CU_add_test(suite, "nvme_ocssd_ns_cmd_vector_read_with_md",
-			       test_nvme_ocssd_ns_cmd_vector_read_with_md) == NULL
-		|| CU_add_test(suite, "nvme_ocssd_ns_cmd_vector_read_with_md_single_entry",
-			       test_nvme_ocssd_ns_cmd_vector_read_with_md_single_entry) == NULL
-		|| CU_add_test(suite, "nvme_ocssd_ns_cmd_vector_read", test_nvme_ocssd_ns_cmd_vector_read) == NULL
-		|| CU_add_test(suite, "nvme_ocssd_ns_cmd_vector_read_single_entry",
-			       test_nvme_ocssd_ns_cmd_vector_read_single_entry) == NULL
-		|| CU_add_test(suite, "nvme_ocssd_ns_cmd_vector_write_with_md",
-			       test_nvme_ocssd_ns_cmd_vector_write_with_md) == NULL
-		|| CU_add_test(suite, "nvme_ocssd_ns_cmd_vector_write_with_md_single_entry",
-			       test_nvme_ocssd_ns_cmd_vector_write_with_md_single_entry) == NULL
-		|| CU_add_test(suite, "nvme_ocssd_ns_cmd_vector_write", test_nvme_ocssd_ns_cmd_vector_write) == NULL
-		|| CU_add_test(suite, "nvme_ocssd_ns_cmd_vector_write_single_entry",
-			       test_nvme_ocssd_ns_cmd_vector_write_single_entry) == NULL
-		|| CU_add_test(suite, "nvme_ocssd_ns_cmd_vector_copy", test_nvme_ocssd_ns_cmd_vector_copy) == NULL
-		|| CU_add_test(suite, "nvme_ocssd_ns_cmd_vector_copy_single_entry",
-			       test_nvme_ocssd_ns_cmd_vector_copy_single_entry) == NULL
-	) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
+	CU_ADD_TEST(suite, test_nvme_ocssd_ns_cmd_vector_reset);
+	CU_ADD_TEST(suite, test_nvme_ocssd_ns_cmd_vector_reset_single_entry);
+	CU_ADD_TEST(suite, test_nvme_ocssd_ns_cmd_vector_read_with_md);
+	CU_ADD_TEST(suite, test_nvme_ocssd_ns_cmd_vector_read_with_md_single_entry);
+	CU_ADD_TEST(suite, test_nvme_ocssd_ns_cmd_vector_read);
+	CU_ADD_TEST(suite, test_nvme_ocssd_ns_cmd_vector_read_single_entry);
+	CU_ADD_TEST(suite, test_nvme_ocssd_ns_cmd_vector_write_with_md);
+	CU_ADD_TEST(suite, test_nvme_ocssd_ns_cmd_vector_write_with_md_single_entry);
+	CU_ADD_TEST(suite, test_nvme_ocssd_ns_cmd_vector_write);
+	CU_ADD_TEST(suite, test_nvme_ocssd_ns_cmd_vector_write_single_entry);
+	CU_ADD_TEST(suite, test_nvme_ocssd_ns_cmd_vector_copy);
+	CU_ADD_TEST(suite, test_nvme_ocssd_ns_cmd_vector_copy_single_entry);
 
 	g_spdk_nvme_driver = &_g_nvme_driver;
 

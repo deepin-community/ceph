@@ -1,0 +1,16 @@
+Description: include cstdint in subsys_types.h
+Author: Thomas Goirand <zigo@debian.org>
+Bug-Debian: https://bugs.debian.org/1037602
+Forwarded: no
+Last-Update: 2023-07-21
+
+--- ceph-16.2.11+ds.orig/src/common/subsys_types.h
++++ ceph-16.2.11+ds/src/common/subsys_types.h
+@@ -53,6 +53,7 @@ ceph_subsys_get_as_array() {
+ #undef DEFAULT_SUBSYS
+ }
+ 
++#include <cstdint>
+ constexpr static std::uint8_t
+ ceph_subsys_get_max_default_level(const std::size_t subidx) {
+   const auto item = ceph_subsys_get_as_array()[subidx];

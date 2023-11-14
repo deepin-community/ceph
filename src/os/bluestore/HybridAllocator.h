@@ -16,6 +16,10 @@ public:
 	          const std::string& name) :
       AvlAllocator(cct, device_size, _block_size, max_mem, name) {
   }
+  const char* get_type() const override
+  {
+    return "hybrid";
+  }
   int64_t allocate(
     uint64_t want,
     uint64_t unit,
@@ -27,7 +31,8 @@ public:
   double get_fragmentation() override;
 
   void dump() override;
-  void dump(std::function<void(uint64_t offset, uint64_t length)> notify) override;
+  void foreach(
+    std::function<void(uint64_t offset, uint64_t length)> notify) override;
   void init_rm_free(uint64_t offset, uint64_t length) override;
   void shutdown() override;
 

@@ -18,9 +18,9 @@ when ``ceph-volume`` activates it) with all the common OSD files that hold
 information about the OSD, like: its identifier, which cluster it belongs to,
 and its private keyring.
 
-It is also possible to deploy BlueStore across two additional devices:
+It is also possible to deploy BlueStore across one or two additional devices:
 
-* A *WAL device* (identified as ``block.wal`` in the data directory) can be
+* A *write-ahead log (WAL) device* (identified as ``block.wal`` in the data directory) can be
   used for BlueStore's internal journal or write-ahead log. It is only useful
   to use a WAL device if the device is faster than the primary device (e.g.,
   when it is on an SSD and the primary device is an HDD).
@@ -38,179 +38,155 @@ more, provisioning a DB device makes more sense.  The BlueStore
 journal will always be placed on the fastest device available, so
 using a DB device will provide the same benefit that the WAL device
 would while *also* allowing additional metadata to be stored there (if
-it will fit).
+it will fit).  This means that if a DB device is specified but an explicit
+WAL device is not, the WAL will be implicitly colocated with the DB on the faster
+device.
 
-A single-device BlueStore OSD can be provisioned with::
+A single-device (colocated) BlueStore OSD can be provisioned with:
 
-  ceph-volume lvm prepare --bluestore --data <device>
+.. prompt:: bash $
 
-To specify a WAL device and/or DB device, ::
+   ceph-volume lvm prepare --bluestore --data <device>
 
-  ceph-volume lvm prepare --bluestore --data <device> --block.wal <wal-device> --block.db <db-device>
+To specify a WAL device and/or DB device:
+   
+.. prompt:: bash $
 
-.. note:: --data can be a Logical Volume using the vg/lv notation. Other
-          devices can be existing logical volumes or GPT partitions
+   ceph-volume lvm prepare --bluestore --data <device> --block.wal <wal-device> --block.db <db-device>
+
+.. note:: ``--data`` can be a Logical Volume using  *vg/lv* notation. Other
+          devices can be existing logical volumes or GPT partitions.
 
 Provisioning strategies
 -----------------------
-Although there are multiple ways to deploy a Bluestore OSD (unlike Filestore
-which had 1) here are two common use cases that should help clarify the
-initial deployment strategy:
+Although there are multiple ways to deploy a BlueStore OSD (unlike Filestore
+which had just one), there are two common arrangements that should help clarify
+the deployment strategy:
 
 .. _bluestore-single-type-device-config:
 
 **block (data) only**
 ^^^^^^^^^^^^^^^^^^^^^
-If all the devices are the same type, for example all are spinning drives, and
-there are no fast devices to combine these, it makes sense to just deploy with
-block only and not try to separate ``block.db`` or ``block.wal``. The
-:ref:`ceph-volume-lvm` call for a single ``/dev/sda`` device would look like::
+If all devices are the same type, for example all rotational drives, and
+there are no fast devices to use for metadata, it makes sense to specify the
+block device only and to not separate ``block.db`` or ``block.wal``. The
+:ref:`ceph-volume-lvm` command for a single ``/dev/sda`` device looks like:
 
-    ceph-volume lvm create --bluestore --data /dev/sda
+.. prompt:: bash $
 
-If logical volumes have already been created for each device (1 LV using 100%
-of the device), then the :ref:`ceph-volume-lvm` call for an lv named
-``ceph-vg/block-lv`` would look like::
+   ceph-volume lvm create --bluestore --data /dev/sda
 
-    ceph-volume lvm create --bluestore --data ceph-vg/block-lv
+If logical volumes have already been created for each device, (a single LV
+using 100% of the device), then the :ref:`ceph-volume-lvm` call for an LV named
+``ceph-vg/block-lv`` would look like:
+
+.. prompt:: bash $
+
+   ceph-volume lvm create --bluestore --data ceph-vg/block-lv
 
 .. _bluestore-mixed-device-config:
 
 **block and block.db**
 ^^^^^^^^^^^^^^^^^^^^^^
-If there is a mix of fast and slow devices (spinning and solid state),
+If you have a mix of fast and slow devices (SSD / NVMe and rotational),
 it is recommended to place ``block.db`` on the faster device while ``block``
-(data) lives on the slower (spinning drive). Sizing for ``block.db`` should be
-as large as possible to avoid performance penalties otherwise. The
-``ceph-volume`` tool is currently not able to create these automatically, so
-the volume groups and logical volumes need to be created manually.
+(data) lives on the slower (spinning drive).
 
-For the below example, lets assume 4 spinning drives (sda, sdb, sdc, and sdd)
-and 1 solid state drive (sdx). First create the volume groups::
+You must create these volume groups and logical volumes manually as 
+the ``ceph-volume`` tool is currently not able to do so automatically.
 
-    $ vgcreate ceph-block-0 /dev/sda
-    $ vgcreate ceph-block-1 /dev/sdb
-    $ vgcreate ceph-block-2 /dev/sdc
-    $ vgcreate ceph-block-3 /dev/sdd
+For the below example, let us assume four rotational (``sda``, ``sdb``, ``sdc``, and ``sdd``)
+and one (fast) solid state drive (``sdx``). First create the volume groups:
 
-Now create the logical volumes for ``block``::
+.. prompt:: bash $
 
-    $ lvcreate -l 100%FREE -n block-0 ceph-block-0
-    $ lvcreate -l 100%FREE -n block-1 ceph-block-1
-    $ lvcreate -l 100%FREE -n block-2 ceph-block-2
-    $ lvcreate -l 100%FREE -n block-3 ceph-block-3
+   vgcreate ceph-block-0 /dev/sda
+   vgcreate ceph-block-1 /dev/sdb
+   vgcreate ceph-block-2 /dev/sdc
+   vgcreate ceph-block-3 /dev/sdd
+
+Now create the logical volumes for ``block``:
+
+.. prompt:: bash $
+
+   lvcreate -l 100%FREE -n block-0 ceph-block-0
+   lvcreate -l 100%FREE -n block-1 ceph-block-1
+   lvcreate -l 100%FREE -n block-2 ceph-block-2
+   lvcreate -l 100%FREE -n block-3 ceph-block-3
 
 We are creating 4 OSDs for the four slow spinning devices, so assuming a 200GB
-SSD in ``/dev/sdx`` we will create 4 logical volumes, each of 50GB::
+SSD in ``/dev/sdx`` we will create 4 logical volumes, each of 50GB:
 
-    $ vgcreate ceph-db-0 /dev/sdx
-    $ lvcreate -L 50GB -n db-0 ceph-db-0
-    $ lvcreate -L 50GB -n db-1 ceph-db-0
-    $ lvcreate -L 50GB -n db-2 ceph-db-0
-    $ lvcreate -L 50GB -n db-3 ceph-db-0
+.. prompt:: bash $
 
-Finally, create the 4 OSDs with ``ceph-volume``::
+   vgcreate ceph-db-0 /dev/sdx
+   lvcreate -L 50GB -n db-0 ceph-db-0
+   lvcreate -L 50GB -n db-1 ceph-db-0
+   lvcreate -L 50GB -n db-2 ceph-db-0
+   lvcreate -L 50GB -n db-3 ceph-db-0
 
-    $ ceph-volume lvm create --bluestore --data ceph-block-0/block-0 --block.db ceph-db-0/db-0
-    $ ceph-volume lvm create --bluestore --data ceph-block-1/block-1 --block.db ceph-db-0/db-1
-    $ ceph-volume lvm create --bluestore --data ceph-block-2/block-2 --block.db ceph-db-0/db-2
-    $ ceph-volume lvm create --bluestore --data ceph-block-3/block-3 --block.db ceph-db-0/db-3
+Finally, create the 4 OSDs with ``ceph-volume``:
 
-These operations should end up creating 4 OSDs, with ``block`` on the slower
-spinning drives and a 50GB logical volume for each coming from the solid state
+.. prompt:: bash $
+
+   ceph-volume lvm create --bluestore --data ceph-block-0/block-0 --block.db ceph-db-0/db-0
+   ceph-volume lvm create --bluestore --data ceph-block-1/block-1 --block.db ceph-db-0/db-1
+   ceph-volume lvm create --bluestore --data ceph-block-2/block-2 --block.db ceph-db-0/db-2
+   ceph-volume lvm create --bluestore --data ceph-block-3/block-3 --block.db ceph-db-0/db-3
+
+These operations should end up creating four OSDs, with ``block`` on the slower
+rotational drives with a 50 GB logical volume (DB) for each on the solid state
 drive.
 
 Sizing
 ======
 When using a :ref:`mixed spinning and solid drive setup
-<bluestore-mixed-device-config>` it is important to make a large-enough
-``block.db`` logical volume for Bluestore. Generally, ``block.db`` should have
+<bluestore-mixed-device-config>` it is important to make a large enough
+``block.db`` logical volume for BlueStore. Generally, ``block.db`` should have
 *as large as possible* logical volumes.
 
-It is recommended that the ``block.db`` size isn't smaller than 4% of
-``block``. For example, if the ``block`` size is 1TB, then ``block.db``
-shouldn't be less than 40GB.
+The general recommendation is to have ``block.db`` size in between 1% to 4%
+of ``block`` size. For RGW workloads, it is recommended that the ``block.db``
+size isn't smaller than 4% of ``block``, because RGW heavily uses it to store
+metadata (omap keys). For example, if the ``block`` size is 1TB, then ``block.db`` shouldn't
+be less than 40GB. For RBD workloads, 1% to 2% of ``block`` size is usually enough.
 
-If *not* using a mix of fast and slow devices, it isn't required to create
-separate logical volumes for ``block.db`` (or ``block.wal``). Bluestore will
-automatically manage these within the space of ``block``.
+In older releases, internal level sizes mean that the DB can fully utilize only
+specific partition / LV sizes that correspond to sums of L0, L0+L1, L1+L2,
+etc. sizes, which with default settings means roughly 3 GB, 30 GB, 300 GB, and
+so forth.  Most deployments will not substantially benefit from sizing to
+accommodate L3 and higher, though DB compaction can be facilitated by doubling
+these figures to 6GB, 60GB, and 600GB.
+
+Improvements in releases beginning with Nautilus 14.2.12 and Octopus 15.2.6
+enable better utilization of arbitrary DB device sizes, and the Pacific
+release brings experimental dynamic level support.  Users of older releases may
+thus wish to plan ahead by provisioning larger DB devices today so that their
+benefits may be realized with future upgrades.
+
+When *not* using a mix of fast and slow devices, it isn't required to create
+separate logical volumes for ``block.db`` (or ``block.wal``). BlueStore will
+automatically colocate these within the space of ``block``.
 
 
 Automatic Cache Sizing
 ======================
 
-Bluestore can be configured to automatically resize it's caches when tc_malloc
+BlueStore can be configured to automatically resize its caches when TCMalloc
 is configured as the memory allocator and the ``bluestore_cache_autotune``
-setting is enabled.  This option is currently enabled by default.  Bluestore
+setting is enabled.  This option is currently enabled by default.  BlueStore
 will attempt to keep OSD heap memory usage under a designated target size via
 the ``osd_memory_target`` configuration option.  This is a best effort
 algorithm and caches will not shrink smaller than the amount specified by
 ``osd_memory_cache_min``.  Cache ratios will be chosen based on a hierarchy
-of priorities.  If priority information is not availabe, the
+of priorities.  If priority information is not available, the
 ``bluestore_cache_meta_ratio`` and ``bluestore_cache_kv_ratio`` options are
 used as fallbacks.
-
-``bluestore_cache_autotune``
-
-:Description: Automatically tune the ratios assigned to different bluestore caches while respecting minimum values.
-:Type: Boolean
-:Required: Yes
-:Default: ``True``
-
-``osd_memory_target``
-
-:Description: When tcmalloc is available and cache autotuning is enabled, try to keep this many bytes mapped in memory. Note: This may not exactly match the RSS memory usage of the process.  While the total amount of heap memory mapped by the process should generally stay close to this target, there is no guarantee that the kernel will actually reclaim  memory that has been unmapped.  During initial developement, it was found that some kernels result in the OSD's RSS Memory exceeding the mapped memory by up to 20%.  It is hypothesised however, that the kernel generally may be more aggressive about reclaiming unmapped memory when there is a high amount of memory pressure.  Your mileage may vary.
-:Type: Unsigned Integer
-:Required: Yes
-:Default: ``4294967296``
-
-``bluestore_cache_autotune_chunk_size``
-
-:Description: The chunk size in bytes to allocate to caches when cache autotune is enabled.  When the autotuner assigns memory to different caches, it will allocate memory in chunks.  This is done to avoid evictions when there are minor fluctuations in the heap size or autotuned cache ratios.
-:Type: Unsigned Integer
-:Required: No
-:Default: ``33554432``
-
-``bluestore_cache_autotune_interval``
-
-:Description: The number of seconds to wait between rebalances when cache autotune is enabled.  This setting changes how quickly the ratios of the difference caches are recomputed.  Note:  Setting the interval too small can result in high CPU usage and lower performance.
-:Type: Float
-:Required: No
-:Default: ``5``
-
-``osd_memory_base``
-
-:Description: When tcmalloc and cache autotuning is enabled, estimate the minimum amount of memory in bytes the OSD will need.  This is used to help the autotuner estimate the expected aggregate memory consumption of the caches.
-:Type: Unsigned Interger
-:Required: No
-:Default: ``805306368``
-
-``osd_memory_expected_fragmentation``
-
-:Description: When tcmalloc and cache autotuning is enabled, estimate the percent of memory fragmentation.  This is used to help the autotuner estimate the expected aggregate memory consumption of the caches.
-:Type: Float
-:Required: No
-:Default: ``0.15``
-
-``osd_memory_cache_min``
-
-:Description: When tcmalloc and cache autotuning is enabled, set the minimum amount of memory used for caches. Note: Setting this value too low can result in significant cache thrashing.
-:Type: Unsigned Integer
-:Required: No
-:Default: ``134217728``
-
-``osd_memory_cache_resize_interval``
-
-:Description: When tcmalloc and cache autotuning is enabled, wait this many seconds between resizing caches.  This setting changes the total amount of memory available for bluestore to use for caching.  Note: Setting the interval too small can result in memory allocator thrashing and lower performance.
-:Type: Float
-:Required: No
-:Default: ``1``
-
 
 Manual Cache Sizing
 ===================
 
-The amount of memory consumed by each OSD for BlueStore's cache is
+The amount of memory consumed by each OSD for BlueStore caches is
 determined by the ``bluestore_cache_size`` configuration option.  If
 that config option is not set (i.e., remains at 0), there is a
 different default value that is used depending on whether an HDD or
@@ -218,10 +194,10 @@ SSD is used for the primary device (set by the
 ``bluestore_cache_size_ssd`` and ``bluestore_cache_size_hdd`` config
 options).
 
-BlueStore and the rest of the Ceph OSD does the best it can currently
-to stick to the budgeted memory.  Note that on top of the configured
+BlueStore and the rest of the Ceph OSD daemon do the best they can
+to work within this memory budget.  Note that on top of the configured
 cache size, there is also memory consumed by the OSD itself, and
-generally some overhead due to memory fragmentation and other
+some additional utilization due to memory fragmentation and other
 allocator overhead.
 
 The configured cache memory budget can be used in a few different ways:
@@ -238,49 +214,6 @@ is governed by the effective bluestore cache size (depending on
 device) as well as the meta and kv ratios.
 The data fraction can be calculated by
 ``<effective_cache_size> * (1 - bluestore_cache_meta_ratio - bluestore_cache_kv_ratio)``
-
-``bluestore_cache_size``
-
-:Description: The amount of memory BlueStore will use for its cache.  If zero, ``bluestore_cache_size_hdd`` or ``bluestore_cache_size_ssd`` will be used instead.
-:Type: Unsigned Integer
-:Required: Yes
-:Default: ``0``
-
-``bluestore_cache_size_hdd``
-
-:Description: The default amount of memory BlueStore will use for its cache when backed by an HDD.
-:Type: Unsigned Integer
-:Required: Yes
-:Default: ``1 * 1024 * 1024 * 1024`` (1 GB)
-
-``bluestore_cache_size_ssd``
-
-:Description: The default amount of memory BlueStore will use for its cache when backed by an SSD.
-:Type: Unsigned Integer
-:Required: Yes
-:Default: ``3 * 1024 * 1024 * 1024`` (3 GB)
-
-``bluestore_cache_meta_ratio``
-
-:Description: The ratio of cache devoted to metadata.
-:Type: Floating point
-:Required: Yes
-:Default: ``.4``
-
-``bluestore_cache_kv_ratio``
-
-:Description: The ratio of cache devoted to key/value data (rocksdb).
-:Type: Floating point
-:Required: Yes
-:Default: ``.4``
-
-``bluestore_cache_kv_max``
-
-:Description: The maximum amount of cache devoted to key/value data (rocksdb).
-:Type: Unsigned Integer
-:Required: Yes
-:Default: ``512 * 1024*1024`` (512 MB)
-
 
 Checksums
 =========
@@ -307,18 +240,11 @@ The smaller checksum values can be used by selecting `crc32c_16` or
 `crc32c_8` as the checksum algorithm.
 
 The *checksum algorithm* can be set either via a per-pool
-``csum_type`` property or the global config option.  For example, ::
+``csum_type`` property or the global config option.  For example:
 
-  ceph osd pool set <pool-name> csum_type <algorithm>
+.. prompt:: bash $
 
-``bluestore_csum_type``
-
-:Description: The default checksum algorithm to use.
-:Type: String
-:Required: Yes
-:Valid Settings: ``none``, ``crc32c``, ``crc32c_16``, ``crc32c_8``, ``xxhash32``, ``xxhash64``
-:Default: ``crc32c``
-
+   ceph osd pool set <pool-name> csum_type <algorithm>
 
 Inline Compression
 ==================
@@ -350,149 +276,207 @@ must be 70% of the size of the original (or smaller).
 The *compression mode*, *compression algorithm*, *compression required
 ratio*, *min blob size*, and *max blob size* can be set either via a
 per-pool property or a global config option.  Pool properties can be
-set with::
+set with:
 
-  ceph osd pool set <pool-name> compression_algorithm <algorithm>
-  ceph osd pool set <pool-name> compression_mode <mode>
-  ceph osd pool set <pool-name> compression_required_ratio <ratio>
-  ceph osd pool set <pool-name> compression_min_blob_size <size>
-  ceph osd pool set <pool-name> compression_max_blob_size <size>
+.. prompt:: bash $
 
-``bluestore compression algorithm``
+   ceph osd pool set <pool-name> compression_algorithm <algorithm>
+   ceph osd pool set <pool-name> compression_mode <mode>
+   ceph osd pool set <pool-name> compression_required_ratio <ratio>
+   ceph osd pool set <pool-name> compression_min_blob_size <size>
+   ceph osd pool set <pool-name> compression_max_blob_size <size>
 
-:Description: The default compressor to use (if any) if the per-pool property
-              ``compression_algorithm`` is not set. Note that zstd is *not*
-              recommended for bluestore due to high CPU overhead when
-              compressing small amounts of data.
-:Type: String
-:Required: No
-:Valid Settings: ``lz4``, ``snappy``, ``zlib``, ``zstd``
-:Default: ``snappy``
+.. _bluestore-rocksdb-sharding:
 
-``bluestore compression mode``
+RocksDB Sharding
+================
 
-:Description: The default policy for using compression if the per-pool property
-              ``compression_mode`` is not set. ``none`` means never use
-              compression. ``passive`` means use compression when
-              :c:func:`clients hint <rados_set_alloc_hint>` that data is
-              compressible.  ``aggressive`` means use compression unless
-              clients hint that data is not compressible.  ``force`` means use
-              compression under all circumstances even if the clients hint that
-              the data is not compressible.
-:Type: String
-:Required: No
-:Valid Settings: ``none``, ``passive``, ``aggressive``, ``force``
-:Default: ``none``
+Internally BlueStore uses multiple types of key-value data,
+stored in RocksDB.  Each data type in BlueStore is assigned a
+unique prefix. Until Pacific all key-value data was stored in
+single RocksDB column family: 'default'.  Since Pacific,
+BlueStore can divide this data into multiple RocksDB column
+families. When keys have similar access frequency, modification
+frequency and lifetime, BlueStore benefits from better caching
+and more precise compaction. This improves performance, and also
+requires less disk space during compaction, since each column
+family is smaller and can compact independent of others.
 
-``bluestore compression required ratio``
+OSDs deployed in Pacific or later use RocksDB sharding by default.
+If Ceph is upgraded to Pacific from a previous version, sharding is off.
 
-:Description: The ratio of the size of the data chunk after
-              compression relative to the original size must be at
-              least this small in order to store the compressed
-              version.
+To enable sharding and apply the Pacific defaults, stop an OSD and run
 
-:Type: Floating point
-:Required: No
-:Default: .875
+    .. prompt:: bash #
 
-``bluestore compression min blob size``
+      ceph-bluestore-tool \
+        --path <data path> \
+        --sharding="m(3) p(3,0-12) O(3,0-13)=block_cache={type=binned_lru} L P" \
+        reshard
 
-:Description: Chunks smaller than this are never compressed.
-              The per-pool property ``compression_min_blob_size`` overrides
-              this setting.
 
-:Type: Unsigned Integer
-:Required: No
-:Default: 0
-
-``bluestore compression min blob size hdd``
-
-:Description: Default value of ``bluestore compression min blob size``
-              for rotational media.
-
-:Type: Unsigned Integer
-:Required: No
-:Default: 128K
-
-``bluestore compression min blob size ssd``
-
-:Description: Default value of ``bluestore compression min blob size``
-              for non-rotational (solid state) media.
-
-:Type: Unsigned Integer
-:Required: No
-:Default: 8K
-
-``bluestore compression max blob size``
-
-:Description: Chunks larger than this are broken into smaller blobs sizing
-              ``bluestore compression max blob size`` before being compressed.
-              The per-pool property ``compression_max_blob_size`` overrides
-              this setting.
-
-:Type: Unsigned Integer
-:Required: No
-:Default: 0
-
-``bluestore compression max blob size hdd``
-
-:Description: Default value of ``bluestore compression max blob size``
-              for rotational media.
-
-:Type: Unsigned Integer
-:Required: No
-:Default: 512K
-
-``bluestore compression max blob size ssd``
-
-:Description: Default value of ``bluestore compression max blob size``
-              for non-rotational (solid state) media.
-
-:Type: Unsigned Integer
-:Required: No
-:Default: 64K
+Throttling
+==========
 
 SPDK Usage
 ==================
 
-If you want to use SPDK driver for NVME SSD, you need to ready your system.
-Please refer to `SPDK document`__ for more details.
+If you want to use the SPDK driver for NVMe devices, you must prepare your system.
+Refer to `SPDK document`__ for more details.
 
 .. __: http://www.spdk.io/doc/getting_started.html#getting_started_examples
 
 SPDK offers a script to configure the device automatically. Users can run the
-script as root::
+script as root:
 
-  $ sudo src/spdk/scripts/setup.sh
+.. prompt:: bash $
 
-Then you need to specify NVMe device's device selector here with "spdk:" prefix for
-``bluestore_block_path``.
+   sudo src/spdk/scripts/setup.sh
 
-For example, users can find the device selector of an Intel PCIe SSD with::
+You will need to specify the subject NVMe device's device selector with
+the "spdk:" prefix for ``bluestore_block_path``.
 
-  $ lspci -mm -n -D -d 8086:0953
+For example, you can find the device selector of an Intel PCIe SSD with:
+
+.. prompt:: bash $
+
+   lspci -mm -n -D -d 8086:0953
 
 The device selector always has the form of ``DDDD:BB:DD.FF`` or ``DDDD.BB.DD.FF``.
 
 and then set::
 
-  bluestore block path = spdk:0000:01:00.0
+  bluestore_block_path = "spdk:trtype:PCIe traddr:0000:01:00.0"
 
 Where ``0000:01:00.0`` is the device selector found in the output of ``lspci``
 command above.
 
-If you want to run multiple SPDK instances per node, you must specify the
-amount of dpdk memory size in MB each instance will use, to make sure each
-instance uses its own dpdk memory
+You may also specify a remote NVMeoF target over the TCP transport as in the
+following example::
 
-In most cases, we only need one device to serve as data, db, db wal purposes.
-We need to make sure configurations below to make sure all IOs issued under
-SPDK.::
+  bluestore_block_path = "spdk:trtype:TCP traddr:10.67.110.197 trsvcid:4420 subnqn:nqn.2019-02.io.spdk:cnode1"
+
+To run multiple SPDK instances per node, you must specify the
+amount of dpdk memory in MB that each instance will use, to make sure each
+instance uses its own DPDK memory.
+
+In most cases, a single device can be used for data, DB, and WAL.  We describe
+this strategy as *colocating* these components. Be sure to enter the below
+settings to ensure that all IOs are issued through SPDK.::
 
   bluestore_block_db_path = ""
   bluestore_block_db_size = 0
   bluestore_block_wal_path = ""
   bluestore_block_wal_size = 0
 
-Otherwise, the current implementation will setup symbol file to kernel
-filesystem location and uses kernel driver to issue DB/WAL IO.
+Otherwise, the current implementation will populate the SPDK map files with
+kernel file system symbols and will use the kernel driver to issue DB/WAL IO.
+
+Minimum Allocation Size
+========================
+
+There is a configured minimum amount of storage that BlueStore will allocate on
+an OSD.  In practice, this is the least amount of capacity that a RADOS object
+can consume.  The value of `bluestore_min_alloc_size` is derived from the
+value of `bluestore_min_alloc_size_hdd` or `bluestore_min_alloc_size_ssd`
+depending on the OSD's ``rotational`` attribute.  This means that when an OSD
+is created on an HDD, BlueStore will be initialized with the current value
+of `bluestore_min_alloc_size_hdd`, and SSD OSDs (including NVMe devices)
+with the value of `bluestore_min_alloc_size_ssd`.
+
+Through the Mimic release, the default values were 64KB and 16KB for rotational
+(HDD) and non-rotational (SSD) media respectively.  Octopus changed the default
+for SSD (non-rotational) media to 4KB, and Pacific changed the default for HDD
+(rotational) media to 4KB as well.
+
+These changes were driven by space amplification experienced by Ceph RADOS
+GateWay (RGW) deployments that host large numbers of small files
+(S3/Swift objects).
+
+For example, when an RGW client stores a 1KB S3 object, it is written to a
+single RADOS object.  With the default `min_alloc_size` value, 4KB of
+underlying drive space is allocated.  This means that roughly
+(4KB - 1KB) == 3KB is allocated but never used, which corresponds to 300%
+overhead or 25% efficiency. Similarly, a 5KB user object will be stored
+as one 4KB and one 1KB RADOS object, again stranding 4KB of device capcity,
+though in this case the overhead is a much smaller percentage.  Think of this
+in terms of the remainder from a modulus operation. The overhead *percentage*
+thus decreases rapidly as user object size increases.
+
+An easily missed additional subtlety is that this
+takes place for *each* replica.  So when using the default three copies of
+data (3R), a 1KB S3 object actually consumes roughly 9KB of storage device
+capacity.  If erasure coding (EC) is used instead of replication, the
+amplification may be even higher: for a ``k=4,m=2`` pool, our 1KB S3 object
+will allocate (6 * 4KB) = 24KB of device capacity.
+
+When an RGW bucket pool contains many relatively large user objects, the effect
+of this phenomenon is often negligible, but should be considered for deployments
+that expect a signficiant fraction of relatively small objects.
+
+The 4KB default value aligns well with conventional HDD and SSD devices.  Some
+new coarse-IU (Indirection Unit) QLC SSDs however perform and wear best
+when `bluestore_min_alloc_size_ssd`
+is set at OSD creation to match the device's IU:. 8KB, 16KB, or even 64KB.
+These novel storage drives allow one to achieve read performance competitive
+with conventional TLC SSDs and write performance faster than HDDs, with
+high density and lower cost than TLC SSDs.
+
+Note that when creating OSDs on these devices, one must carefully apply the
+non-default value only to appropriate devices, and not to conventional SSD and
+HDD devices.  This may be done through careful ordering of OSD creation, custom
+OSD device classes, and especially by the use of central configuration _masks_.
+
+Quincy and later releases add
+the `bluestore_use_optimal_io_size_for_min_alloc_size`
+option that enables automatic discovery of the appropriate value as each OSD is
+created.  Note that the use of ``bcache``, ``OpenCAS``, ``dmcrypt``,
+``ATA over Ethernet``, `iSCSI`, or other device layering / abstraction
+technologies may confound the determination of appropriate values. OSDs
+deployed on top of VMware storage have been reported to also
+sometimes report a ``rotational`` attribute that does not match the underlying
+hardware.
+
+We suggest inspecting such OSDs at startup via logs and admin sockets to ensure that
+behavior is appropriate.  Note that this also may not work as desired with
+older kernels.  You can check for this by examining the presence and value
+of ``/sys/block/<drive>/queue/optimal_io_size``.
+
+You may also inspect a given OSD:
+
+.. prompt:: bash #
+
+   ceph osd metadata osd.1701 | grep rotational
+
+This space amplification may manifest as an unusually high ratio of raw to
+stored data reported by ``ceph df``.  ``ceph osd df`` may also report
+anomalously high ``%USE`` / ``VAR`` values when
+compared to other, ostensibly identical OSDs.  A pool using OSDs with
+mismatched ``min_alloc_size`` values may experience unexpected balancer
+behavior as well.
+
+Note that this BlueStore attribute takes effect *only* at OSD creation; if
+changed later, a given OSD's behavior will not change unless / until it is
+destroyed and redeployed with the appropriate option value(s).  Upgrading
+to a later Ceph release will *not* change the value used by OSDs deployed
+under older releases or with other settings.
+
+DSA (Data Streaming Accelerator Usage)
+======================================
+
+If you want to use the DML library to drive DSA device for offloading
+read/write operations on Persist memory in Bluestore. You need to install
+`DML`_ and `idxd-config`_ library in your machine with SPR (Sapphire Rapids) CPU.
+
+.. _DML: https://github.com/intel/DML
+.. _idxd-config: https://github.com/intel/idxd-config
+
+After installing the DML software, you need to configure the shared
+work queues (WQs) with the following WQ configuration example via accel-config tool:
+
+.. prompt:: bash $
+
+   accel-config config-wq --group-id=1 --mode=shared --wq-size=16 --threshold=15 --type=user --name="MyApp1" --priority=10 --block-on-fault=1 dsa0/wq0.1
+   accel-config config-engine dsa0/engine0.1 --group-id=1
+   accel-config enable-device dsa0
+   accel-config enable-wq dsa0/wq0.1

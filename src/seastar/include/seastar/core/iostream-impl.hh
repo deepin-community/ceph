@@ -23,9 +23,9 @@
 
 #pragma once
 
-#include <seastar/core/future-util.hh>
+#include <seastar/core/do_with.hh>
+#include <seastar/core/loop.hh>
 #include <seastar/net/packet.hh>
-#include <seastar/core/future-util.hh>
 #include <seastar/util/variant_utils.hh>
 
 namespace seastar {
@@ -34,10 +34,10 @@ inline future<temporary_buffer<char>> data_source_impl::skip(uint64_t n)
 {
     return do_with(uint64_t(n), [this] (uint64_t& n) {
         return repeat_until_value([&] {
-            return get().then([&] (temporary_buffer<char> buffer) -> compat::optional<temporary_buffer<char>> {
+            return get().then([&] (temporary_buffer<char> buffer) -> std::optional<temporary_buffer<char>> {
                 if (buffer.size() >= n) {
                     buffer.trim_front(n);
-                    return std::move(buffer);
+                    return buffer;
                 }
                 n -= buffer.size();
                 return { };
@@ -194,7 +194,7 @@ input_stream<CharType>::read_exactly(size_t n) {
 
 template <typename CharType>
 template <typename Consumer>
-GCC6_CONCEPT(requires InputStreamConsumer<Consumer, CharType> || ObsoleteInputStreamConsumer<Consumer, CharType>)
+SEASTAR_CONCEPT(requires InputStreamConsumer<Consumer, CharType> || ObsoleteInputStreamConsumer<Consumer, CharType>)
 future<>
 input_stream<CharType>::consume(Consumer&& consumer) {
     return repeat([consumer = std::move(consumer), this] () mutable {
@@ -230,7 +230,7 @@ input_stream<CharType>::consume(Consumer&& consumer) {
 
 template <typename CharType>
 template <typename Consumer>
-GCC6_CONCEPT(requires InputStreamConsumer<Consumer, CharType> || ObsoleteInputStreamConsumer<Consumer, CharType>)
+SEASTAR_CONCEPT(requires InputStreamConsumer<Consumer, CharType> || ObsoleteInputStreamConsumer<Consumer, CharType>)
 future<>
 input_stream<CharType>::consume(Consumer& consumer) {
     return consume(std::ref(consumer));
@@ -328,6 +328,17 @@ output_stream<CharType>::split_and_put(temporary_buffer<CharType> buf) {
 template <typename CharType>
 future<>
 output_stream<CharType>::write(const char_type* buf, size_t n) {
+    if (__builtin_expect(!_buf || n > _size - _end, false)) {
+        return slow_write(buf, n);
+    }
+    std::copy_n(buf, n, _buf.get_write() + _end);
+    _end += n;
+    return make_ready_future<>();
+}
+
+template <typename CharType>
+future<>
+output_stream<CharType>::slow_write(const char_type* buf, size_t n) {
     assert(!_zc_bufs && "Mixing buffered writes and zero-copy writes not supported yet");
     auto bulk_threshold = _end ? (2 * _size - _end) : _size;
     if (n >= bulk_threshold) {
@@ -429,7 +440,7 @@ output_stream<CharType>::poll_flush() {
         // flush was canceled, do nothing
         _flushing = false;
         _in_batch.value().set_value();
-        _in_batch = compat::nullopt;
+        _in_batch = std::nullopt;
         return;
     }
 
@@ -446,7 +457,8 @@ output_stream<CharType>::poll_flush() {
         f = _fd.put(std::move(_zc_bufs));
     }
 
-    f.then([this] {
+    // FIXME: future is discarded
+    (void)f.then([this] {
         return _fd.flush();
     }).then_wrapped([this] (future<> f) {
         try {
@@ -495,7 +507,7 @@ template <typename CharType>
 struct stream_copy_consumer {
 private:
     output_stream<CharType>& _os;
-    using unconsumed_remainder = compat::optional<temporary_buffer<CharType>>;
+    using unconsumed_remainder = std::optional<temporary_buffer<CharType>>;
 public:
     stream_copy_consumer(output_stream<CharType>& os) : _os(os) {
     }

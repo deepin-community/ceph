@@ -11,6 +11,9 @@
 #  Boost_USE_MULTITHREADED : boolean (default: OFF)
 #  BOOST_J: integer (defanult 1)
 
+# CMAKE_CURRENT_FUNCTION_LIST_DIR is introduced by cmake 3.17, but ubuntu comes with 3.16
+set(_build_boost_list_dir "${CMAKE_CURRENT_LIST_DIR}")
+
 function(check_boost_version source_dir expected_version)
   set(version_hpp "${source_dir}/boost/version.hpp")
   if(NOT EXISTS ${version_hpp})
@@ -70,7 +73,7 @@ function(do_build_boost version)
     if(c MATCHES "^python([0-9])\$")
       set(with_python_version "${CMAKE_MATCH_1}")
       list(APPEND boost_with_libs "python")
-    elseif(c MATCHES "^python([0-9])\\.?([0-9])\$")
+    elseif(c MATCHES "^python([0-9])\\.?([0-9]+)\$")
       set(with_python_version "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}")
       list(APPEND boost_with_libs "python")
     else()
@@ -109,14 +112,15 @@ function(do_build_boost version)
     " : ${CMAKE_CXX_COMPILER}"
     " ;\n")
   if(with_python_version)
-    find_package(PythonLibs ${with_python_version} QUIET REQUIRED)
-    string(REPLACE ";" " " python_includes "${PYTHON_INCLUDE_DIRS}")
+    find_package(Python3 ${with_python_version} QUIET REQUIRED
+      COMPONENTS Development)
+    string(REPLACE ";" " " python3_includes "${Python3_INCLUDE_DIRS}")
     file(APPEND ${user_config}
       "using python"
       " : ${with_python_version}"
-      " : ${PYTHON_EXECUTABLE}"
-      " : ${python_includes}"
-      " : ${PYTHON_LIBRARIES}"
+      " : ${Python3_EXECUTABLE}"
+      " : ${python3_includes}"
+      " : ${Python3_LIBRARIES}"
       " ;\n")
   endif()
   list(APPEND b2 --user-config=${user_config})
@@ -125,7 +129,14 @@ function(do_build_boost version)
   if(with_python_version)
     list(APPEND b2 python=${with_python_version})
   endif()
-
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm|ARM")
+    list(APPEND b2 abi=aapcs)
+    list(APPEND b2 architecture=arm)
+    list(APPEND b2 binary-format=elf)
+  endif()
+  if(WITH_BOOST_VALGRIND)
+    list(APPEND b2 valgrind=on)
+  endif()
   set(build_command
     ${b2} headers stage
     #"--buildid=ceph" # changes lib names--can omit for static
@@ -137,17 +148,17 @@ function(do_build_boost version)
     check_boost_version("${PROJECT_SOURCE_DIR}/src/boost" ${version})
     set(source_dir
       SOURCE_DIR "${PROJECT_SOURCE_DIR}/src/boost")
-  elseif(version VERSION_GREATER 1.72)
+  elseif(version VERSION_GREATER 1.73)
     message(FATAL_ERROR "Unknown BOOST_REQUESTED_VERSION: ${version}")
   else()
     message(STATUS "boost will be downloaded...")
     # NOTE: If you change this version number make sure the package is available
     # at the three URLs below (may involve uploading to download.ceph.com)
-    set(boost_version 1.72.0)
-    set(boost_sha256 59c9b274bc451cf91a9ba1dd2c7fdcaf5d60b1b3aa83f2c9fa143417cc660722)
+    set(boost_version 1.73.0)
+    set(boost_sha256 4eb3b8d442b426dc35346235c8733b5ae35ba431690e38c6a8263dce9fcbb402)
     string(REPLACE "." "_" boost_version_underscore ${boost_version} )
     set(boost_url 
-      https://dl.bintray.com/boostorg/release/${boost_version}/source/boost_${boost_version_underscore}.tar.bz2)
+      https://boostorg.jfrog.io/artifactory/main/release/${boost_version}/source/boost_${boost_version_underscore}.tar.bz2)
     if(CMAKE_VERSION VERSION_GREATER 3.7)
       set(boost_url
         "${boost_url} http://downloads.sourceforge.net/project/boost/boost/${boost_version}/boost_${boost_version_underscore}.tar.bz2")
@@ -159,10 +170,12 @@ function(do_build_boost version)
       URL_HASH SHA256=${boost_sha256}
       DOWNLOAD_NO_PROGRESS 1)
   endif()
+  find_program(PATCH_EXECUTABLE patch)
   # build all components in a single shot
   include(ExternalProject)
   ExternalProject_Add(Boost
     ${source_dir}
+    PATCH_COMMAND ${PATCH_EXECUTABLE} -p3 -i ${_build_boost_list_dir}/boost-python-use-public-api-for-filename.patch
     CONFIGURE_COMMAND CC=${CMAKE_C_COMPILER} CXX=${CMAKE_CXX_COMPILER} ${configure_command}
     BUILD_COMMAND CC=${CMAKE_C_COMPILER} CXX=${CMAKE_CXX_COMPILER} ${build_command}
     BUILD_IN_SOURCE 1
@@ -205,7 +218,7 @@ macro(build_boost version)
     endif()
     add_dependencies(Boost::${c} Boost)
     if(c MATCHES "^python")
-      set(c "python${PYTHON_VERSION_MAJOR}${PYTHON_VERSION_MINOR}")
+      set(c "python${Python3_VERSION_MAJOR}${Python3_VERSION_MINOR}")
     endif()
     if(Boost_USE_STATIC_LIBS)
       set(Boost_${upper_c}_LIBRARY
@@ -219,6 +232,10 @@ macro(build_boost version)
       INTERFACE_INCLUDE_DIRECTORIES "${Boost_INCLUDE_DIRS}"
       IMPORTED_LINK_INTERFACE_LANGUAGES "CXX"
       IMPORTED_LOCATION "${Boost_${upper_c}_LIBRARY}")
+    if((c MATCHES "coroutine|context") AND (WITH_BOOST_VALGRIND))
+      set_target_properties(Boost::${c} PROPERTIES
+	INTERFACE_COMPILE_DEFINITIONS "BOOST_USE_VALGRIND")
+    endif()
     list(APPEND Boost_LIBRARIES ${Boost_${upper_c}_LIBRARY})
   endforeach()
   foreach(c ${Boost_BUILD_COMPONENTS})
@@ -230,6 +247,7 @@ macro(build_boost version)
         INTERFACE_LINK_LIBRARIES "${dependencies}")
       unset(dependencies)
     endif()
+    set(Boost_${c}_FOUND "TRUE")
   endforeach()
 
   # for header-only libraries

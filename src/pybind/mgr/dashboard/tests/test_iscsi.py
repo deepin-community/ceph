@@ -12,12 +12,13 @@ except ImportError:
 
 from mgr_module import ERROR_MSG_NO_INPUT_FILE
 
-from . import CmdException, ControllerTestCase, CLICommandTestMixin, KVStoreMockMixin
 from .. import mgr
 from ..controllers.iscsi import Iscsi, IscsiTarget
+from ..rest_client import RequestException
 from ..services.iscsi_client import IscsiClient
 from ..services.orchestrator import OrchClient
-from ..rest_client import RequestException
+from ..tests import CLICommandTestMixin, CmdException, ControllerTestCase, KVStoreMockMixin
+from ..tools import NotificationQueue, TaskManager
 
 
 class IscsiTestCli(unittest.TestCase, CLICommandTestMixin):
@@ -30,7 +31,8 @@ class IscsiTestCli(unittest.TestCase, CLICommandTestMixin):
 
     def test_cli_add_gateway_invalid_url(self):
         with self.assertRaises(CmdException) as ctx:
-            self.exec_cmd('iscsi-gateway-add', inbuf='http:/hello.com')
+            self.exec_cmd('iscsi-gateway-add', name='node1',
+                          inbuf='http:/hello.com')
 
         self.assertEqual(ctx.exception.retcode, -errno.EINVAL)
         self.assertEqual(str(ctx.exception),
@@ -39,14 +41,17 @@ class IscsiTestCli(unittest.TestCase, CLICommandTestMixin):
 
     def test_cli_add_gateway_empty_url(self):
         with self.assertRaises(CmdException) as ctx:
-            self.exec_cmd('iscsi-gateway-add', inbuf='')
+            self.exec_cmd('iscsi-gateway-add', name='node1',
+                          inbuf='')
 
         self.assertEqual(ctx.exception.retcode, -errno.EINVAL)
-        self.assertEqual(str(ctx.exception), ERROR_MSG_NO_INPUT_FILE)
+        self.assertIn(ERROR_MSG_NO_INPUT_FILE, str(ctx.exception))
 
     def test_cli_add_gateway(self):
-        self.exec_cmd('iscsi-gateway-add', inbuf='https://admin:admin@10.17.5.1:5001')
-        self.exec_cmd('iscsi-gateway-add', inbuf='https://admin:admin@10.17.5.2:5001')
+        self.exec_cmd('iscsi-gateway-add', name='node1',
+                      inbuf='https://admin:admin@10.17.5.1:5001')
+        self.exec_cmd('iscsi-gateway-add', name='node2',
+                      inbuf='https://admin:admin@10.17.5.2:5001')
         iscsi_config = json.loads(self.get_key("_iscsi_config"))
         self.assertEqual(iscsi_config['gateways'], {
             'node1': {
@@ -72,12 +77,15 @@ class IscsiTestController(ControllerTestCase, KVStoreMockMixin):
 
     @classmethod
     def setup_server(cls):
-        OrchClient().available = lambda: False
+        NotificationQueue.start_queue()
+        TaskManager.init()
+        OrchClient.instance().available = lambda: False
         mgr.rados.side_effect = None
-        # pylint: disable=protected-access
-        Iscsi._cp_config['tools.authenticate.on'] = False
-        IscsiTarget._cp_config['tools.authenticate.on'] = False
         cls.setup_controllers([Iscsi, IscsiTarget])
+
+    @classmethod
+    def tearDownClass(cls):
+        NotificationQueue.stop()
 
     def setUp(self):
         self.mock_kv_store()
@@ -595,10 +603,12 @@ class IscsiTestController(ControllerTestCase, KVStoreMockMixin):
                              update_response, response):
         self._task_post('/api/iscsi/target', create_request)
         self.assertStatus(201)
-        self._task_put('/api/iscsi/target/{}'.format(create_request['target_iqn']), update_request)
+        self._task_put(
+            '/api/iscsi/target/{}'.format(create_request['target_iqn']), update_request)
         self.assertStatus(update_response_code)
         self.assertJsonBody(update_response)
-        self._get('/api/iscsi/target/{}'.format(update_request['new_target_iqn']))
+        self._get(
+            '/api/iscsi/target/{}'.format(update_request['new_target_iqn']))
         self.assertStatus(200)
         self.assertJsonBody(response)
 

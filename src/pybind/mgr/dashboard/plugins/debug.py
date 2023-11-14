@@ -1,12 +1,18 @@
 # -*- coding: utf-8 -*-
+
 from __future__ import absolute_import
 
-from enum import Enum
 import json
+from enum import Enum
 
 from . import PLUGIN_MANAGER as PM
 from . import interfaces as I  # noqa: E741,N812
 from .plugin import SimplePlugin as SP
+
+try:
+    from typing import no_type_check
+except ImportError:
+    no_type_check = object()  # Just for type checking
 
 
 class Actions(Enum):
@@ -29,6 +35,7 @@ class Debug(SP, I.CanCherrypy, I.ConfiguresCherryPy,  # pylint: disable=too-many
         )
     ]
 
+    @no_type_check  # https://github.com/python/mypy/issues/7806
     def _refresh_health_checks(self):
         debug = self.get_option(self.NAME)
         if debug:
@@ -48,11 +55,15 @@ class Debug(SP, I.CanCherrypy, I.ConfiguresCherryPy,  # pylint: disable=too-many
     def setup(self):
         self._refresh_health_checks()
 
-    def handler(self, action):
+    @no_type_check
+    def handler(self, action: Actions):
+        '''
+        Control and report debug status in Ceph-Dashboard
+        '''
         ret = 0
         msg = ''
-        if action in [Actions.ENABLE.value, Actions.DISABLE.value]:
-            self.set_option(self.NAME, action == Actions.ENABLE.value)
+        if action in [Actions.ENABLE, Actions.DISABLE]:
+            self.set_option(self.NAME, action == Actions.ENABLE)
             self.mgr.update_cherrypy_config({})
             self._refresh_health_checks()
         else:
@@ -63,9 +74,6 @@ class Debug(SP, I.CanCherrypy, I.ConfiguresCherryPy,  # pylint: disable=too-many
     COMMANDS = [
         SP.Command(
             prefix="dashboard {name}".format(name=NAME),
-            args="name=action,type=CephChoices,strings={states}".format(
-                states="|".join(a.value for a in Actions)),
-            desc="Control and report debug status in Ceph-Dashboard",
             handler=handler
         )
     ]

@@ -28,19 +28,25 @@ A standard-label MUST begin with a capital letter and must not exceed
 63 characters.
 key name: A standard-label
 '''
+'''
+06/10/2020 add tc_login_29_1 to known_failed_cases
+RFC 3720 12.19. DataSequenceInOrder
+Irrelevant when: SessionType=Discovery
+'''
+
 known_failed_cases = ['tc_ffp_15_2', 'tc_ffp_29_2', 'tc_ffp_29_3', 'tc_ffp_29_4',
                       'tc_err_1_1', 'tc_err_1_2', 'tc_err_2_8',
                       'tc_err_3_1', 'tc_err_3_2', 'tc_err_3_3',
                       'tc_err_3_4', 'tc_err_5_1', 'tc_login_3_1',
-                      'tc_login_11_2', 'tc_login_11_4', 'tc_login_2_2']
+                      'tc_login_11_2', 'tc_login_11_4', 'tc_login_2_2', 'tc_login_29_1']
 
 
 def run_case(case, result_list, log_dir_path):
     try:
-        case_log = subprocess.check_output("{}/{}".format(CALSOFT_BIN_PATH, case), stderr=subprocess.STDOUT, shell=True)
+        case_log = subprocess.check_output("{}/{}".format(CALSOFT_BIN_PATH, case), stderr=subprocess.STDOUT, shell=True).decode('utf-8')
     except subprocess.CalledProcessError as e:
         result_list.append({"Name": case, "Result": "FAIL"})
-        case_log = e.output
+        case_log = e.output.decode('utf-8')
     else:
         result_list.append({"Name": case, "Result": "PASS"})
     with open(log_dir_path + case + '.txt', 'w') as f:

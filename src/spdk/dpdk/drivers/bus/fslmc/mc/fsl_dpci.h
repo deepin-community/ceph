@@ -1,10 +1,13 @@
 /* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2013-2016 Freescale Semiconductor Inc.
+ * Copyright 2017-2019 NXP
  *
  */
 #ifndef __FSL_DPCI_H
 #define __FSL_DPCI_H
+
+#include <fsl_dpopr.h>
 
 /* Data Path Communication Interface API
  * Contains initialization APIs and runtime control APIs for DPCI
@@ -17,7 +20,7 @@ struct fsl_mc_io;
 /**
  * Maximum number of Tx/Rx priorities per DPCI object
  */
-#define DPCI_PRIO_NUM		2
+#define DPCI_PRIO_NUM		4
 
 /**
  * Indicates an invalid frame queue
@@ -154,6 +157,11 @@ struct dpci_dest_cfg {
 #define DPCI_QUEUE_OPT_DEST		0x00000002
 
 /**
+ * Set the queue to hold active mode.
+ */
+#define DPCI_QUEUE_OPT_HOLD_ACTIVE	0x00000004
+
+/**
  * struct dpci_rx_queue_cfg - Structure representing RX queue configuration
  * @options:	Flags representing the suggested modifications to the queue;
  *		Use any combination of 'DPCI_QUEUE_OPT_<X>' flags
@@ -163,13 +171,17 @@ struct dpci_dest_cfg {
  *		'options'
  * @dest_cfg:	Queue destination parameters;
  *		valid only if 'DPCI_QUEUE_OPT_DEST' is contained in 'options'
+ * @order_preservation_en: order preservation configuration for the rx queue
+ * valid only if 'DPCI_QUEUE_OPT_HOLD_ACTIVE' is contained in 'options'
  */
 struct dpci_rx_queue_cfg {
 	uint32_t options;
 	uint64_t user_ctx;
 	struct dpci_dest_cfg dest_cfg;
+	int order_preservation_en;
 };
 
+__rte_internal
 int dpci_set_rx_queue(struct fsl_mc_io *mc_io,
 		      uint32_t cmd_flags,
 		      uint16_t token,
@@ -216,5 +228,21 @@ int dpci_get_api_version(struct fsl_mc_io *mc_io,
 			 uint32_t cmd_flags,
 			 uint16_t *major_ver,
 			 uint16_t *minor_ver);
+
+__rte_internal
+int dpci_set_opr(struct fsl_mc_io *mc_io,
+		 uint32_t cmd_flags,
+		 uint16_t token,
+		 uint8_t index,
+		 uint8_t options,
+		 struct opr_cfg *cfg);
+
+__rte_internal
+int dpci_get_opr(struct fsl_mc_io *mc_io,
+		 uint32_t cmd_flags,
+		 uint16_t token,
+		 uint8_t index,
+		 struct opr_cfg *cfg,
+		 struct opr_qry *qry);
 
 #endif /* __FSL_DPCI_H */

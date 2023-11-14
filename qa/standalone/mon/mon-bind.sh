@@ -60,7 +60,6 @@ function TEST_mon_client_connect_fails() {
 
     # start the mon with a public-bind-addr that is different
     # from the public-addr.
-    CEPH_ARGS+="--mon-initial-members=a "
     CEPH_ARGS+="--mon-host=${MON_IP}:${MONA_PUBLIC} "
     run_mon $dir a --mon-host=${MON_IP}:${MONA_PUBLIC} --public-bind-addr=${MON_IP}:${MONA_BIND} || return 1
 
@@ -74,7 +73,6 @@ function TEST_mon_client_connect() {
 
     # start the mon with a public-bind-addr that is different
     # from the public-addr.
-    CEPH_ARGS+="--mon-initial-members=a "
     CEPH_ARGS+="--mon-host=${MON_IP}:${MONA_PUBLIC} "
     run_mon $dir a --mon-host=${MON_IP}:${MONA_PUBLIC} --public-bind-addr=${MON_IP}:${MONA_BIND} || return 1
 
@@ -90,7 +88,6 @@ function TEST_mon_quorum() {
 
     # start the mon with a public-bind-addr that is different
     # from the public-addr.
-    CEPH_ARGS+="--mon-initial-members=a,b,c "
     CEPH_ARGS+="--mon-host=${MON_IP}:${MONA_PUBLIC},${MON_IP}:${MONB_PUBLIC},${MON_IP}:${MONC_PUBLIC} "
     run_mon $dir a --public-addr=${MON_IP}:${MONA_PUBLIC} --public-bind-addr=${MON_IP}:${MONA_BIND} || return 1
     run_mon $dir b --public-addr=${MON_IP}:${MONB_PUBLIC} --public-bind-addr=${MON_IP}:${MONB_BIND} || return 1
@@ -102,7 +99,7 @@ function TEST_mon_quorum() {
     port_forward ${MONC_PUBLIC} ${MONC_BIND}
 
     # expect monmap to contain 3 monitors (a, b, and c)
-    jqinput="$(ceph mon_status --format=json 2>/dev/null)"
+    jqinput="$(ceph quorum_status --format=json 2>/dev/null)"
     jq_success "$jqinput" '.monmap.mons | length == 3' || return 1
 
     # quorum should form
@@ -117,7 +114,6 @@ function TEST_put_get() {
 
     # start the mon with a public-bind-addr that is different
     # from the public-addr.
-    CEPH_ARGS+="--mon-initial-members=a,b,c "
     CEPH_ARGS+="--mon-host=${MON_IP}:${MONA_PUBLIC},${MON_IP}:${MONB_PUBLIC},${MON_IP}:${MONC_PUBLIC} "
     run_mon $dir a --public-addr=${MON_IP}:${MONA_PUBLIC} --public-bind-addr=${MON_IP}:${MONA_BIND} || return 1
     run_mon $dir b --public-addr=${MON_IP}:${MONB_PUBLIC} --public-bind-addr=${MON_IP}:${MONB_BIND} || return 1

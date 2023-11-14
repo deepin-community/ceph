@@ -1,23 +1,28 @@
+enable-strsignal.patch
 update-java-source-target-flags.patch
 disable-crypto.patch
-32bit-avoid-overloading.patch
-32bit-avoid-size_t.patch
 # Ubuntu: civetweb max connections
 civetweb-755-1.8-somaxconn-configurable_conf.patch
 civetweb-755-1.8-somaxconn-configurable.patch
 civetweb-755-1.8-somaxconn-configurable_test.patch
 # Upstream: py3
 # Upstream: 32bit
-bluefs-use-uint64_t-for-len.patch
 debian-armel-armhf-buildflags.patch
 fix-bash-completion-location
+32bit-fixes.patch
 add-option-to-disable-ceph-dencoder.patch
 riscv64-link-pthread.patch
-mds-purgequeue-use_uint64_t.patch
-make-ceph-python-3.9-aware.patch
-cmake_define_BOOST_ASIO_USE_TS_EXECUTOR_AS_DEFAULT_for_Boost.Asio_users.patch
-cmake_add_1.74_to_known_versions.patch
-another-cmakelists-fix.patch
 fix-ceph-osd-systemd-target.patch
-allow-bgp-to-host.patch
 compile-ppc.c-on-all-powerpc-machines.patch
+bug1914584.patch
+bug1917414.patch
+cmake-test-for-16-bytes-atomic-support-on-mips-also.patch
+only-yied-under-armv7-and-above.patch
+Fix-build-with-fmt-8-9.patch
+fix-CheckCxxAtomic-riscv64.patch
+CVE-2022-3650_1_ceph-crash_drop_privleges_to_run_as_ceph_user_rather_than_root.patch
+CVE-2022-3650_2_ceph-crash_fix_stderr_handling.patch
+CVE-2022-3854_1_rgw_Guard_against_malformed_bucket_URLs.patch
+include-cstdint-in-subsys_types.h.patch
+fix-gcc-13-issue.patch
+CVE-2023-43040_rgw_Fix_bucket_validation_against_POST_policies.patch

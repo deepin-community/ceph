@@ -68,7 +68,7 @@ Your Python client also requires a client keyring. For this example, we use the
 ``client.admin`` key by default. If you would like to specify the keyring when
 creating the cluster handle, you may use the ``conf`` argument. Alternatively,
 you may specify the keyring path in your Ceph configuration file. For example,
-you may add something like the following line to you Ceph configuration file::
+you may add something like the following line to your Ceph configuration file::
 
 	keyring = /path/to/ceph.client.admin.keyring
 
@@ -90,7 +90,7 @@ information about the cluster.
 
 	cluster = rados.Rados(conffile='ceph.conf')
 	print "\nlibrados version: " + str(cluster.version())
-	print "Will attempt to connect to: " + str(cluster.conf_get('mon initial members'))
+	print "Will attempt to connect to: " + str(cluster.conf_get('mon host'))
 
 	cluster.connect()
 	print "\nCluster ID: " + cluster.get_fsid()
@@ -107,8 +107,7 @@ By default, Ceph authentication is ``on``. Your application will need to know
 the location of the keyring. The ``python-ceph`` module doesn't have the default
 location, so you need to specify the keyring path. The easiest way to specify
 the keyring is to add it to the Ceph configuration file. The following Ceph
-configuration file example uses the ``client.admin`` keyring you generated with
-``ceph-deploy``.
+configuration file example uses the ``client.admin`` keyring.
 
 .. code-block:: ini
    :linenos:
@@ -318,6 +317,18 @@ exists,  and delete a pool.
 .. automethod:: Rados.pool_exists()
 .. automethod:: Rados.delete_pool(pool_name)
 
+
+CLI Commands
+------------
+
+The Ceph CLI command is internally using the following librados Python binding methods.
+
+In order to send a command, choose the correct method and choose the correct target.
+
+.. automethod:: Rados.mon_command
+.. automethod:: Rados.osd_command
+.. automethod:: Rados.mgr_command
+.. automethod:: Rados.pg_command
 
 
 Input/Output Context API

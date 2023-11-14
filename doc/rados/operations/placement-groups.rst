@@ -18,33 +18,61 @@ Each pool in the system has a ``pg_autoscale_mode`` property that can be set to 
 * ``on``: Enable automated adjustments of the PG count for the given pool.
 * ``warn``: Raise health alerts when the PG count should be adjusted
 
-To set the autoscaling mode for existing pools,::
+To set the autoscaling mode for an existing pool:
 
-  ceph osd pool set <pool-name> pg_autoscale_mode <mode>
+.. prompt:: bash #
 
-For example to enable autoscaling on pool ``foo``,::
+   ceph osd pool set <pool-name> pg_autoscale_mode <mode>
 
-  ceph osd pool set foo pg_autoscale_mode on
+For example to enable autoscaling on pool ``foo``:
+
+.. prompt:: bash #
+
+   ceph osd pool set foo pg_autoscale_mode on
 
 You can also configure the default ``pg_autoscale_mode`` that is
-applied to any pools that are created in the future with::
+set on any pools that are subsequently created:
 
-  ceph config set global osd_pool_default_pg_autoscale_mode <mode>
+.. prompt:: bash #
+
+   ceph config set global osd_pool_default_pg_autoscale_mode <mode>
+
+You can disable or enable the autoscaler for all pools with
+the ``noautoscale`` flag. By default this flag is set to  be ``off``,
+but you can turn it ``on`` by using the command:
+
+.. prompt:: bash $
+
+   ceph osd pool set noautoscale
+
+You can turn it ``off`` using the command:
+
+.. prompt:: bash #
+
+   ceph osd pool unset noautoscale
+
+To ``get`` the value of the flag use the command:
+
+.. prompt:: bash #
+
+   ceph osd pool get noautoscale
 
 Viewing PG scaling recommendations
 ----------------------------------
 
 You can view each pool, its relative utilization, and any suggested changes to
-the PG count with this command::
+the PG count with this command:
 
-  ceph osd pool autoscale-status
+.. prompt:: bash #
+
+   ceph osd pool autoscale-status
 
 Output will be something like::
 
-   POOL    SIZE  TARGET SIZE  RATE  RAW CAPACITY   RATIO  TARGET RATIO  EFFECTIVE RATIO PG_NUM  NEW PG_NUM  AUTOSCALE
-   a     12900M                3.0        82431M  0.4695                                     8         128  warn
-   c         0                 3.0        82431M  0.0000        0.2000           0.9884      1          64  warn
-   b         0        953.6M   3.0        82431M  0.0347                                     8              warn
+   POOL    SIZE  TARGET SIZE  RATE  RAW CAPACITY   RATIO  TARGET RATIO  EFFECTIVE RATIO BIAS PG_NUM  NEW PG_NUM  AUTOSCALE BULK
+   a     12900M                3.0        82431M  0.4695                                          8         128  warn      True
+   c         0                 3.0        82431M  0.0000        0.2000           0.9884  1.0      1          64  warn      True
+   b         0        953.6M   3.0        82431M  0.0347                                          8              warn      False
 
 **SIZE** is the amount of data stored in the pool. **TARGET SIZE**, if
 present, is the amount of data the administrator has specified that
@@ -77,15 +105,31 @@ ratio takes precedence.
 The system uses the larger of the actual ratio and the effective ratio
 for its calculation.
 
+**BIAS** is used as a multiplier to manually adjust a pool's PG based
+on prior information about how much PGs a specific pool is expected
+to have.
+
 **PG_NUM** is the current number of PGs for the pool (or the current
 number of PGs that the pool is working towards, if a ``pg_num``
 change is in progress).  **NEW PG_NUM**, if present, is what the
 system believes the pool's ``pg_num`` should be changed to.  It is
 always a power of 2, and will only be present if the "ideal" value
-varies from the current value by more than a factor of 3.
+varies from the current value by more than a factor of 3 by default.
+This factor can be be adjusted with:
 
-The final column, **AUTOSCALE**, is the pool ``pg_autoscale_mode``,
+.. prompt:: bash #
+
+  ceph osd pool set threshold 2.0
+
+**AUTOSCALE**, is the pool ``pg_autoscale_mode``
 and will be either ``on``, ``off``, or ``warn``.
+
+The final column, **BULK** determines if the pool is ``bulk``
+and will be either ``True`` or ``False``. A ``bulk`` pool
+means that the pool is expected to be large and should start out
+with large amount of PGs for performance purposes. On the other hand,
+pools without the ``bulk`` flag are expected to be smaller e.g.,
+.mgr or meta pools.
 
 
 Automated scaling
@@ -101,9 +145,11 @@ than 3 times off from what it thinks it should be.
 
 The target number of PGs per OSD is based on the
 ``mon_target_pg_per_osd`` configurable (default: 100), which can be
-adjusted with::
+adjusted with:
 
-  ceph config set global mon_target_pg_per_osd 100
+.. prompt:: bash #
+
+   ceph config set global mon_target_pg_per_osd 100
 
 The autoscaler analyzes pools and adjusts on a per-subtree basis.
 Because each pool may map to a different CRUSH rule, and each rule may
@@ -113,6 +159,38 @@ example, a pool that maps to OSDs of class `ssd` and a pool that maps
 to OSDs of class `hdd` will each have optimal PG counts that depend on
 the number of those respective device types.
 
+In the case where a pool uses OSDs under two or more CRUSH roots, e.g., (shadow
+trees with both `ssd` and `hdd` devices), the autoscaler will
+issue a warning to the user in the manager log stating the name of the pool
+and the set of roots that overlap each other. The autoscaler will not
+scale any pools with overlapping roots because this can cause problems
+with the scaling process. We recommend making each pool belong to only
+one root (one OSD class) to get rid of the warning and ensure a successful
+scaling process.
+
+The autoscaler uses the `bulk` flag to determine which pool
+should start out with a full complement of PGs and only
+scales down when the usage ratio across the pool is not even.
+However, if the pool doesn't have the `bulk` flag, the pool will
+start out with minimal PGs and only when there is more usage in the pool.
+
+To create pool with `bulk` flag:
+
+.. prompt:: bash #
+
+   ceph osd pool create <pool-name> --bulk
+
+To set/unset `bulk` flag of existing pool:
+
+.. prompt:: bash #
+
+   ceph osd pool set <pool-name> bulk <true/false/1/0>
+
+To get `bulk` flag of existing pool:
+
+.. prompt:: bash #
+
+   ceph osd pool get <pool-name> bulk
 
 .. _specifying_pool_target_size:
 
@@ -133,14 +211,18 @@ The *target size* of a pool can be specified in two ways: either in
 terms of the absolute size of the pool (i.e., bytes), or as a weight
 relative to other pools with a ``target_size_ratio`` set.
 
-For example,::
+For example:
 
-  ceph osd pool set mypool target_size_bytes 100T
+.. prompt:: bash #
+
+   ceph osd pool set mypool target_size_bytes 100T
 
 will tell the system that `mypool` is expected to consume 100 TiB of
-space.  Alternatively,::
+space.  Alternatively:
 
-  ceph osd pool set mypool target_size_ratio 1.0
+.. prompt:: bash # 
+
+   ceph osd pool set mypool target_size_ratio 1.0
 
 will tell the system that `mypool` is expected to consume 1.0 relative
 to the other pools with ``target_size_ratio`` set. If `mypool` is the
@@ -167,42 +249,50 @@ parallelism client will see when doing IO, even when a pool is mostly
 empty.  Setting the lower bound prevents Ceph from reducing (or
 recommending you reduce) the PG number below the configured number.
 
-You can set the minimum number of PGs for a pool with::
+You can set the minimum or maximum number of PGs for a pool with:
 
-  ceph osd pool set <pool-name> pg_num_min <num>
+.. prompt:: bash #
 
-You can also specify the minimum PG count at pool creation time with
-the optional ``--pg-num-min <num>`` argument to the ``ceph osd pool
-create`` command.
+   ceph osd pool set <pool-name> pg_num_min <num>
+   ceph osd pool set <pool-name> pg_num_max <num>
+
+You can also specify the minimum or maximum PG count at pool creation
+time with the optional ``--pg-num-min <num>`` or ``--pg-num-max
+<num>`` arguments to the ``ceph osd pool create`` command.
 
 .. _preselection:
 
 A preselection of pg_num
 ========================
 
-When creating a new pool with::
+When creating a new pool with:
 
-        ceph osd pool create {pool-name} pg_num
+.. prompt:: bash #
 
-it is mandatory to choose the value of ``pg_num`` because it cannot (currently) be
-calculated automatically. Here are a few values commonly used:
+   ceph osd pool create {pool-name} [pg_num]
 
-- Less than 5 OSDs set ``pg_num`` to 128
+it is optional to choose the value of ``pg_num``.  If you do not
+specify ``pg_num``, the cluster can (by default) automatically tune it
+for you based on how much data is stored in the pool (see above, :ref:`pg-autoscaler`).
 
-- Between 5 and 10 OSDs set ``pg_num`` to 512
+Alternatively, ``pg_num`` can be explicitly provided.  However,
+whether you specify a ``pg_num`` value or not does not affect whether
+the value is automatically tuned by the cluster after the fact.  To
+enable or disable auto-tuning:
 
-- Between 10 and 50 OSDs set ``pg_num`` to 1024
+.. prompt:: bash #
 
-- If you have more than 50 OSDs, you need to understand the tradeoffs
-  and how to calculate the ``pg_num`` value by yourself
+   ceph osd pool set {pool-name} pg_autoscale_mode (on|off|warn)
 
-- For calculating ``pg_num`` value by yourself please take help of `pgcalc`_ tool
+The "rule of thumb" for PGs per OSD has traditionally be 100.  With
+the additional of the balancer (which is also enabled by default), a
+value of more like 50 PGs per OSD is probably reasonable.  The
+challenge (which the autoscaler normally does for you), is to:
 
-As the number of OSDs increases, choosing the right value for pg_num
-becomes more important because it has a significant influence on the
-behavior of the cluster as well as the durability of the data when
-something goes wrong (i.e. the probability that a catastrophic event
-leads to data loss).
+- have the PGs per pool proportional to the data in the pool, and
+- end up with 50-100 PGs per OSDs, after the replication or
+  erasuring-coding fan-out of each PG across OSDs is taken into
+  consideration
 
 How are Placement Groups used ?
 ===============================
@@ -434,11 +524,9 @@ If you have more than 50 OSDs, we recommend approximately 50-100
 placement groups per OSD to balance out resource usage, data
 durability and distribution. If you have less than 50 OSDs, choosing
 among the `preselection`_ above is best. For a single pool of objects,
-you can use the following formula to get a baseline::
+you can use the following formula to get a baseline
 
-                (OSDs * 100)
-   Total PGs =  ------------
-                 pool size
+  Total PGs = :math:`\frac{OSDs \times 100}{pool \: size}`
 
 Where **pool size** is either the number of replicas for replicated
 pools or the K+M sum for erasure coded pools (as returned by **ceph
@@ -456,11 +544,9 @@ data across your OSDs. Their use should be limited to incrementally
 stepping from one power of two to another.
 
 As an example, for a cluster with 200 OSDs and a pool size of 3
-replicas, you would estimate your number of PGs as follows::
+replicas, you would estimate your number of PGs as follows
 
-   (200 * 100)
-   ----------- = 6667. Nearest power of 2: 8192
-        3
+  :math:`\frac{200 \times 100}{3} = 6667`. Nearest power of 2: 8192
 
 When using multiple data pools for storing objects, you need to ensure
 that you balance the number of placement groups per pool with the
@@ -486,9 +572,11 @@ Set the Number of Placement Groups
 
 To set the number of placement groups in a pool, you must specify the
 number of placement groups at the time you create the pool.
-See `Create a Pool`_ for details.  Even after a pool is created you can also change the number of placement groups with::
+See `Create a Pool`_ for details.  Even after a pool is created you can also change the number of placement groups with:
 
-        ceph osd pool set {pool-name} pg_num {pg_num}
+.. prompt:: bash # 
+
+   ceph osd pool set {pool-name} pg_num {pg_num}
 
 After you increase the number of placement groups, you must also
 increase the number of placement groups for placement (``pgp_num``)
@@ -498,9 +586,11 @@ algorithm. Increasing ``pg_num`` splits the placement groups but data
 will not be migrated to the newer placement groups until placement
 groups for placement, ie. ``pgp_num`` is increased. The ``pgp_num``
 should be equal to the ``pg_num``.  To increase the number of
-placement groups for placement, execute the following::
+placement groups for placement, execute the following:
 
-        ceph osd pool set {pool-name} pgp_num {pgp_num}
+.. prompt:: bash #
+
+   ceph osd pool set {pool-name} pgp_num {pgp_num}
 
 When decreasing the number of PGs, ``pgp_num`` is adjusted
 automatically for you.
@@ -508,17 +598,21 @@ automatically for you.
 Get the Number of Placement Groups
 ==================================
 
-To get the number of placement groups in a pool, execute the following::
+To get the number of placement groups in a pool, execute the following:
 
-        ceph osd pool get {pool-name} pg_num
+.. prompt:: bash #
+   
+   ceph osd pool get {pool-name} pg_num
 
 
 Get a Cluster's PG Statistics
 =============================
 
-To get the statistics for the placement groups in your cluster, execute the following::
+To get the statistics for the placement groups in your cluster, execute the following:
 
-        ceph pg dump [--format {format}]
+.. prompt:: bash #
+
+   ceph pg dump [--format {format}]
 
 Valid formats are ``plain`` (default) and ``json``.
 
@@ -527,9 +621,11 @@ Get Statistics for Stuck PGs
 ============================
 
 To get the statistics for all placement groups stuck in a specified state,
-execute the following::
+execute the following:
 
-        ceph pg dump_stuck inactive|unclean|stale|undersized|degraded [--format <format>] [-t|--threshold <seconds>]
+.. prompt:: bash #
+
+   ceph pg dump_stuck inactive|unclean|stale|undersized|degraded [--format <format>] [-t|--threshold <seconds>]
 
 **Inactive** Placement groups cannot process reads or writes because they are waiting for an OSD
 with the most up-to-date data to come up and in.
@@ -548,33 +644,43 @@ of seconds the placement group is stuck before including it in the returned stat
 Get a PG Map
 ============
 
-To get the placement group map for a particular placement group, execute the following::
+To get the placement group map for a particular placement group, execute the following:
 
-        ceph pg map {pg-id}
+.. prompt:: bash #
 
-For example::
+   ceph pg map {pg-id}
 
-        ceph pg map 1.6c
+For example: 
 
-Ceph will return the placement group map, the placement group, and the OSD status::
+.. prompt:: bash #
 
-        osdmap e13 pg 1.6c (1.6c) -> up [1,0] acting [1,0]
+   ceph pg map 1.6c
+
+Ceph will return the placement group map, the placement group, and the OSD status:
+
+.. prompt:: bash #
+
+   osdmap e13 pg 1.6c (1.6c) -> up [1,0] acting [1,0]
 
 
 Get a PGs Statistics
 ====================
 
-To retrieve statistics for a particular placement group, execute the following::
+To retrieve statistics for a particular placement group, execute the following:
 
-        ceph pg {pg-id} query
+.. prompt:: bash #
+
+   ceph pg {pg-id} query
 
 
 Scrub a Placement Group
 =======================
 
-To scrub a placement group, execute the following::
+To scrub a placement group, execute the following:
 
-        ceph pg scrub {pg-id}
+.. prompt:: bash #
+
+   ceph pg scrub {pg-id}
 
 Ceph checks the primary and any replica nodes, generates a catalog of all objects
 in the placement group and compares them to ensure that no objects are missing
@@ -582,9 +688,11 @@ or mismatched, and their contents are consistent.  Assuming the replicas all
 match, a final semantic sweep ensures that all of the snapshot-related object
 metadata is consistent. Errors are reported via logs.
 
-To scrub all placement groups from a specific pool, execute the following::
+To scrub all placement groups from a specific pool, execute the following:
 
-        ceph osd pool scrub {pool-name}
+.. prompt:: bash #
+
+   ceph osd pool scrub {pool-name}
 
 Prioritize backfill/recovery of a Placement Group(s)
 ====================================================
@@ -596,19 +704,23 @@ machines and other PGs may be used by inactive machines/less relevant data).
 In that case, you may want to prioritize recovery of those groups so
 performance and/or availability of data stored on those groups is restored
 earlier. To do this (mark particular placement group(s) as prioritized during
-backfill or recovery), execute the following::
+backfill or recovery), execute the following:
 
-        ceph pg force-recovery {pg-id} [{pg-id #2}] [{pg-id #3} ...]
-        ceph pg force-backfill {pg-id} [{pg-id #2}] [{pg-id #3} ...]
+.. prompt:: bash #
+
+   ceph pg force-recovery {pg-id} [{pg-id #2}] [{pg-id #3} ...]
+   ceph pg force-backfill {pg-id} [{pg-id #2}] [{pg-id #3} ...]
 
 This will cause Ceph to perform recovery or backfill on specified placement
 groups first, before other placement groups. This does not interrupt currently
 ongoing backfills or recovery, but causes specified PGs to be processed
 as soon as possible. If you change your mind or prioritize wrong groups,
-use::
+use:
 
-        ceph pg cancel-force-recovery {pg-id} [{pg-id #2}] [{pg-id #3} ...]
-        ceph pg cancel-force-backfill {pg-id} [{pg-id #2}] [{pg-id #3} ...]
+.. prompt:: bash #
+
+   ceph pg cancel-force-recovery {pg-id} [{pg-id #2}] [{pg-id #3} ...]
+   ceph pg cancel-force-backfill {pg-id} [{pg-id #2}] [{pg-id #3} ...]
 
 This will remove "force" flag from those PGs and they will be processed
 in default order. Again, this doesn't affect currently processed placement
@@ -618,15 +730,19 @@ The "force" flag is cleared automatically after recovery or backfill of group
 is done.
 
 Similarly, you may use the following commands to force Ceph to perform recovery
-or backfill on all placement groups from a specified pool first::
+or backfill on all placement groups from a specified pool first:
 
-        ceph osd pool force-recovery {pool-name}
-        ceph osd pool force-backfill {pool-name}
+.. prompt:: bash #
 
-or::
+   ceph osd pool force-recovery {pool-name}
+   ceph osd pool force-backfill {pool-name}
 
-        ceph osd pool cancel-force-recovery {pool-name}
-        ceph osd pool cancel-force-backfill {pool-name}
+or:
+
+.. prompt:: bash #
+
+   ceph osd pool cancel-force-recovery {pool-name}
+   ceph osd pool cancel-force-backfill {pool-name}
 
 to restore to the default recovery or backfill priority if you change your mind.
 
@@ -635,9 +751,11 @@ priority computations, so use them with caution!
 Especially, if you have multiple pools that are currently sharing the same
 underlying OSDs, and some particular pools hold data more important than others,
 we recommend you use the following command to re-arrange all pools's
-recovery/backfill priority in a better order::
+recovery/backfill priority in a better order:
 
-        ceph osd pool set {pool-name} recovery_priority {value}
+.. prompt:: bash #
+
+   ceph osd pool set {pool-name} recovery_priority {value}
 
 For example, if you have 10 pools you could make the most important one priority 10,
 next 9, etc. Or you could leave most pools alone and have say 3 important pools
@@ -658,9 +776,11 @@ are recovered.
 
 Currently the only supported option is "revert", which will either roll back to
 a previous version of the object or (if it was a new object) forget about it
-entirely. To mark the "unfound" objects as "lost", execute the following::
+entirely. To mark the "unfound" objects as "lost", execute the following:
 
-        ceph pg {pg-id} mark_unfound_lost revert|delete
+.. prompt:: bash #
+
+   ceph pg {pg-id} mark_unfound_lost revert|delete
 
 .. important:: Use this feature with caution, because it may confuse
    applications that expect the object(s) to exist.
@@ -675,4 +795,4 @@ entirely. To mark the "unfound" objects as "lost", execute the following::
 
 .. _Create a Pool: ../pools#createpool
 .. _Mapping PGs to OSDs: ../../../architecture#mapping-pgs-to-osds
-.. _pgcalc: http://ceph.com/pgcalc/
+.. _pgcalc: https://old.ceph.com/pgcalc/

@@ -40,10 +40,11 @@ class MgrSession;
 class PyModuleRegistry
 {
 private:
-  mutable Mutex lock{"PyModuleRegistry::lock"};
+  mutable ceph::mutex lock = ceph::make_mutex("PyModuleRegistry::lock");
   LogChannelRef clog;
 
   std::map<std::string, PyModuleRef> modules;
+  std::multimap<std::string, entity_addrvec_t> clients;
 
   std::unique_ptr<ActivePyModules> active_modules;
   std::unique_ptr<StandbyPyModules> standby_modules;
@@ -65,14 +66,22 @@ public:
   void handle_config(const std::string &k, const std::string &v);
   void handle_config_notify();
 
+  void update_kv_data(
+    const std::string prefix,
+    bool incremental,
+    const map<std::string, boost::optional<bufferlist>, std::less<>>& data) {
+    ceph_assert(active_modules);
+    active_modules->update_kv_data(prefix, incremental, data);
+  }
+
   /**
    * Get references to all modules (whether they have loaded and/or
    * errored) or not.
    */
-  std::list<PyModuleRef> get_modules() const
+  auto get_modules() const
   {
+    std::vector<PyModuleRef> modules_out;
     std::lock_guard l(lock);
-    std::list<PyModuleRef> modules_out;
     for (const auto &i : modules) {
       modules_out.push_back(i.second);
     }
@@ -89,6 +98,10 @@ public:
    */
   bool handle_mgr_map(const MgrMap &mgr_map_);
 
+  bool have_standby_modules() const {
+    return !!standby_modules;
+  }
+
   void init();
 
   void upgrade_config(
@@ -98,6 +111,7 @@ public:
   void active_start(
                 DaemonStateIndex &ds, ClusterState &cs,
                 const std::map<std::string, std::string> &kv_store,
+		bool mon_provides_kv_sub,
                 MonClient &mc, LogChannelRef clog_, LogChannelRef audit_clog_,
                 Objecter &objecter_, Client &client_, Finisher &f,
                 DaemonServer &server);
@@ -177,10 +191,41 @@ public:
     }
   }
 
+  bool should_notify(const std::string& name,
+		     const std::string& notify_type) {
+    return modules.at(name)->should_notify(notify_type);
+  }
+
   std::map<std::string, std::string> get_services() const
   {
     ceph_assert(active_modules);
     return active_modules->get_services();
   }
+
+  void register_client(std::string_view name, entity_addrvec_t addrs)
+  {
+    clients.emplace(std::string(name), std::move(addrs));
+  }
+  void unregister_client(std::string_view name, const entity_addrvec_t& addrs)
+  {
+    auto itp = clients.equal_range(std::string(name));
+    for (auto it = itp.first; it != itp.second; ++it) {
+      if (it->second == addrs) {
+        clients.erase(it);
+        return;
+      }
+    }
+  }
+
+  auto get_clients() const
+  {
+    std::scoped_lock l(lock);
+    std::vector<entity_addrvec_t> v;
+    for (const auto& p : clients) {
+      v.push_back(p.second);
+    }
+    return v;
+  }
+
   // <<< (end of ActivePyModules cheeky call-throughs)
 };

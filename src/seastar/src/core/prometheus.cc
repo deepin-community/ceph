@@ -35,8 +35,11 @@
 #include <boost/range/algorithm.hpp>
 #include <boost/range/combine.hpp>
 #include <seastar/core/thread.hh>
+#include <seastar/core/loop.hh>
 
 namespace seastar {
+
+extern seastar::logger seastar_logger;
 
 namespace prometheus {
 namespace pm = io::prometheus::client;
@@ -51,8 +54,13 @@ static bool write_delimited_to(const google::protobuf::MessageLite& message,
         google::protobuf::io::ZeroCopyOutputStream* rawOutput) {
     google::protobuf::io::CodedOutputStream output(rawOutput);
 
+#if GOOGLE_PROTOBUF_VERSION >= 3004000
+    const size_t size = message.ByteSizeLong();
+    output.WriteVarint64(size);
+#else
     const int size = message.ByteSize();
     output.WriteVarint32(size);
+#endif
 
     uint8_t* buffer = output.GetDirectBufferForNBytesAndAdvance(size);
     if (buffer != nullptr) {
@@ -599,6 +607,7 @@ future<> write_text_representation(output_stream<char>& out, const config& ctx, 
                     s << "\n";
                 }
                 out.write(s.str()).get();
+                thread::maybe_yield();
             });
         }
     });
@@ -651,6 +660,10 @@ class metrics_handler : public handler_base  {
         }
         // Prometheus uses url encoding for the path so '*' is encoded as '%2A'
         if (boost::algorithm::ends_with(name, "%2A")) {
+            // This assert is obviously true. It is in here just to
+            // silence a bogus gcc warning:
+            // https://gcc.gnu.org/bugzilla/show_bug.cgi?id=89337
+            assert(name.length() >= 3);
             name.resize(name.length() - 3);
             return true;
         }

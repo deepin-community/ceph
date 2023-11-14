@@ -4,11 +4,12 @@
 
 #include <string.h>
 
+#include <rte_string_fns.h>
 #include <rte_common.h>
 #include <rte_malloc.h>
 #include <rte_cryptodev_pmd.h>
 
-#include "rte_aesni_mb_pmd_private.h"
+#include "aesni_mb_pmd_private.h"
 
 
 static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
@@ -25,9 +26,9 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 					.increment = 1
 				},
 				.digest_size = {
-					.min = 12,
-					.max = 12,
-					.increment = 0
+					.min = 1,
+					.max = 16,
+					.increment = 1
 				},
 				.iv_size = { 0 }
 			}, }
@@ -42,13 +43,34 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 				.block_size = 64,
 				.key_size = {
 					.min = 1,
-					.max = 64,
+					.max = 65535,
 					.increment = 1
 				},
 				.digest_size = {
-					.min = 12,
-					.max = 12,
+					.min = 1,
+					.max = 20,
+					.increment = 1
+				},
+				.iv_size = { 0 }
+			}, }
+		}, }
+	},
+	{	/* SHA1 */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA1,
+				.block_size = 64,
+				.key_size = {
+					.min = 0,
+					.max = 0,
 					.increment = 0
+				},
+				.digest_size = {
+					.min = 1,
+					.max = 20,
+					.increment = 1
 				},
 				.iv_size = { 0 }
 			}, }
@@ -63,13 +85,34 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 				.block_size = 64,
 				.key_size = {
 					.min = 1,
-					.max = 64,
+					.max = 65535,
 					.increment = 1
 				},
 				.digest_size = {
-					.min = 14,
-					.max = 14,
+					.min = 1,
+					.max = 28,
+					.increment = 1
+				},
+				.iv_size = { 0 }
+			}, }
+		}, }
+	},
+	{	/* SHA224 */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA224,
+				.block_size = 64,
+				.key_size = {
+					.min = 0,
+					.max = 0,
 					.increment = 0
+				},
+				.digest_size = {
+					.min = 1,
+					.max = 28,
+					.increment = 1
 				},
 				.iv_size = { 0 }
 			}, }
@@ -84,13 +127,34 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 				.block_size = 64,
 				.key_size = {
 					.min = 1,
-					.max = 64,
+					.max = 65535,
 					.increment = 1
 				},
 				.digest_size = {
-					.min = 16,
-					.max = 16,
+					.min = 1,
+					.max = 32,
+					.increment = 1
+				},
+				.iv_size = { 0 }
+			}, }
+		}, }
+	},
+	{	/* SHA256 */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA256,
+				.block_size = 64,
+				.key_size = {
+					.min = 0,
+					.max = 0,
 					.increment = 0
+				},
+				.digest_size = {
+					.min = 1,
+					.max = 32,
+					.increment = 1
 				},
 				.iv_size = { 0 }
 			}, }
@@ -105,13 +169,34 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 				.block_size = 128,
 				.key_size = {
 					.min = 1,
-					.max = 128,
+					.max = 65535,
 					.increment = 1
 				},
 				.digest_size = {
-					.min = 24,
-					.max = 24,
+					.min = 1,
+					.max = 48,
+					.increment = 1
+				},
+				.iv_size = { 0 }
+			}, }
+		}, }
+	},
+	{	/* SHA384 */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA384,
+				.block_size = 128,
+				.key_size = {
+					.min = 0,
+					.max = 0,
 					.increment = 0
+				},
+				.digest_size = {
+					.min = 1,
+					.max = 48,
+					.increment = 1
 				},
 				.iv_size = { 0 }
 			}, }
@@ -126,13 +211,34 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 				.block_size = 128,
 				.key_size = {
 					.min = 1,
-					.max = 128,
+					.max = 65535,
 					.increment = 1
 				},
 				.digest_size = {
-					.min = 32,
-					.max = 32,
+					.min = 1,
+					.max = 64,
+					.increment = 1
+				},
+				.iv_size = { 0 }
+			}, }
+		}, }
+	},
+	{	/* SHA512  */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA512,
+				.block_size = 128,
+				.key_size = {
+					.min = 0,
+					.max = 0,
 					.increment = 0
+				},
+				.digest_size = {
+					.min = 1,
+					.max = 64,
+					.increment = 1
 				},
 				.iv_size = { 0 }
 			}, }
@@ -208,8 +314,13 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 				.block_size = 16,
 				.key_size = {
 					.min = 16,
+#if IMB_VERSION_NUM >= IMB_VERSION(0, 53, 3)
+					.max = 32,
+					.increment = 16
+#else
 					.max = 16,
 					.increment = 0
+#endif
 				},
 				.iv_size = {
 					.min = 16,
@@ -322,11 +433,66 @@ static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
 					.increment = 0
 				},
 				.digest_size = {
-					.min = 12,
+					.min = 1,
+					.max = 16,
+					.increment = 1
+				},
+				.iv_size = { 0 }
+			}, }
+		}, }
+	},
+	{	/* AES GCM */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AEAD,
+			{.aead = {
+				.algo = RTE_CRYPTO_AEAD_AES_GCM,
+				.block_size = 16,
+				.key_size = {
+					.min = 16,
+					.max = 32,
+					.increment = 8
+				},
+				.digest_size = {
+					.min = 8,
 					.max = 16,
 					.increment = 4
 				},
-				.iv_size = { 0 }
+				.aad_size = {
+					.min = 0,
+					.max = 65535,
+					.increment = 1
+				},
+				.iv_size = {
+					.min = 12,
+					.max = 12,
+					.increment = 0
+				}
+			}, }
+		}, }
+	},
+	{	/* AES GMAC (AUTH) */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_AES_GMAC,
+				.block_size = 16,
+				.key_size = {
+					.min = 16,
+					.max = 32,
+					.increment = 8
+				},
+				.digest_size = {
+					.min = 8,
+					.max = 16,
+					.increment = 4
+				},
+				.iv_size = {
+					.min = 12,
+					.max = 12,
+					.increment = 0
+				}
 			}, }
 		}, }
 	},
@@ -423,6 +589,8 @@ aesni_mb_pmd_qp_release(struct rte_cryptodev *dev, uint16_t qp_id)
 		r = rte_ring_lookup(qp->name);
 		if (r)
 			rte_ring_free(r);
+		if (qp->mb_mgr)
+			free_mb_mgr(qp->mb_mgr);
 		rte_free(qp);
 		dev->data->queue_pairs[qp_id] = NULL;
 	}
@@ -447,14 +615,12 @@ aesni_mb_pmd_qp_set_unique_name(struct rte_cryptodev *dev,
 /** Create a ring to place processed operations on */
 static struct rte_ring *
 aesni_mb_pmd_qp_create_processed_ops_ring(struct aesni_mb_qp *qp,
-		const char *str, unsigned int ring_size, int socket_id)
+		unsigned int ring_size, int socket_id)
 {
 	struct rte_ring *r;
 	char ring_name[RTE_CRYPTODEV_NAME_MAX_LEN];
 
-	unsigned int n = snprintf(ring_name, sizeof(ring_name),
-				"%s_%s",
-				qp->name, str);
+	unsigned int n = strlcpy(ring_name, qp->name, sizeof(ring_name));
 
 	if (n >= sizeof(ring_name))
 		return NULL;
@@ -480,10 +646,11 @@ aesni_mb_pmd_qp_create_processed_ops_ring(struct aesni_mb_qp *qp,
 static int
 aesni_mb_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 		const struct rte_cryptodev_qp_conf *qp_conf,
-		int socket_id, struct rte_mempool *session_pool)
+		int socket_id)
 {
 	struct aesni_mb_qp *qp = NULL;
 	struct aesni_mb_private *internals = dev->data->dev_private;
+	int ret = -1;
 
 	/* Free memory prior to re-allocation if needed. */
 	if (dev->data->queue_pairs[qp_id] != NULL)
@@ -502,14 +669,44 @@ aesni_mb_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 		goto qp_setup_cleanup;
 
 
-	qp->op_fns = &job_ops[internals->vector_mode];
+	qp->mb_mgr = alloc_mb_mgr(0);
+	if (qp->mb_mgr == NULL) {
+		ret = -ENOMEM;
+		goto qp_setup_cleanup;
+	}
+
+	switch (internals->vector_mode) {
+	case RTE_AESNI_MB_SSE:
+		dev->feature_flags |= RTE_CRYPTODEV_FF_CPU_SSE;
+		init_mb_mgr_sse(qp->mb_mgr);
+		break;
+	case RTE_AESNI_MB_AVX:
+		dev->feature_flags |= RTE_CRYPTODEV_FF_CPU_AVX;
+		init_mb_mgr_avx(qp->mb_mgr);
+		break;
+	case RTE_AESNI_MB_AVX2:
+		dev->feature_flags |= RTE_CRYPTODEV_FF_CPU_AVX2;
+		init_mb_mgr_avx2(qp->mb_mgr);
+		break;
+	case RTE_AESNI_MB_AVX512:
+		dev->feature_flags |= RTE_CRYPTODEV_FF_CPU_AVX512;
+		init_mb_mgr_avx512(qp->mb_mgr);
+		break;
+	default:
+		AESNI_MB_LOG(ERR, "Unsupported vector mode %u\n",
+				internals->vector_mode);
+		goto qp_setup_cleanup;
+	}
 
 	qp->ingress_queue = aesni_mb_pmd_qp_create_processed_ops_ring(qp,
-			"ingress", qp_conf->nb_descriptors, socket_id);
-	if (qp->ingress_queue == NULL)
+			qp_conf->nb_descriptors, socket_id);
+	if (qp->ingress_queue == NULL) {
+		ret = -1;
 		goto qp_setup_cleanup;
+	}
 
-	qp->sess_mp = session_pool;
+	qp->sess_mp = qp_conf->mp_session;
+	qp->sess_mp_priv = qp_conf->mp_session_private;
 
 	memset(&qp->stats, 0, sizeof(qp->stats));
 
@@ -517,23 +714,16 @@ aesni_mb_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 
 	snprintf(mp_name, RTE_MEMPOOL_NAMESIZE,
 				"digest_mp_%u_%u", dev->data->dev_id, qp_id);
-
-	/* Initialise multi-buffer manager */
-	(*qp->op_fns->job.init_mgr)(&qp->mb_mgr);
 	return 0;
 
 qp_setup_cleanup:
-	if (qp)
+	if (qp) {
+		if (qp->mb_mgr)
+			free_mb_mgr(qp->mb_mgr);
 		rte_free(qp);
+	}
 
-	return -1;
-}
-
-/** Return the number of allocated queue pairs */
-static uint32_t
-aesni_mb_pmd_qp_count(struct rte_cryptodev *dev)
-{
-	return dev->data->nb_queue_pairs;
+	return ret;
 }
 
 /** Returns the size of the aesni multi-buffer session structure */
@@ -565,7 +755,7 @@ aesni_mb_pmd_sym_session_configure(struct rte_cryptodev *dev,
 		return -ENOMEM;
 	}
 
-	ret = aesni_mb_set_session_parameters(&job_ops[internals->vector_mode],
+	ret = aesni_mb_set_session_parameters(internals->mb_mgr,
 			sess_private_data, xform);
 	if (ret != 0) {
 		AESNI_MB_LOG(ERR, "failed configure session parameters");
@@ -611,7 +801,8 @@ struct rte_cryptodev_ops aesni_mb_pmd_ops = {
 
 		.queue_pair_setup	= aesni_mb_pmd_qp_setup,
 		.queue_pair_release	= aesni_mb_pmd_qp_release,
-		.queue_pair_count	= aesni_mb_pmd_qp_count,
+
+		.sym_cpu_process	= aesni_mb_cpu_crypto_process_bulk,
 
 		.sym_session_get_size	= aesni_mb_pmd_sym_session_get_size,
 		.sym_session_configure	= aesni_mb_pmd_sym_session_configure,

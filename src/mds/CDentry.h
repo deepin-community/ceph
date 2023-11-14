@@ -9,10 +9,8 @@
  * modify it under the terms of the GNU Lesser General Public
  * License version 2.1, as published by the Free Software 
  * Foundation.  See file COPYING.
- * 
+ *
  */
-
-
 
 #ifndef CEPH_CDENTRY_H
 #define CEPH_CDENTRY_H
@@ -28,10 +26,12 @@
 #include "include/elist.h"
 #include "include/filepath.h"
 
+#include "BatchOp.h"
 #include "MDSCacheObject.h"
 #include "MDSContext.h"
+#include "Mutation.h"
 #include "SimpleLock.h"
-#include "LocalLock.h"
+#include "LocalLockC.h"
 #include "ScrubHeader.h"
 
 class CInode;
@@ -41,8 +41,6 @@ class CDentry;
 class LogSegment;
 
 class Session;
-
-
 
 // define an ordering
 bool operator<(const CDentry& l, const CDentry& r);
@@ -72,7 +70,7 @@ public:
     unsigned char get_remote_d_type() const { return remote_d_type; }
     std::string get_remote_d_type_string() const;
 
-    void set_remote(inodeno_t ino, unsigned char d_type) { 
+    void set_remote(inodeno_t ino, unsigned char d_type) {
       remote_ino = ino;
       remote_d_type = d_type;
       inode = 0;
@@ -89,39 +87,53 @@ public:
   static const int STATE_EVALUATINGSTRAY = (1<<4);
   static const int STATE_PURGINGPINNED =  (1<<5);
   static const int STATE_BOTTOMLRU =    (1<<6);
+  static const int STATE_UNLINKING =    (1<<7);
   // stray dentry needs notification of releasing reference
   static const int STATE_STRAY =	STATE_NOTIFYREF;
   static const int MASK_STATE_IMPORT_KEPT = STATE_BOTTOMLRU;
 
   // -- pins --
-  static const int PIN_INODEPIN =     1;  // linked inode is pinned
-  static const int PIN_FRAGMENTING = -2;  // containing dir is refragmenting
-  static const int PIN_PURGING =      3;
-  static const int PIN_SCRUBPARENT =  4;
+  static const int PIN_INODEPIN =         1;  // linked inode is pinned
+  static const int PIN_FRAGMENTING =     -2;  // containing dir is refragmenting
+  static const int PIN_PURGING =          3;
+  static const int PIN_SCRUBPARENT =      4;
+  static const int PIN_WAITUNLINKSTATE  = 5;
 
   static const unsigned EXPORT_NONCE = 1;
 
+  const static uint64_t WAIT_UNLINK_STATE  = (1<<0);
+  const static uint64_t WAIT_UNLINK_FINISH = (1<<1);
+  uint32_t replica_unlinking_ref = 0;
 
   CDentry(std::string_view n, __u32 h,
+          mempool::mds_co::string alternate_name,
 	  snapid_t f, snapid_t l) :
     hash(h),
     first(f), last(l),
     item_dirty(this),
     lock(this, &lock_type),
     versionlock(this, &versionlock_type),
-    name(n)
+    name(n),
+    alternate_name(std::move(alternate_name))
   {}
-  CDentry(std::string_view n, __u32 h, inodeno_t ino, unsigned char dt,
+  CDentry(std::string_view n, __u32 h,
+          mempool::mds_co::string alternate_name,
+          inodeno_t ino, unsigned char dt,
 	  snapid_t f, snapid_t l) :
     hash(h),
     first(f), last(l),
     item_dirty(this),
     lock(this, &lock_type),
     versionlock(this, &versionlock_type),
-    name(n)
+    name(n),
+    alternate_name(std::move(alternate_name))
   {
     linkage.remote_ino = ino;
     linkage.remote_d_type = dt;
+  }
+
+  ~CDentry() override {
+    ceph_assert(batch_ops.empty());
   }
 
   std::string_view pin_name(int p) const override {
@@ -130,6 +142,7 @@ public:
     case PIN_FRAGMENTING: return "fragmenting";
     case PIN_PURGING: return "purging";
     case PIN_SCRUBPARENT: return "scrubparent";
+    case PIN_WAITUNLINKSTATE: return "waitunlinkstate";
     default: return generic_pin_name(p);
     }
   }
@@ -150,6 +163,15 @@ public:
   const CDir *get_dir() const { return dir; }
   CDir *get_dir() { return dir; }
   std::string_view get_name() const { return std::string_view(name); }
+  std::string_view get_alternate_name() const {
+    return std::string_view(alternate_name);
+  }
+  void set_alternate_name(mempool::mds_co::string altn) {
+    alternate_name = std::move(altn);
+  }
+  void set_alternate_name(std::string_view altn) {
+    alternate_name = mempool::mds_co::string(altn);
+  }
 
   __u32 get_hash() const { return hash; }
 
@@ -236,29 +258,18 @@ public:
 
   version_t pre_dirty(version_t min=0);
   void _mark_dirty(LogSegment *ls);
-  void mark_dirty(version_t projected_dirv, LogSegment *ls);
+  void mark_dirty(version_t pv, LogSegment *ls);
   void mark_clean();
 
   void mark_new();
   bool is_new() const { return state_test(STATE_NEW); }
   void clear_new() { state_clear(STATE_NEW); }
   
-  // -- replication
-  void encode_replica(mds_rank_t mds, bufferlist& bl, bool need_recover) {
-    __u32 nonce = add_replica(mds);
-    encode(nonce, bl);
-    encode(first, bl);
-    encode(linkage.remote_ino, bl);
-    encode(linkage.remote_d_type, bl);
-    lock.encode_state_for_replica(bl);
-    encode(need_recover, bl);
-  }
-  void decode_replica(bufferlist::const_iterator& p, bool is_new);
-
   // -- exporting
   // note: this assumes the dentry already exists.  
   // i.e., the name is already extracted... so we just need the other state.
-  void encode_export(bufferlist& bl) {
+  void encode_export(ceph::buffer::list& bl) {
+    ENCODE_START(1, 1, bl);
     encode(first, bl);
     encode(state, bl);
     encode(version, bl);
@@ -266,6 +277,7 @@ public:
     encode(lock, bl);
     encode(get_replicas(), bl);
     get(PIN_TEMPEXPORTING);
+    ENCODE_FINISH(bl);
   }
   void finish_export() {
     // twiddle
@@ -279,7 +291,8 @@ public:
   void abort_export() {
     put(PIN_TEMPEXPORTING);
   }
-  void decode_import(bufferlist::const_iterator& blp, LogSegment *ls) {
+  void decode_import(ceph::buffer::list::const_iterator& blp, LogSegment *ls) {
+    DECODE_START(1, blp);
     decode(first, blp);
     __u32 nstate;
     decode(nstate, blp);
@@ -296,6 +309,7 @@ public:
     if (is_replicated())
       get(PIN_REPLICATED);
     replica_nonce = 0;
+    DECODE_FINISH(blp);
   }
 
   // -- locking --
@@ -304,8 +318,8 @@ public:
     return &lock;
   }
   void set_object_info(MDSCacheObjectInfo &info) override;
-  void encode_lock_state(int type, bufferlist& bl) override;
-  void decode_lock_state(int type, const bufferlist& bl) override;
+  void encode_lock_state(int type, ceph::buffer::list& bl) override;
+  void decode_lock_state(int type, const ceph::buffer::list& bl) override;
 
   // ---------------------------------------------
   // replicas (on clients)
@@ -335,10 +349,16 @@ public:
   void remove_client_lease(ClientLease *r, Locker *locker);  // returns remaining mask (if any), and kicks locker eval_gathers
   void remove_client_leases(Locker *locker);
 
-  ostream& print_db_line_prefix(ostream& out) override;
-  void print(ostream& out) override;
-  void dump(Formatter *f) const;
+  std::ostream& print_db_line_prefix(std::ostream& out) override;
+  void print(std::ostream& out) override;
+  void dump(ceph::Formatter *f) const;
 
+  static void encode_remote(inodeno_t& ino, unsigned char d_type,
+                            std::string_view alternate_name,
+                            bufferlist &bl);
+  static void decode_remote(char icode, inodeno_t& ino, unsigned char& d_type,
+                            mempool::mds_co::string& alternate_name,
+                            ceph::buffer::list::const_iterator& bl);
 
   __u32 hash;
   snapid_t first, last;
@@ -351,9 +371,10 @@ public:
   static LockType versionlock_type;
 
   SimpleLock lock; // FIXME referenced containers not in mempool
-  LocalLock versionlock; // FIXME referenced containers not in mempool
+  LocalLockC versionlock; // FIXME referenced containers not in mempool
 
   mempool::mds_co::map<client_t,ClientLease*> client_lease_map;
+  std::map<int, std::unique_ptr<BatchOp>> batch_ops;
 
 
 protected:
@@ -365,7 +386,7 @@ protected:
   friend class C_MDC_XlockRequest;
 
   CDir *dir = nullptr;     // containing dirfrag
-  linkage_t linkage;
+  linkage_t linkage; /* durable */
   mempool::mds_co::list<linkage_t> projected;
 
   version_t version = 0;  // dir version when last touched.
@@ -373,9 +394,10 @@ protected:
 
 private:
   mempool::mds_co::string name;
+  mempool::mds_co::string alternate_name;
 };
 
-ostream& operator<<(ostream& out, const CDentry& dn);
+std::ostream& operator<<(std::ostream& out, const CDentry& dn);
 
 
 #endif

@@ -22,6 +22,41 @@ extern "C" {
 #endif
 
 /**
+ * RX/TX queue states
+ */
+#define RTE_ETH_QUEUE_STATE_STOPPED 0
+#define RTE_ETH_QUEUE_STATE_STARTED 1
+#define RTE_ETH_QUEUE_STATE_HAIRPIN 2
+
+/**
+ * @internal
+ * Check if the selected Rx queue is hairpin queue.
+ *
+ * @param dev
+ *  Pointer to the selected device.
+ * @param queue_id
+ *  The selected queue.
+ *
+ * @return
+ *   - (1) if the queue is hairpin queue, 0 otherwise.
+ */
+int rte_eth_dev_is_rx_hairpin_queue(struct rte_eth_dev *dev, uint16_t queue_id);
+
+/**
+ * @internal
+ * Check if the selected Tx queue is hairpin queue.
+ *
+ * @param dev
+ *  Pointer to the selected device.
+ * @param queue_id
+ *  The selected queue.
+ *
+ * @return
+ *   - (1) if the queue is hairpin queue, 0 otherwise.
+ */
+int rte_eth_dev_is_tx_hairpin_queue(struct rte_eth_dev *dev, uint16_t queue_id);
+
+/**
  * @internal
  * Returns a ethdev slot specified by the unique identifier name.
  *
@@ -58,10 +93,17 @@ struct rte_eth_dev *rte_eth_dev_attach_secondary(const char *name);
 
 /**
  * @internal
- * Release the specified ethdev port.
+ * Notify RTE_ETH_EVENT_DESTROY and release the specified ethdev port.
+ *
+ * The following PMD-managed data fields will be freed:
+ *   - dev_private
+ *   - mac_addrs
+ *   - hash_mac_addrs
+ * If one of these fields should not be freed,
+ * it must be reset to NULL by the PMD, typically in dev_close method.
  *
  * @param eth_dev
- * The *eth_dev* pointer is the address of the *rte_eth_dev* structure.
+ * Device to be detached.
  * @return
  *   - 0 on success, negative on error
  */
@@ -218,7 +260,8 @@ rte_eth_linkstatus_get(const struct rte_eth_dev *dev,
  * @return
  *   Negative errno value on error, 0 on success.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_eth_switch_domain_alloc(uint16_t *domain_id);
 
 /**
@@ -236,7 +279,8 @@ rte_eth_switch_domain_alloc(uint16_t *domain_id);
  * @return
  *   Negative errno value on error, 0 on success.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_eth_switch_domain_free(uint16_t domain_id);
 
 /** Generic Ethernet device arguments  */
@@ -265,7 +309,8 @@ struct rte_eth_devargs {
  * @return
  *   Negative errno value on error, 0 on success.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_eth_devargs_parse(const char *devargs, struct rte_eth_devargs *eth_devargs);
 
 
@@ -297,7 +342,8 @@ typedef int (*ethdev_bus_specific_init)(struct rte_eth_dev *ethdev,
  * @return
  *   Negative errno value on error, 0 on success.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_eth_dev_create(struct rte_device *device, const char *name,
 	size_t priv_data_size,
 	ethdev_bus_specific_init bus_specific_init, void *bus_init_params,
@@ -310,7 +356,7 @@ typedef int (*ethdev_uninit_t)(struct rte_eth_dev *ethdev);
  * @warning
  * @b EXPERIMENTAL: this API may change without prior notice.
  *
- * PMD helper function for cleaing up the resources of a ethdev port on it's
+ * PMD helper function for cleaning up the resources of a ethdev port on it's
  * destruction.
  *
  * @param ethdev
@@ -321,34 +367,9 @@ typedef int (*ethdev_uninit_t)(struct rte_eth_dev *ethdev);
  * @return
  *   Negative errno value on error, 0 on success.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_eth_dev_destroy(struct rte_eth_dev *ethdev, ethdev_uninit_t ethdev_uninit);
-
-/**
- * PMD helper function to check if keeping CRC is requested
- *
- * @note
- * When CRC_STRIP offload flag is removed and default behavior switch to
- * strip CRC, as planned, this helper function is not that useful and will be
- * removed. In PMDs this function will be replaced with check:
- *   if (offloads & DEV_RX_OFFLOAD_KEEP_CRC)
- *
- * @param rx_offloads
- *   offload bits to be applied
- *
- * @return
- *   Return positive if keeping CRC is requested,
- *   zero if stripping CRC is requested
- */
-static inline int
-rte_eth_dev_must_keep_crc(uint64_t rx_offloads)
-{
-	if (rx_offloads & DEV_RX_OFFLOAD_CRC_STRIP)
-		return 0;
-
-	/* no KEEP_CRC or CRC_STRIP offload flags means keep CRC */
-	return 1;
-}
 
 #ifdef __cplusplus
 }

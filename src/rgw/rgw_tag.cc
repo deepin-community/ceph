@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 #include <map>
 #include <string>
@@ -10,30 +10,23 @@
 #include "rgw_tag.h"
 #include "rgw_common.h"
 
-static constexpr uint32_t MAX_OBJ_TAGS=10;
-static constexpr uint32_t MAX_TAG_KEY_SIZE=128;
-static constexpr uint32_t MAX_TAG_VAL_SIZE=256;
-
-bool RGWObjTags::add_tag(const string&key, const string& val){
-  return tag_map.emplace(std::make_pair(key,val)).second;
+void RGWObjTags::add_tag(const string& key, const string& val){
+  tag_map.emplace(std::make_pair(key,val));
 }
 
-bool RGWObjTags::emplace_tag(std::string&& key, std::string&& val){
-  return tag_map.emplace(std::move(key), std::move(val)).second;
+void RGWObjTags::emplace_tag(std::string&& key, std::string&& val){
+  tag_map.emplace(std::move(key), std::move(val));
 }
 
 int RGWObjTags::check_and_add_tag(const string&key, const string& val){
-  if (tag_map.size() == MAX_OBJ_TAGS ||
-      key.size() > MAX_TAG_KEY_SIZE ||
-      val.size() > MAX_TAG_VAL_SIZE ||
+  if (tag_map.size() == max_obj_tags ||
+      key.size() > max_tag_key_size ||
+      val.size() > max_tag_val_size ||
       key.size() == 0){
     return -ERR_INVALID_TAG;
   }
 
-  // if we get a conflicting key, either the XML is malformed or the user
-  // supplied an invalid string
-  if (!add_tag(key,val))
-    return -EINVAL;
+  add_tag(key,val);
 
   return 0;
 }

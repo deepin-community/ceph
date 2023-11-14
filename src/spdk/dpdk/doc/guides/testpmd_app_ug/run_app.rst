@@ -7,131 +7,9 @@ Running the Application
 EAL Command-line Options
 ------------------------
 
-The following are the EAL command-line options that can be used in conjunction with the testpmd,
-or any other DPDK application.
-See the DPDK Getting Started Guides for more information on these options.
-
-*   ``-c COREMASK``
-
-    Set the hexadecimal bitmask of the cores to run on.
-
-*   ``-l CORELIST``
-
-    List of cores to run on
-
-    The argument format is ``<c1>[-c2][,c3[-c4],...]``
-    where ``c1``, ``c2``, etc are core indexes between 0 and 128.
-
-*   ``--lcores COREMAP``
-
-    Map lcore set to physical cpu set
-
-    The argument format is::
-
-       <lcores[@cpus]>[<,lcores[@cpus]>...]
-
-    Lcore and CPU lists are grouped by ``(`` and ``)`` Within the group.
-    The ``-`` character is used as a range separator and ``,`` is used as a single number separator.
-    The grouping ``()`` can be omitted for single element group.
-    The ``@`` can be omitted if cpus and lcores have the same value.
-
-.. Note::
-    At a given instance only one core option ``--lcores``, ``-l`` or ``-c`` can be used.
-
-
-*   ``--master-lcore ID``
-
-    Core ID that is used as master.
-
-*   ``-n NUM``
-
-    Set the number of memory channels to use.
-
-*   ``-b, --pci-blacklist domain:bus:devid.func``
-
-    Blacklist a PCI device to prevent EAL from using it. Multiple -b options are allowed.
-
-*   ``-d LIB.so``
-
-    Load an external driver. Multiple -d options are allowed.
-
-*   ``-w, --pci-whitelist domain:bus:devid:func``
-
-    Add a PCI device in white list.
-
-*   ``-m MB``
-
-    Memory to allocate. See also ``--socket-mem``.
-
-*   ``-r NUM``
-
-    Set the number of memory ranks (auto-detected by default).
-
-*   ``-v``
-
-    Display the version information on startup.
-
-*   ``--syslog``
-
-    Set the syslog facility.
-
-*   ``--socket-mem``
-
-    Set the memory to allocate on specific sockets (use comma separated values).
-
-*   ``--huge-dir``
-
-    Specify the directory where the hugetlbfs is mounted.
-
-*   ``mbuf-pool-ops-name``:
-
-    Pool ops name for mbuf to use.
-
-*   ``--proc-type``
-
-    Set the type of the current process.
-
-*   ``--file-prefix``
-
-    Prefix for hugepage filenames.
-
-*   ``-vmware-tsc-map``
-
-    Use VMware TSC map instead of native RDTSC.
-
-*   ``--vdev``
-
-    Add a virtual device using the format::
-
-       <driver><id>[,key=val, ...]
-
-    For example::
-
-       --vdev 'net_pcap0,rx_pcap=input.pcap,tx_pcap=output.pcap'
-
-*   ``--base-virtaddr``
-
-    Specify base virtual address.
-
-*   ``--create-uio-dev``
-
-    Create ``/dev/uioX`` (usually done by hotplug).
-
-*   ``--no-shconf``
-
-    No shared config (mmap-ed files).
-
-*   ``--no-pci``
-
-    Disable pci.
-
-*   ``--no-hpet``
-
-    Disable hpet.
-
-*   ``--no-huge``
-
-    Use malloc instead of hugetlbfs.
+Please refer to :doc:`EAL parameters (Linux) <../linux_gsg/linux_eal_parameters>`
+or :doc:`EAL parameters (FreeBSD) <../freebsd_gsg/freebsd_eal_parameters>` for
+a list of available EAL command-line options.
 
 
 Testpmd Command-line Options
@@ -144,7 +22,7 @@ They must be separated from the EAL options, shown in the previous section, with
 
     sudo ./testpmd -l 0-3 -n 4 -- -i --portmask=0x1 --nb-cores=2
 
-The commandline options are:
+The command line options are:
 
 *   ``-i, --interactive``
 
@@ -199,6 +77,13 @@ The commandline options are:
 
     Set the hexadecimal bitmask of the ports used by the packet forwarding test.
 
+*   ``--portlist=X``
+
+      Set the forwarding ports based on the user input used by the packet forwarding test.
+      '-' denotes a range of ports to set including the two specified port IDs
+      ',' separates multiple port values.
+      Possible examples like --portlist=0,1 or --portlist=0-2 or --portlist=0,1-2 etc
+
 *   ``--numa``
 
     Enable NUMA-aware allocation of RX/TX rings and of RX memory buffers
@@ -234,6 +119,10 @@ The commandline options are:
 
     Set the maximum packet size to N bytes, where N >= 64. The default value is 1518.
 
+*   ``--max-lro-pkt-size=N``
+
+    Set the maximum LRO aggregated packet size to N bytes, where N >= 64.
+
 *   ``--eth-peers-configfile=name``
 
     Use a configuration file containing the Ethernet addresses of the peer ports.
@@ -243,11 +132,23 @@ The commandline options are:
        XX:XX:XX:XX:XX:02
        ...
 
-
 *   ``--eth-peer=N,XX:XX:XX:XX:XX:XX``
 
     Set the MAC address ``XX:XX:XX:XX:XX:XX`` of the peer port N,
     where 0 <= N < ``CONFIG_RTE_MAX_ETHPORTS`` from the configuration file.
+
+*   ``--tx-ip=SRC,DST``
+
+    Set the source and destination IP address used when doing transmit only test.
+    The defaults address values are source 198.18.0.1 and
+    destination 198.18.0.2. These are special purpose addresses
+    reserved for benchmarking (RFC 5735).
+
+*   ``--tx-udp=SRC[,DST]``
+
+    Set the source and destination UDP port number for transmit test only test.
+    The default port is the port 9 which is defined for the discard protocol
+    (RFC 863).
 
 *   ``--pkt-filter-mode=mode``
 
@@ -308,6 +209,10 @@ The commandline options are:
 
     Enable hardware VLAN extend.
 
+*   ``--enable-hw-qinq-strip``
+
+    Enable hardware QINQ strip.
+
 *   ``--enable-drop-en``
 
     Enable per-queue packet drop for packets with no descriptors.
@@ -318,7 +223,7 @@ The commandline options are:
 
 *   ``--port-topology=mode``
 
-    Set port topology, where mode is ``paired`` (the default) or ``chained``.
+    Set port topology, where mode is ``paired`` (the default), ``chained`` or ``loop``.
 
     In ``paired`` mode, the forwarding is between pairs of ports, for example: (0,1), (2,3), (4,5).
 
@@ -326,13 +231,15 @@ The commandline options are:
 
     The ordering of the ports can be changed using the portlist testpmd runtime function.
 
+    In ``loop`` mode, ingress traffic is simply transmitted back on the same interface.
+
 *   ``--forward-mode=mode``
 
     Set the forwarding mode where ``mode`` is one of the following::
 
        io (the default)
        mac
-       mac_swap
+       macswap
        flowgen
        rxonly
        txonly
@@ -340,6 +247,7 @@ The commandline options are:
        icmpecho
        ieee1588
        tm
+       noisy
 
 *   ``--rss-ip``
 
@@ -368,6 +276,17 @@ The commandline options are:
 
     Set the number of descriptors in the TX rings to N, where N > 0.
     The default value is 512.
+
+*   ``--hairpinq=N``
+
+    Set the number of hairpin queues per port to N, where 1 <= N <= 65535.
+    The default value is 0. The number of hairpin queues are added to the
+    number of TX queues and to the number of RX queues. then the first
+    RX hairpin is binded to the first TX hairpin, the second RX hairpin is
+    binded to the second TX hairpin and so on. The index of the first
+    RX hairpin queue is the number of RX queues as configured using --rxq.
+    The index of the first TX hairpin queue is the number of TX queues
+    as configured using --txq.
 
 *   ``--burst=N``
 
@@ -443,9 +362,19 @@ The commandline options are:
     Set TX segment sizes or total packet length. Valid for ``tx-only``
     and ``flowgen`` forwarding modes.
 
+*   ``--txonly-multi-flow``
+
+    Generate multiple flows in txonly mode.
+
 *   ``--disable-link-check``
 
     Disable check on link status when starting/stopping ports.
+
+*   ``--disable-device-start``
+
+    Do not automatically start all ports. This allows testing
+    configuration of rx and tx queues before device is started
+    for the first time.
 
 *   ``--no-lsc-interrupt``
 
@@ -459,12 +388,12 @@ The commandline options are:
 
     Set the logical core N to perform bitrate calculation.
 
-*   ``--print-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|dev_probed|dev_released|all>``
+*   ``--print-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|dev_probed|dev_released|flow_aged|all>``
 
     Enable printing the occurrence of the designated event. Using all will
     enable all of them.
 
-*   ``--mask-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|dev_probed|dev_released|all>``
+*   ``--mask-event <unknown|intr_lsc|queue_state|intr_reset|vf_mbox|macsec|intr_rmv|dev_probed|dev_released|flow_aged|all>``
 
     Disable printing the occurrence of the designated event. Using all will
     disable all of them.
@@ -482,9 +411,14 @@ The commandline options are:
     Set the hexadecimal bitmask of TX queue offloads.
     The default value is 0.
 
+*   ``--rx-offloads=0xXXXXXXXX``
+
+    Set the hexadecimal bitmask of RX queue offloads.
+    The default value is 0.
+
 *   ``--hot-plug``
 
-    Enable device event monitor machenism for hotplug.
+    Enable device event monitor mechanism for hotplug.
 
 *   ``--vxlan-gpe-port=N``
 
@@ -498,3 +432,59 @@ The commandline options are:
 *   ``--no-mlockall``
 
     Disable locking all memory.
+
+*   ``--mp-alloc <native|anon|xmem|xmemhuge>``
+
+    Select mempool allocation mode:
+
+    * native: create and populate mempool using native DPDK memory
+    * anon: create mempool using native DPDK memory, but populate using
+      anonymous memory
+    * xmem: create and populate mempool using externally and anonymously
+      allocated area
+    * xmemhuge: create and populate mempool using externally and anonymously
+      allocated hugepage area
+
+*   ``--noisy-tx-sw-buffer-size``
+
+    Set the number of maximum elements  of the FIFO queue to be created
+    for buffering packets. Only available with the noisy forwarding mode.
+    The default value is 0.
+
+*   ``--noisy-tx-sw-buffer-flushtime=N``
+
+    Set the time before packets in the FIFO queue is flushed.
+    Only available with the noisy forwarding mode. The default value is 0.
+
+*   ``--noisy-lkup-memory=N``
+
+    Set the size of the noisy neighbor simulation memory buffer in MB to N.
+    Only available with the noisy forwarding mode. The default value is 0.
+
+
+*   ``--noisy-lkup-num-reads=N``
+
+    Set the number of reads to be done in noisy neighbor simulation memory buffer to N.
+    Only available with the noisy forwarding mode. The default value is 0.
+
+*   ``--noisy-lkup-num-writes=N``
+
+    Set the number of writes to be done in noisy neighbor simulation memory buffer to N.
+    Only available with the noisy forwarding mode. The default value is 0.
+
+*   ``--noisy-lkup-num-reads-writes=N``
+
+    Set the number of r/w accesses to be done in noisy neighbor simulation memory buffer to N.
+    Only available with the noisy forwarding mode. The default value is 0.
+
+*   ``--no-iova-contig``
+
+    Enable to create mempool which is not IOVA contiguous. Valid only with --mp-alloc=anon.
+    The default value is 0.
+
+*   ``--rx-mq-mode``
+
+    Set the hexadecimal bitmask of RX multi queue mode which can be enabled.
+    The default value is 0x7::
+
+       ETH_MQ_RX_RSS_FLAG | ETH_MQ_RX_DCB_FLAG | ETH_MQ_RX_VMDQ_FLAG

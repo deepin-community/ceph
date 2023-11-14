@@ -1,8 +1,9 @@
-import { RbdConfigurationEntry } from '../../../shared/models/configuration';
+import { RbdConfigurationEntry } from '~/app/shared/models/configuration';
 
 export class RbdFormModel {
   name: string;
   pool_name: string;
+  namespace: string;
   data_pool: string;
   size: number;
 
@@ -13,4 +14,13 @@ export class RbdFormModel {
 
   /* Configuration */
   configuration: RbdConfigurationEntry[];
+
+  /* Deletion process */
+  source?: string;
+
+  enable_mirror?: boolean;
+  mirror_mode?: string;
+
+  schedule_interval: string;
+  start_time: string;
 }
