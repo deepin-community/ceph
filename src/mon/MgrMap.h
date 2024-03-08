@@ -18,9 +18,10 @@
 #include <set>
 
 #include "msg/msg_types.h"
-#include "common/Formatter.h"
 #include "include/encoding.h"
 #include "include/utime.h"
+#include "common/Formatter.h"
+#include "common/ceph_releases.h"
 #include "common/version.h"
 #include "common/options.h"
 #include "common/Clock.h"
@@ -41,7 +42,7 @@ public:
     std::set<std::string> tags;
     std::set<std::string> see_also;
 
-    void encode(bufferlist& bl) const {
+    void encode(ceph::buffer::list& bl) const {
       ENCODE_START(1, 1, bl);
       encode(name, bl);
       encode(type, bl);
@@ -57,7 +58,7 @@ public:
       encode(see_also, bl);
       ENCODE_FINISH(bl);
     }
-    void decode(bufferlist::const_iterator& p) {
+    void decode(ceph::buffer::list::const_iterator& p) {
       DECODE_START(1, p);
       decode(name, p);
       decode(type, p);
@@ -73,7 +74,7 @@ public:
       decode(see_also, p);
       DECODE_FINISH(p);
     }
-    void dump(Formatter *f) const {
+    void dump(ceph::Formatter *f) const {
       f->dump_string("name", name);
       f->dump_string("type", Option::type_to_str(
 		       static_cast<Option::type_t>(type)));
@@ -113,7 +114,7 @@ public:
 
     // We do not include the module's `failed` field in the beacon,
     // because it is exposed via health checks.
-    void encode(bufferlist &bl) const {
+    void encode(ceph::buffer::list &bl) const {
       ENCODE_START(2, 1, bl);
       encode(name, bl);
       encode(can_run, bl);
@@ -122,7 +123,7 @@ public:
       ENCODE_FINISH(bl);
     }
 
-    void decode(bufferlist::const_iterator &bl) {
+    void decode(ceph::buffer::list::const_iterator &bl) {
       DECODE_START(1, bl);
       decode(name, bl);
       decode(can_run, bl);
@@ -138,7 +139,7 @@ public:
       return (name == rhs.name) && (can_run == rhs.can_run);
     }
 
-    void dump(Formatter *f) const {
+    void dump(ceph::Formatter *f) const {
       f->open_object_section("module");
       f->dump_string("name", name);
       f->dump_bool("can_run", can_run);
@@ -155,22 +156,23 @@ public:
   class StandbyInfo
   {
   public:
-    uint64_t gid;
+    uint64_t gid = 0;
     std::string name;
     std::vector<ModuleInfo> available_modules;
+    uint64_t mgr_features = 0;
 
     StandbyInfo(uint64_t gid_, const std::string &name_,
-                const std::vector<ModuleInfo>& am)
-      : gid(gid_), name(name_), available_modules(am)
+                const std::vector<ModuleInfo>& am,
+		uint64_t feat)
+      : gid(gid_), name(name_), available_modules(am),
+	mgr_features(feat)
     {}
 
-    StandbyInfo()
-      : gid(0)
-    {}
+    StandbyInfo() {}
 
-    void encode(bufferlist& bl) const
+    void encode(ceph::buffer::list& bl) const
     {
-      ENCODE_START(3, 1, bl);
+      ENCODE_START(4, 1, bl);
       encode(gid, bl);
       encode(name, bl);
       std::set<std::string> old_available_modules;
@@ -179,12 +181,13 @@ public:
       }
       encode(old_available_modules, bl);  // version 2
       encode(available_modules, bl);  // version 3
+      encode(mgr_features, bl); // v4
       ENCODE_FINISH(bl);
     }
 
-    void decode(bufferlist::const_iterator& p)
+    void decode(ceph::buffer::list::const_iterator& p)
     {
-      DECODE_START(3, p);
+      DECODE_START(4, p);
       decode(gid, p);
       decode(name, p);
       if (struct_v >= 2) {
@@ -200,6 +203,9 @@ public:
       }
       if (struct_v >= 3) {
         decode(available_modules, p);
+      }
+      if (struct_v >= 4) {
+	decode(mgr_features, p);
       }
       DECODE_FINISH(p);
     }
@@ -217,6 +223,7 @@ public:
   };
 
   epoch_t epoch = 0;
+  epoch_t last_failure_osd_epoch = 0;
 
   /// global_id of the ceph-mgr instance selected as a leader
   uint64_t active_gid = 0;
@@ -228,6 +235,10 @@ public:
   std::string active_name;
   /// when the active mgr became active, or we lost the active mgr
   utime_t active_change;
+  /// features
+  uint64_t active_mgr_features = 0;
+
+  std::multimap<std::string, entity_addrvec_t> clients; // for blocklist
 
   std::map<uint64_t, StandbyInfo> standbys;
 
@@ -246,12 +257,21 @@ public:
   // running modules on the active mgr daemon.
   std::map<std::string, std::string> services;
 
+  static MgrMap create_null_mgrmap() {
+    MgrMap null_map;
+    /* Use the largest epoch so it's always bigger than whatever the mgr has. */
+    null_map.epoch = std::numeric_limits<decltype(epoch)>::max();
+    return null_map;
+  }
+
   epoch_t get_epoch() const { return epoch; }
-  entity_addrvec_t get_active_addrs() const { return active_addrs; }
+  epoch_t get_last_failure_osd_epoch() const { return last_failure_osd_epoch; }
+  const entity_addrvec_t& get_active_addrs() const { return active_addrs; }
   uint64_t get_active_gid() const { return active_gid; }
   bool get_available() const { return available; }
   const std::string &get_active_name() const { return active_name; }
   const utime_t& get_active_change() const { return active_change; }
+  int get_num_standby() const { return standbys.size(); }
 
   bool all_support_module(const std::string& module) {
     if (!have_module(module)) {
@@ -316,7 +336,7 @@ public:
     return false;
   }
 
-  bool have_name(const string& name) const {
+  bool have_name(const std::string& name) const {
     if (active_name == name) {
       return true;
     }
@@ -340,13 +360,23 @@ public:
   }
 
   std::set<std::string> get_always_on_modules() const {
-    auto it = always_on_modules.find(ceph_release());
-    if (it == always_on_modules.end())
-      return {};
+    unsigned rnum = to_integer<uint32_t>(ceph_release());
+    auto it = always_on_modules.find(rnum);
+    if (it == always_on_modules.end()) {
+      // ok, try the most recent release
+      if (always_on_modules.empty()) {
+	return {}; // ugh
+      }
+      --it;
+      if (it->first < rnum) {
+	return it->second;
+      }
+      return {};      // wth
+    }
     return it->second;
   }
 
-  void encode(bufferlist& bl, uint64_t features) const
+  void encode(ceph::buffer::list& bl, uint64_t features) const
   {
     if (!HAVE_FEATURE(features, SERVER_NAUTILUS)) {
       ENCODE_START(5, 1, bl);
@@ -358,7 +388,7 @@ public:
       encode(standbys, bl);
       encode(modules, bl);
 
-      // Pre-version 4 string list of available modules
+      // Pre-version 4 std::string std::list of available modules
       // (replaced by direct encode of ModuleInfo below)
       std::set<std::string> old_available_modules;
       for (const auto &i : available_modules) {
@@ -371,7 +401,7 @@ public:
       ENCODE_FINISH(bl);
       return;
     }
-    ENCODE_START(8, 6, bl);
+    ENCODE_START(12, 6, bl);
     encode(epoch, bl);
     encode(active_addrs, bl, features);
     encode(active_gid, bl);
@@ -383,13 +413,25 @@ public:
     encode(available_modules, bl);
     encode(active_change, bl);
     encode(always_on_modules, bl);
+    encode(active_mgr_features, bl);
+    encode(last_failure_osd_epoch, bl);
+    std::vector<std::string> clients_names;
+    std::vector<entity_addrvec_t> clients_addrs;
+    for (const auto& i : clients) {
+      clients_names.push_back(i.first);
+      clients_addrs.push_back(i.second);
+    }
+    // The address vector needs to be encoded first to produce a
+    // backwards compatible messsage for older monitors.
+    encode(clients_addrs, bl, features);
+    encode(clients_names, bl, features);
     ENCODE_FINISH(bl);
     return;
   }
 
-  void decode(bufferlist::const_iterator& p)
+  void decode(ceph::buffer::list::const_iterator& p)
   {
-    DECODE_START(7, p);
+    DECODE_START(12, p);
     decode(epoch, p);
     decode(active_addrs, p);
     decode(active_gid, p);
@@ -428,22 +470,52 @@ public:
     if (struct_v >= 8) {
       decode(always_on_modules, p);
     }
+    if (struct_v >= 9) {
+      decode(active_mgr_features, p);
+    }
+    if (struct_v >= 10) {
+      decode(last_failure_osd_epoch, p);
+    }
+    if (struct_v >= 11) {
+      std::vector<entity_addrvec_t> clients_addrs;
+      decode(clients_addrs, p);
+      clients.clear();
+      if (struct_v >= 12) {
+	std::vector<std::string> clients_names;
+	decode(clients_names, p);
+	if (clients_names.size() != clients_addrs.size()) {
+	  throw ceph::buffer::malformed_input(
+	    "clients_names.size() != clients_addrs.size()");
+	}
+	auto cn = clients_names.begin();
+	auto ca = clients_addrs.begin();
+	for(; cn != clients_names.end(); ++cn, ++ca) {
+	  clients.emplace(*cn, *ca);
+	}
+      } else {
+	for (const auto& i : clients_addrs) {
+	  clients.emplace("", i);
+	}
+      }
+    }
     DECODE_FINISH(p);
   }
 
-  void dump(Formatter *f) const {
+  void dump(ceph::Formatter *f) const {
     f->dump_int("epoch", epoch);
     f->dump_int("active_gid", get_active_gid());
     f->dump_string("active_name", get_active_name());
     f->dump_object("active_addrs", active_addrs);
     f->dump_stream("active_addr") << active_addrs.get_legacy_str();
     f->dump_stream("active_change") << active_change;
+    f->dump_unsigned("active_mgr_features", active_mgr_features);
     f->dump_bool("available", available);
     f->open_array_section("standbys");
     for (const auto &i : standbys) {
       f->open_object_section("standby");
       f->dump_int("gid", i.second.gid);
       f->dump_string("name", i.second.name);
+      f->dump_unsigned("mgr_features", i.second.mgr_features);
       f->open_array_section("available_modules");
       for (const auto& j : i.second.available_modules) {
         j.dump(f);
@@ -477,19 +549,39 @@ public:
       }
       f->close_section();
     }
-    f->close_section();
+    f->close_section(); // always_on_modules
+    f->dump_int("last_failure_osd_epoch", last_failure_osd_epoch);
+    f->open_array_section("active_clients");
+    for (const auto& i : clients) {
+      f->open_object_section("client");
+      f->dump_string("name", i.first);
+      i.second.dump(f);
+      f->close_section();
+    }
+    f->close_section(); // active_clients
   }
 
-  static void generate_test_instances(list<MgrMap*> &l) {
+  static void generate_test_instances(std::list<MgrMap*> &l) {
     l.push_back(new MgrMap);
   }
 
-  void print_summary(Formatter *f, std::ostream *ss) const
+  void print_summary(ceph::Formatter *f, std::ostream *ss) const
   {
     // One or the other, not both
     ceph_assert((ss != nullptr) != (f != nullptr));
     if (f) {
-      dump(f);
+      f->dump_bool("available", available);
+      f->dump_int("num_standbys", standbys.size());
+      f->open_array_section("modules");
+      for (auto& i : modules) {
+	f->dump_string("module", i);
+      }
+      f->close_section();
+      f->open_object_section("services");
+      for (const auto &i : services) {
+	f->dump_string(i.first.c_str(), i.second);
+      }
+      f->close_section();
     } else {
       utime_t now = ceph_clock_now();
       if (get_active_gid() != 0) {
@@ -524,13 +616,13 @@ public:
     }
   }
 
-  friend ostream& operator<<(ostream& out, const MgrMap& m) {
-    ostringstream ss;
+  friend std::ostream& operator<<(std::ostream& out, const MgrMap& m) {
+    std::ostringstream ss;
     m.print_summary(nullptr, &ss);
     return out << ss.str();
   }
 
-  friend ostream& operator<<(ostream& out, const std::vector<ModuleInfo>& mi) {
+  friend std::ostream& operator<<(std::ostream& out, const std::vector<ModuleInfo>& mi) {
     for (const auto &i : mi) {
       out << i.name << " ";
     }

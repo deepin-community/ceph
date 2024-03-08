@@ -14,7 +14,6 @@
 #include <rte_log.h>
 #include <rte_bus.h>
 #include <rte_memory.h>
-#include <rte_eal_memconfig.h>
 #include <rte_common.h>
 #include <rte_malloc.h>
 #include <rte_bus_vmbus.h>
@@ -166,7 +165,7 @@ vmbus_uio_map_resource_by_index(struct rte_vmbus_device *dev, int idx,
 	dev->resource[idx].addr = mapaddr;
 	vmbus_map_addr = RTE_PTR_ADD(mapaddr, size);
 
-	/* Record result of sucessful mapping for use by secondary */
+	/* Record result of successful mapping for use by secondary */
 	maps[idx].addr = mapaddr;
 	maps[idx].size = size;
 
@@ -202,6 +201,7 @@ static int vmbus_uio_map_subchan(const struct rte_vmbus_device *dev,
 	char ring_path[PATH_MAX];
 	size_t file_size;
 	struct stat sb;
+	void *mapaddr;
 	int fd;
 
 	snprintf(ring_path, sizeof(ring_path),
@@ -232,16 +232,63 @@ static int vmbus_uio_map_subchan(const struct rte_vmbus_device *dev,
 		return -EINVAL;
 	}
 
-	*ring_size = file_size / 2;
-	*ring_buf = vmbus_map_resource(vmbus_map_addr, fd,
-				       0, sb.st_size, 0);
+	mapaddr = vmbus_map_resource(vmbus_map_addr, fd,
+				     0, file_size, 0);
 	close(fd);
 
-	if (ring_buf == MAP_FAILED)
+	if (mapaddr == MAP_FAILED)
 		return -EIO;
+
+	*ring_size = file_size / 2;
+	*ring_buf = mapaddr;
 
 	vmbus_map_addr = RTE_PTR_ADD(ring_buf, file_size);
 	return 0;
+}
+
+int
+vmbus_uio_map_secondary_subchan(const struct rte_vmbus_device *dev,
+				const struct vmbus_channel *chan)
+{
+	const struct vmbus_br *br = &chan->txbr;
+	char ring_path[PATH_MAX];
+	void *mapaddr, *ring_buf;
+	uint32_t ring_size;
+	int fd;
+
+	snprintf(ring_path, sizeof(ring_path),
+		 "%s/%s/channels/%u/ring",
+		 SYSFS_VMBUS_DEVICES, dev->device.name,
+		 chan->relid);
+
+	ring_buf = br->vbr;
+	ring_size = br->dsize + sizeof(struct vmbus_bufring);
+	VMBUS_LOG(INFO, "secondary ring_buf %p size %u",
+		  ring_buf, ring_size);
+
+	fd = open(ring_path, O_RDWR);
+	if (fd < 0) {
+		VMBUS_LOG(ERR, "Cannot open %s: %s",
+			  ring_path, strerror(errno));
+		return -errno;
+	}
+
+	mapaddr = vmbus_map_resource(ring_buf, fd, 0, 2 * ring_size, 0);
+	close(fd);
+
+	if (mapaddr == ring_buf)
+		return 0;
+
+	if (mapaddr == MAP_FAILED)
+		VMBUS_LOG(ERR,
+			  "mmap subchan %u in secondary failed", chan->relid);
+	else {
+		VMBUS_LOG(ERR,
+			  "mmap subchan %u in secondary address mismatch",
+			  chan->relid);
+		vmbus_unmap_resource(mapaddr, 2 * ring_size);
+	}
+	return -1;
 }
 
 int vmbus_uio_map_rings(struct vmbus_channel *chan)
@@ -329,6 +376,7 @@ int vmbus_uio_get_subchan(struct vmbus_channel *primary,
 	char chan_path[PATH_MAX], subchan_path[PATH_MAX];
 	struct dirent *ent;
 	DIR *chan_dir;
+	int err;
 
 	snprintf(chan_path, sizeof(chan_path),
 		 "%s/%s/channels",
@@ -344,7 +392,6 @@ int vmbus_uio_get_subchan(struct vmbus_channel *primary,
 	while ((ent = readdir(chan_dir))) {
 		unsigned long relid, subid, monid;
 		char *endp;
-		int err;
 
 		if (ent->d_name[0] == '.')
 			continue;
@@ -357,42 +404,50 @@ int vmbus_uio_get_subchan(struct vmbus_channel *primary,
 			continue;
 		}
 
+		if (!vmbus_isnew_subchannel(primary, relid)) {
+			VMBUS_LOG(DEBUG, "skip already found channel: %lu",
+				  relid);
+			continue;
+		}
+
+		if (!vmbus_uio_ring_present(dev, relid)) {
+			VMBUS_LOG(DEBUG, "ring mmap not found (yet) for: %lu",
+				  relid);
+			continue;
+		}
+
 		snprintf(subchan_path, sizeof(subchan_path), "%s/%lu",
 			 chan_path, relid);
 		err = vmbus_uio_sysfs_read(subchan_path, "subchannel_id",
 					   &subid, UINT16_MAX);
 		if (err) {
-			VMBUS_LOG(NOTICE, "invalid subchannel id %lu",
-				  subid);
-			closedir(chan_dir);
-			return err;
+			VMBUS_LOG(NOTICE, "no subchannel_id in %s:%s",
+				  subchan_path, strerror(-err));
+			goto fail;
 		}
 
 		if (subid == 0)
 			continue;	/* skip primary channel */
 
-		if (!vmbus_isnew_subchannel(primary, relid))
-			continue;
-
-		if (!vmbus_uio_ring_present(dev, relid))
-			continue;	/* Ring may not be ready yet */
-
 		err = vmbus_uio_sysfs_read(subchan_path, "monitor_id",
 					   &monid, UINT8_MAX);
 		if (err) {
-			VMBUS_LOG(NOTICE, "invalid monitor id %lu",
-				  monid);
-			return err;
+			VMBUS_LOG(NOTICE, "no monitor_id in %s:%s",
+				  subchan_path, strerror(-err));
+			goto fail;
 		}
 
 		err = vmbus_chan_create(dev, relid, subid, monid, subchan);
 		if (err) {
-			VMBUS_LOG(NOTICE, "subchannel setup failed");
-			return err;
+			VMBUS_LOG(ERR, "subchannel setup failed");
+			goto fail;
 		}
 		break;
 	}
 	closedir(chan_dir);
 
 	return (ent == NULL) ? -ENOENT : 0;
+fail:
+	closedir(chan_dir);
+	return err;
 }

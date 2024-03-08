@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 from __future__ import print_function
 
@@ -7,12 +7,6 @@ import json
 import os
 import time
 import sys
-
-if sys.version_info[0] == 2:
-    range = xrange # noqa
-
-elif sys.version_info[0] == 3:
-    range = range
 
 import rados as rados
 import cephfs as cephfs

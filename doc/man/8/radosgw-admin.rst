@@ -15,15 +15,15 @@ Synopsis
 Description
 ===========
 
-:program:`radosgw-admin` is a RADOS gateway user administration utility. It
-allows creating and modifying users.
+:program:`radosgw-admin` is a Ceph Object Gateway user administration utility. It
+is used to create and modify users.
 
 
 Commands
 ========
 
-:program:`radosgw-admin` utility uses many commands for administration purpose
-which are as follows:
+:program:`radosgw-admin` utility provides commands for administration purposes
+as follows:
 
 :command:`user create`
   Create a new user.
@@ -32,8 +32,10 @@ which are as follows:
   Modify a user.
 
 :command:`user info`
-  Display information of a user, and any potentially available
-  subusers and keys.
+  Display information for a user including any subusers and keys.
+
+:command:`user rename`
+  Renames a user.
 
 :command:`user rm`
   Remove a user.
@@ -48,7 +50,7 @@ which are as follows:
   Check user info.
 
 :command:`user stats`
-  Show user stats as accounted by quota subsystem.
+  Show user stats as accounted by the quota subsystem.
 
 :command:`user list`
   List all users.
@@ -75,10 +77,10 @@ which are as follows:
   Remove access key.
 
 :command:`bucket list`
-  List buckets, or, if bucket specified with --bucket=<bucket>,
-  list its objects. If bucket specified adding --allow-unordered
-  removes ordering requirement, possibly generating results more
-  quickly in buckets with large number of objects.
+  List buckets, or, if a bucket is specified with --bucket=<bucket>,
+  list its objects. Adding --allow-unordered
+  removes the ordering requirement, possibly generating results more
+  quickly for buckets with large number of objects.
 
 :command:`bucket limit check`
   Show bucket sharding stats.
@@ -88,6 +90,10 @@ which are as follows:
 
 :command:`bucket unlink`
   Unlink bucket from specified user.
+
+:command:`bucket chown`
+  Change bucket ownership to the specified user and update object ACLs. 
+  Invoke with --marker to resume if the command is interrupted.
 
 :command:`bucket stats`
   Returns bucket statistics.
@@ -101,8 +107,14 @@ which are as follows:
 :command:`bucket rewrite`
   Rewrite all objects in the specified bucket.
 
+:command:`bucket radoslist`
+  List the RADOS objects that contain the data for all objects in
+  the designated bucket, if --bucket=<bucket> is specified. 
+  Otherwise, list the RADOS objects that contain data for all 
+  buckets.
+
 :command:`bucket reshard`
-  Reshard a bucket.
+  Reshard a bucket's index.
 
 :command:`bucket sync disable`
   Disable bucket sync.
@@ -294,16 +306,16 @@ which are as follows:
   Run data sync for the specified source zone.
 
 :command:`sync error list`
-  list sync error.
+  List sync errors.
 
 :command:`sync error trim`
-  trim sync error.
+  Trim sync errors.
 
 :command:`zone rename`
   Rename a zone.
 
 :command:`zone placement list`
-  List zone's placement targets.
+  List a zone's placement targets.
 
 :command:`zone placement add`
   Add a zone placement target.
@@ -353,7 +365,9 @@ which are as follows:
   List all bucket lifecycle progress.
 
 :command:`lc process`
-  Manually process lifecycle.
+  Manually process lifecycle transitions.  If a bucket is specified (e.g., via
+  --bucket_id or via --bucket and optional --tenant), only that bucket
+  is processed.
 
 :command:`metadata get`
   Get metadata info.
@@ -368,40 +382,50 @@ which are as follows:
   List metadata info.
 
 :command:`mdlog list`
-  List metadata log.
+  List metadata log which is needed for multi-site deployments.
 
 :command:`mdlog trim`
-  Trim metadata log.
+  Trim metadata log manually instead of relying on the gateway's integrated log sync.
+  Before trimming, compare the listings and make sure the last sync was
+  complete, otherwise it can reinitiate a sync.
 
 :command:`mdlog status`
   Read metadata log status.
 
 :command:`bilog list`
-  List bucket index log.
+  List bucket index log which is needed for multi-site deployments.
 
 :command:`bilog trim`
-  Trim bucket index log (use start-marker, end-marker).
+  Trim bucket index log (use start-marker, end-marker) manually instead
+  of relying on the gateway's integrated log sync.
+  Before trimming, compare the listings and make sure the last sync was
+  complete, otherwise it can reinitiate a sync.
 
 :command:`datalog list`
-  List data log.
+  List data log which is needed for multi-site deployments.
 
 :command:`datalog trim`
-  Trim data log.
+  Trim data log manually instead of relying on the gateway's integrated log sync.
+  Before trimming, compare the listings and make sure the last sync was
+  complete, otherwise it can reinitiate a sync.
 
 :command:`datalog status`
   Read data log status.
 
 :command:`orphans find`
-  Init and run search for leaked rados objects
+  Init and run search for leaked RADOS objects.
+  DEPRECATED. See the "rgw-orphan-list" tool.
 
 :command:`orphans finish`
-  Clean up search for leaked rados objects
+  Clean up search for leaked RADOS objects.
+  DEPRECATED. See the "rgw-orphan-list" tool.
 
 :command:`orphans list-jobs`
-  List the current job-ids for the orphans search.
+  List the current orphans search job IDs.
+  DEPRECATED. See the "rgw-orphan-list" tool.
 
 :command:`role create`
-  create a new AWS role for use with STS.
+  Create a new role for use with STS (Security Token Service).
 
 :command:`role rm`
   Remove a role.
@@ -442,6 +466,28 @@ which are as follows:
 :command:`reshard cancel`
   Cancel resharding a bucket
 
+:command:`topic list`
+  List bucket notifications/pubsub topics                                                   
+
+:command:`topic get`
+  Get a bucket notifications/pubsub topic                                                   
+  
+:command:`topic rm`
+  Remove a bucket notifications/pubsub topic                                                
+
+:command:`subscription get`
+  Get a pubsub subscription definition
+
+:command:`subscription rm`
+  Remove a pubsub subscription
+
+:command:`subscription pull`
+  Show events in a pubsub subscription
+             
+:command:`subscription ack`
+  Acknowledge (remove) events in a pubsub subscription
+
+
 Options
 =======
 
@@ -453,7 +499,8 @@ Options
 
 .. option:: -m monaddress[:port]
 
-   Connect to specified monitor (instead of looking through ceph.conf).
+   Connect to specified monitor (instead of selecting one
+   from ceph.conf).
 
 .. option:: --tenant=<tenant>
 
@@ -461,15 +508,19 @@ Options
 
 .. option:: --uid=uid
 
-   The radosgw user ID.
+   The user on which to operate.
+
+.. option:: --new-uid=uid
+
+   The new ID of the user. Used with 'user rename' command.
 
 .. option:: --subuser=<name>
 
-	Name of the subuser.
+    Name of the subuser.
 
 .. option:: --access-key=<key>
 
-        S3 access key.
+   S3 access key.
 
 .. option:: --email=email
 
@@ -481,28 +532,29 @@ Options
 
 .. option:: --gen-access-key
 
-	Generate random access key (for S3).
+    Generate random access key (for S3).
+
 
 .. option:: --gen-secret
 
-	Generate random secret key.
+    Generate random secret key.
 
 .. option:: --key-type=<type>
 
-	key type, options are: swift, s3.
+    Key type, options are: swift, s3.
 
 .. option:: --temp-url-key[-2]=<key>
 
-	Temporary url key.
+    Temporary URL key.
 
 .. option:: --max-buckets
 
-	max number of buckets for a user (0 for no limit, negative value to disable bucket creation).
-	Default is 1000.
+    Maximum number of buckets for a user (0 for no limit, negative value to disable bucket creation).
+    Default is 1000.
 
 .. option:: --access=<access>
 
-   Set the access permissions for the sub-user.
+   Set the access permissions for the subuser.
    Available access permissions are read, write, readwrite and full.
 
 .. option:: --display-name=<name>
@@ -517,9 +569,10 @@ Options
 
    Set the system flag on the user.
 
-.. option:: --bucket=bucket
+.. option:: --bucket=[tenant-id/]bucket
 
-   Specify the bucket name.
+   Specify the bucket name.  If tenant-id is not specified, the tenant-id
+   of the user (--uid) is used.
 
 .. option:: --pool=<pool>
 
@@ -546,21 +599,27 @@ Options
 
    Specify the bucket id.
 
+.. option:: --bucket-new-name=[tenant-id/]<bucket>
+
+   Optional for `bucket link`; use to rename a bucket.
+   While the tenant-id can be specified, this is not
+   necessary in normal operation.
+
 .. option:: --shard-id=<shard-id>
 
-	Optional for mdlog list, data sync status. Required for ``mdlog trim``.
+   Optional for mdlog list, bi list, data sync status. Required for ``mdlog trim``.
 
 .. option:: --max-entries=<entries>
 
-	Optional for listing operations to specify the max entires
+   Optional for listing operations to specify the max entries.
 
 .. option:: --purge-data
 
-   When specified, user removal will also purge all the user data.
+   When specified, user removal will also purge the user's data.
 
 .. option:: --purge-keys
 
-	When specified, subuser removal will also purge all the subuser keys.
+   When specified, subuser removal will also purge the subuser' keys.
    
 .. option:: --purge-objects
 
@@ -568,7 +627,7 @@ Options
 
 .. option:: --metadata-key=<key>
 
-	Key to retrieve metadata from with ``metadata get``.
+   Key from which to retrieve metadata, used with ``metadata get``.
 
 .. option:: --remote=<remote>
 
@@ -576,11 +635,11 @@ Options
 
 .. option:: --period=<id>
 
-   Period id.
+   Period ID.
 
 .. option:: --url=<url>
 
-   url for pushing/pulling period or realm.
+   URL for pushing/pulling period or realm.
 
 .. option:: --epoch=<number>
 
@@ -600,7 +659,7 @@ Options
 
 .. option:: --master-zone=<id>
 
-   Master zone id.
+   Master zone ID.
 
 .. option:: --rgw-realm=<name>
 
@@ -608,11 +667,11 @@ Options
 
 .. option:: --realm-id=<id>
 
-   The realm id.
+   The realm ID.
 
 .. option:: --realm-new-name=<name>
 
-   New name of realm.
+   New name for the realm.
 
 .. option:: --rgw-zonegroup=<name>
 
@@ -620,7 +679,7 @@ Options
 
 .. option:: --zonegroup-id=<id>
 
-   The zonegroup id.
+   The zonegroup ID.
 
 .. option:: --zonegroup-new-name=<name>
 
@@ -628,11 +687,11 @@ Options
 
 .. option:: --rgw-zone=<zone>
 
-	Zone in which radosgw is running.
+   Zone in which the gateway is running.
 
 .. option:: --zone-id=<id>
 
-   The zone id.
+   The zone ID.
 
 .. option:: --zone-new-name=<name>
 
@@ -652,7 +711,7 @@ Options
 
 .. option:: --placement-id
 
-   Placement id for the zonegroup placement commands.
+   Placement ID for the zonegroup placement commands.
 
 .. option:: --tags=<list>
 
@@ -680,11 +739,15 @@ Options
 
 .. option:: --data-extra-pool=<pool>
 
-   The placement target data extra (non-ec) pool.
+   The placement target data extra (non-EC) pool.
 
 .. option:: --placement-index-type=<type>
 
    The placement target index type (normal, indexless, or #id).
+
+.. option:: --placement-inline-data=<true>
+
+   Whether the placement target is configured to store a data chunk inline in head objects.
 
 .. option:: --tier-type=<type>
 
@@ -704,75 +767,86 @@ Options
 
 .. option:: --sync-from=[zone-name][,...]
 
-   Set the list of zones to sync from.
+   Set the list of zones from which to sync.
 
 .. option:: --sync-from-rm=[zone-name][,...]
 
-   Remove the zones from list of zones to sync from.
+   Remove zone(s) from list of zones from which to sync.
+
+.. option:: --bucket-index-max-shards
+
+   Override a zone's or zonegroup's default number of bucket index shards. This
+   option is accepted by the 'zone create', 'zone modify', 'zonegroup add',
+   and 'zonegroup modify' commands, and applies to buckets that are created
+   after the zone/zonegroup changes take effect.
 
 .. option:: --fix
 
-	Besides checking bucket index, will also fix it.
+    Fix the bucket index in addition to checking it.
 
 .. option:: --check-objects
 
-	bucket check: Rebuilds bucket index according to actual objects state.
+    Bucket check: Rebuilds the bucket index according to actual object state.
 
 .. option:: --format=<format>
 
-	Specify output format for certain operations. Supported formats: xml, json.
+    Specify output format for certain operations. Supported formats: xml, json.
 
 .. option:: --sync-stats
 
-	Option for 'user stats' command. When specified, it will update user stats with
-	the current stats reported by user's buckets indexes.
+    Option for the 'user stats' command. When specified, it will update user stats with
+    the current stats reported by the user's buckets indexes.
+
+.. option:: --show-config
+
+    Show configuration.
 
 .. option:: --show-log-entries=<flag>
 
-	Enable/disable dump of log entries on log show.
+    Enable/disable dumping of log entries on log show.
 
 .. option:: --show-log-sum=<flag>
 
-	Enable/disable dump of log summation on log show.
+    Enable/disable dump of log summation on log show.
 
 .. option:: --skip-zero-entries
 
-	Log show only dumps entries that don't have zero value in one of the numeric
-	field.
+    Log show only dumps entries that don't have zero value in one of the numeric
+    field.
 
 .. option:: --infile
 
-	Specify a file to read in when setting data.
+    Specify a file to read when setting data.
 
 .. option:: --categories=<list>
 
-	Comma separated list of categories, used in usage show.
+    Comma separated list of categories, used in usage show.
 
 .. option:: --caps=<caps>
 
-	List of caps (e.g., "usage=read, write; user=read".
+    List of capabilities (e.g., "usage=read, write; user=read").
 
 .. option:: --compression=<compression-algorithm>
 
-    Placement target compression algorithm (lz4|snappy|zlib|zstd)
+    Placement target compression algorithm (lz4|snappy|zlib|zstd).
 
 .. option:: --yes-i-really-mean-it
 
-	Required for certain operations.
+    Required as a guardrail for certain destructive operations.
 
 .. option:: --min-rewrite-size
 
-    Specify the min object size for bucket rewrite (default 4M).
+    Specify the minimum object size for bucket rewrite (default 4M).
 
 .. option:: --max-rewrite-size
 
-    Specify the max object size for bucket rewrite (default ULLONG_MAX).
+    Specify the maximum object size for bucket rewrite (default ULLONG_MAX).
 
 .. option:: --min-rewrite-stripe-size
 
-    Specify the min stripe size for object rewrite (default 0). If the value
+    Specify the minimum stripe size for object rewrite (default 0). If the value
     is set to 0, then the specified object will always be
-    rewritten for restriping.
+    rewritten when restriping.
 
 .. option:: --warnings-only
 
@@ -782,27 +856,34 @@ Options
 .. option:: --bypass-gc
 
    When specified with bucket deletion,
-   triggers object deletions by not involving GC.
+   triggers object deletion without involving GC.
 
 .. option:: --inconsistent-index
 
    When specified with bucket deletion and bypass-gc set to true,
    ignores bucket index consistency.
 
+.. option:: --max-concurrent-ios
+
+   Maximum concurrent bucket operations. Affects operations that
+   scan the bucket index, e.g., listing, deletion, and all scan/search
+   operations such as finding orphans or checking the bucket index.
+   The default is 32.
+
 Quota Options
 =============
 
 .. option:: --max-objects
 
-	Specify max objects (negative value to disable).
+   Specify the maximum number of objects (negative value to disable).
 
 .. option:: --max-size
 
-	Specify max size (in B/K/M/G/T, negative value to disable).
+    Specify the maximum object size (in B/K/M/G/T, negative value to disable).
 
 .. option:: --quota-scope
 
-	The scope of quota (bucket, user).
+    The scope of quota (bucket, user).
 
 
 Orphans Search Options
@@ -810,21 +891,16 @@ Orphans Search Options
 
 .. option:: --num-shards
 
-	Number of shards to use for keeping the temporary scan info
+    Number of shards to use for temporary scan info
 
 .. option:: --orphan-stale-secs
 
-        Number of seconds to wait before declaring an object to be an orphan.
-        Default is 86400 (24 hours).
+   Number of seconds to wait before declaring an object to be an orphan.
+   The efault is 86400 (24 hours).
 
 .. option:: --job-id
 
-        Set the job id (for orphans find)
-
-.. option:: --max-concurrent-ios
-
-        Maximum concurrent ios for orphans find.
-        Default is 32.
+   Set the job id (for orphans find)
 
 
 Orphans list-jobs options
@@ -863,6 +939,22 @@ Role Options
 
    The path prefix for filtering the roles.
 
+
+Bucket Notifications/PubSub Options
+===================================
+.. option:: --topic                   
+
+   The bucket notifications/pubsub topic name.
+
+.. option:: --subscription
+
+   The pubsub subscription name.
+
+.. option:: --event-id
+
+   The event id in a pubsub subscription.
+
+
 Examples
 ========
 
@@ -884,6 +976,10 @@ Generate a new user::
 Remove a user::
 
         $ radosgw-admin user rm --uid=johnny
+
+Rename a user::
+
+        $ radosgw-admin user rename --uid=johnny --new-uid=joe
         
 Remove a user and all associated buckets with their contents::
 
@@ -900,6 +996,18 @@ Link bucket to specified user::
 Unlink bucket from specified user::
 
         $ radosgw-admin bucket unlink --bucket=foo --uid=johnny
+
+Rename a bucket::
+
+        $ radosgw-admin bucket link --bucket=foo --bucket-new-name=bar --uid=johnny
+
+Move a bucket from the old global tenant space to a specified tenant::
+
+        $ radosgw-admin bucket link --bucket=foo --uid='12345678$12345678'
+
+Link bucket to specified user and change object ACLs::
+
+        $ radosgw-admin bucket chown --bucket=foo --uid='12345678$12345678'
 
 Show the logs of a bucket from April 1st, 2012::
 
@@ -924,7 +1032,7 @@ Availability
 
 :program:`radosgw-admin` is part of Ceph, a massively scalable, open-source,
 distributed storage system.  Please refer to the Ceph documentation at
-http://ceph.com/docs for more information.
+https://docs.ceph.com for more information.
 
 
 See also

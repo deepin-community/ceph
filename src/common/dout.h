@@ -19,7 +19,8 @@
 #include <type_traits>
 
 #include "include/ceph_assert.h"
-#ifdef WITH_SEASTAR
+#include "include/common_fwd.h"
+#if defined(WITH_SEASTAR) && !defined(WITH_ALIEN)
 #include <seastar/util/log.hh>
 #include "crimson/common/log.h"
 #include "crimson/common/config_proxy.h"
@@ -50,6 +51,14 @@ public:
   virtual unsigned get_subsys() const = 0;
   virtual ~DoutPrefixProvider() {}
 };
+
+inline std::ostream &operator<<(
+  std::ostream &lhs, const DoutPrefixProvider &dpp) {
+  return dpp.gen_prefix(lhs);
+}
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<DoutPrefixProvider> : fmt::ostream_formatter {};
+#endif
 
 // a prefix provider with empty prefix
 class NoDoutPrefix : public DoutPrefixProvider {
@@ -98,11 +107,12 @@ namespace ceph::dout {
 template<typename T>
 struct dynamic_marker_t {
   T value;
-  operator T() const { return value; }
+  // constexpr ctor isn't needed as it's an aggregate type
+  constexpr operator T() const { return value; }
 };
 
 template<typename T>
-dynamic_marker_t<T> need_dynamic(T&& t) {
+constexpr dynamic_marker_t<T> need_dynamic(T&& t) {
   return dynamic_marker_t<T>{ std::forward<T>(t) };
 }
 
@@ -117,28 +127,18 @@ struct is_dynamic<dynamic_marker_t<T>> : public std::true_type {};
 // generic macros
 #define dout_prefix *_dout
 
-#ifdef WITH_SEASTAR
+#if defined(WITH_SEASTAR) && !defined(WITH_ALIEN)
 #define dout_impl(cct, sub, v)                                          \
   do {                                                                  \
-    if (ceph::common::local_conf()->subsys.should_gather(sub, v)) {     \
-      seastar::logger& _logger = ceph::get_logger(sub);                 \
+    if (crimson::common::local_conf()->subsys.should_gather(sub, v)) {  \
+      seastar::logger& _logger = crimson::get_logger(sub);              \
       const auto _lv = v;                                               \
       std::ostringstream _out;                                          \
       std::ostream* _dout = &_out;
 #define dendl_impl                              \
      "";                                        \
-      const std::string _s = _out.str();        \
-      if (_lv < 0) {                            \
-        _logger.error(_s.c_str());              \
-      } else if (_lv < 1) {                     \
-        _logger.warn(_s.c_str());               \
-      } else if (_lv < 5) {                     \
-        _logger.info(_s.c_str());               \
-      } else if (_lv < 10) {                    \
-        _logger.debug(_s.c_str());              \
-      } else {                                  \
-        _logger.trace(_s.c_str());              \
-      }                                         \
+      _logger.log(crimson::to_log_level(_lv),   \
+                  "{}", _out.str().c_str());    \
     }                                           \
   } while (0)
 #else
@@ -173,6 +173,11 @@ struct is_dynamic<dynamic_marker_t<T>> : public std::true_type {};
 #define lsubdout(cct, sub, v)  dout_impl(cct, ceph_subsys_##sub, v) dout_prefix
 #define ldout(cct, v)  dout_impl(cct, dout_subsys, v) dout_prefix
 #define lderr(cct) dout_impl(cct, ceph_subsys_, -1) dout_prefix
+
+#define ldpp_subdout(dpp, sub, v) 						\
+  if (decltype(auto) pdpp = (dpp); pdpp) /* workaround -Wnonnull-compare for 'this' */ \
+    dout_impl(pdpp->get_cct(), ceph_subsys_##sub, v) \
+      pdpp->gen_prefix(*_dout)
 
 #define ldpp_dout(dpp, v) 						\
   if (decltype(auto) pdpp = (dpp); pdpp) /* workaround -Wnonnull-compare for 'this' */ \

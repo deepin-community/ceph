@@ -2,21 +2,9 @@ set(msg_srcs
   DispatchQueue.cc
   Message.cc
   Messenger.cc
-  QueueStrategy.cc
+  Connection.cc
   msg_types.cc
-  simple/Accepter.cc
-  simple/Pipe.cc
-  simple/PipeConnection.cc
-  simple/SimpleMessenger.cc)
-
-if(HAVE_XIO)
-  list(APPEND msg_srcs
-    xio/XioConnection.cc
-    xio/XioMsg.cc
-    xio/XioPool.cc
-    xio/XioMessenger.cc
-    xio/XioPortal.cc)
-endif(HAVE_XIO)
+  compressor_registry.cc)
 
 list(APPEND msg_srcs
   async/AsyncConnection.cc
@@ -29,6 +17,7 @@ list(APPEND msg_srcs
   async/PosixStack.cc
   async/Stack.cc
   async/crypto_onwire.cc
+  async/compression_onwire.cc
   async/frames_v2.cc
   async/net_handler.cc)
 
@@ -39,6 +28,11 @@ elseif(FREEBSD OR APPLE)
   list(APPEND msg_srcs
     async/EventKqueue.cc)
 endif(LINUX)
+
+if(WIN32)
+  list(APPEND msg_srcs
+    async/EventPoll.cc)
+endif(WIN32)
 
 if(HAVE_RDMA)
   list(APPEND msg_srcs
@@ -51,6 +45,9 @@ if(HAVE_RDMA)
 endif()
 
 add_library(common-msg-objs OBJECT ${msg_srcs})
+target_compile_definitions(common-msg-objs PRIVATE
+  $<TARGET_PROPERTY:fmt::fmt,INTERFACE_COMPILE_DEFINITIONS>)
+target_include_directories(common-msg-objs PRIVATE ${OPENSSL_INCLUDE_DIR})
 
 if(WITH_DPDK)
   set(async_dpdk_srcs

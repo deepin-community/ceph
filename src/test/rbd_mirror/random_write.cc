@@ -42,20 +42,19 @@ void rbd_bencher_completion(void *c, void *pc);
 
 struct rbd_bencher {
   librbd::Image *image;
-  Mutex lock;
-  Cond cond;
+  ceph::mutex lock = ceph::make_mutex("rbd_bencher::lock");
+  ceph::condition_variable cond;
   int in_flight;
 
   explicit rbd_bencher(librbd::Image *i)
     : image(i),
-      lock("rbd_bencher::lock"),
       in_flight(0) {
   }
 
   bool start_write(int max, uint64_t off, uint64_t len, bufferlist& bl,
                    int op_flags) {
     {
-      Mutex::Locker l(lock);
+      std::lock_guard l{lock};
       if (in_flight >= max)
         return false;
       in_flight++;
@@ -68,11 +67,10 @@ struct rbd_bencher {
   }
 
   void wait_for(int max) {
-    Mutex::Locker l(lock);
+    using namespace std::chrono_literals;
+    std::unique_lock l{lock};
     while (in_flight > max) {
-      utime_t dur;
-      dur.set_from_double(.2);
-      cond.WaitInterval(lock, dur);
+      cond.wait_for(l, 200ms);
     }
   }
 
@@ -84,13 +82,13 @@ void rbd_bencher_completion(void *vc, void *pc) {
   //cout << "complete " << c << std::endl;
   int ret = c->get_return_value();
   if (ret != 0) {
-    cout << "write error: " << cpp_strerror(ret) << std::endl;
+    std::cout << "write error: " << cpp_strerror(ret) << std::endl;
     exit(ret < 0 ? -ret : ret);
   }
-  b->lock.Lock();
+  b->lock.lock();
   b->in_flight--;
-  b->cond.Signal();
-  b->lock.Unlock();
+  b->cond.notify_all();
+  b->lock.unlock();
   c->release();
 }
 
@@ -107,7 +105,7 @@ void write_image(librbd::Image &image) {
   image.size(&size);
   ceph_assert(size != 0);
 
-  vector<uint64_t> thread_offset;
+  std::vector<uint64_t> thread_offset;
   uint64_t i;
   uint64_t start_pos;
 
@@ -152,10 +150,9 @@ void write_image(librbd::Image &image) {
 
 int main(int argc, const char **argv)
 {
-  std::vector<const char*> args;
-  argv_to_vec(argc, argv, args);
+  auto args = argv_to_vec(argc, argv);
   if (args.empty()) {
-    cerr << argv[0] << ": -h or --help for usage" << std::endl;
+    std::cerr << argv[0] << ": -h or --help for usage" << std::endl;
     exit(1);
   }
   if (ceph_argparse_need_usage(args)) {
@@ -163,7 +160,7 @@ int main(int argc, const char **argv)
     exit(0);
   }
 
-  auto cct = global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT,
+  auto cct = global_init(nullptr, args, CEPH_ENTITY_TYPE_CLIENT,
                          CODE_ENVIRONMENT_UTILITY,
                          CINIT_FLAG_NO_MON_CONFIG);
 

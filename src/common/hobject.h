@@ -15,8 +15,11 @@
 #ifndef __CEPH_OS_HOBJECT_H
 #define __CEPH_OS_HOBJECT_H
 
+#if FMT_VERSION >= 90000
+#include <fmt/ostream.h>
+#endif
+
 #include "include/types.h"
-#include "include/cmp.h"
 
 #include "json_spirit/json_spirit_value.h"
 #include "include/ceph_assert.h"   // spirit clobbers it!
@@ -59,26 +62,26 @@ private:
   uint32_t hash_reverse_bits;
 public:
   int64_t pool;
-  string nspace;
+  std::string nspace;
 
 private:
-  string key;
+  std::string key;
 
   class hobject_t_max {};
 
 public:
-  const string &get_key() const {
+  const std::string& get_key() const {
     return key;
   }
 
-  void set_key(const std::string &key_) {
+  void set_key(const std::string& key_) {
     if (key_ == oid.name)
       key.clear();
     else
       key = key_;
   }
 
-  string to_str() const;
+  std::string to_str() const;
   
   uint32_t get_hash() const { 
     return hash;
@@ -130,20 +133,27 @@ public:
     return hobject_t_max();
   }
 
-  hobject_t(object_t oid, const string& key, snapid_t snap, uint32_t hash,
-	    int64_t pool, string nspace)
+  hobject_t(const object_t& oid, const std::string& key, snapid_t snap,
+            uint32_t hash, int64_t pool, const std::string& nspace)
     : oid(oid), snap(snap), hash(hash), max(false),
       pool(pool), nspace(nspace),
-      key(oid.name == key ? string() : key) {
+      key(oid.name == key ? std::string() : key) {
     build_hash_cache();
   }
 
-  hobject_t(const sobject_t &soid, const string &key, uint32_t hash,
-	    int64_t pool, string nspace)
+  hobject_t(const sobject_t &soid, const std::string &key, uint32_t hash,
+	    int64_t pool, const std::string& nspace)
     : oid(soid.oid), snap(soid.snap), hash(hash), max(false),
       pool(pool), nspace(nspace),
-      key(soid.oid.name == key ? string() : key) {
+      key(soid.oid.name == key ? std::string() : key) {
     build_hash_cache();
+  }
+
+  // used by Crimson
+  hobject_t(const std::string &key, snapid_t snap, uint32_t reversed_hash,
+            int64_t pool, const std::string& nspace)
+    : oid(key), snap(snap), max(false), pool(pool), nspace(nspace) {
+    set_bitwise_key_u32(reversed_hash);
   }
 
   /// @return min hobject_t ret s.t. ret.hash == this->hash
@@ -227,10 +237,10 @@ public:
    * Returns set S of strings such that for any object
    * h where h.match(bits, mask), there is some string
    * s \f$\in\f$ S such that s is a prefix of h.to_str().
-   * Furthermore, for any s $f\in\f$ S, s is a prefix of
+   * Furthermore, for any s \f$\in\f$ S, s is a prefix of
    * h.str() implies that h.match(bits, mask).
    */
-  static set<string> get_prefixes(
+  static std::set<std::string> get_prefixes(
     uint32_t bits,
     uint32_t mask,
     int64_t pool);
@@ -267,13 +277,13 @@ public:
     hash_reverse_bits = value;
   }
 
-  const string& get_effective_key() const {
+  const std::string& get_effective_key() const {
     if (key.length())
       return key;
     return oid.name;
   }
 
-  hobject_t make_temp_hobject(const string& name) const {
+  hobject_t make_temp_hobject(const std::string& name) const {
     return hobject_t(object_t(name), "", CEPH_NOSNAP,
 		     hash,
 		     get_temp_pool(pool),
@@ -286,48 +296,52 @@ public:
     (*this) = temp;
   }
 
-  const string &get_namespace() const {
+  const std::string &get_namespace() const {
     return nspace;
   }
 
-  bool parse(const string& s);
+  bool parse(const std::string& s);
 
-  void encode(bufferlist& bl) const;
-  void decode(bufferlist::const_iterator& bl);
+  void encode(ceph::buffer::list& bl) const;
+  void decode(ceph::bufferlist::const_iterator& bl);
   void decode(json_spirit::Value& v);
-  void dump(Formatter *f) const;
-  static void generate_test_instances(list<hobject_t*>& o);
+  void dump(ceph::Formatter *f) const;
+  static void generate_test_instances(std::list<hobject_t*>& o);
   friend int cmp(const hobject_t& l, const hobject_t& r);
-  friend bool operator>(const hobject_t& l, const hobject_t& r) {
-    return cmp(l, r) > 0;
+  auto operator<=>(const hobject_t &rhs) const noexcept {
+    auto cmp = max <=> rhs.max;
+    if (cmp != 0) return cmp;
+    cmp = pool <=> rhs.pool;
+    if (cmp != 0) return cmp;
+    cmp = get_bitwise_key() <=> rhs.get_bitwise_key();
+    if (cmp != 0) return cmp;
+    cmp = nspace <=> rhs.nspace;
+    if (cmp != 0) return cmp;
+    if (!(get_key().empty() && rhs.get_key().empty())) {
+      cmp = get_effective_key() <=> rhs.get_effective_key();
+      if (cmp != 0) return cmp;
+    }
+    cmp = oid <=> rhs.oid;
+    if (cmp != 0) return cmp;
+    return snap <=> rhs.snap;
   }
-  friend bool operator>=(const hobject_t& l, const hobject_t& r) {
-    return cmp(l, r) >= 0;
+  bool operator==(const hobject_t& rhs) const noexcept {
+    return operator<=>(rhs) == 0;
   }
-  friend bool operator<(const hobject_t& l, const hobject_t& r) {
-    return cmp(l, r) < 0;
-  }
-  friend bool operator<=(const hobject_t& l, const hobject_t& r) {
-    return cmp(l, r) <= 0;
-  }
-  friend bool operator==(const hobject_t&, const hobject_t&);
-  friend bool operator!=(const hobject_t&, const hobject_t&);
   friend struct ghobject_t;
 };
 WRITE_CLASS_ENCODER(hobject_t)
 
 namespace std {
-  template<> struct hash<hobject_t> {
-    size_t operator()(const hobject_t &r) const {
-      static rjhash<uint64_t> RJ;
-      return RJ(r.get_hash() ^ r.snap);
-    }
-  };
+template<> struct hash<hobject_t> {
+  size_t operator()(const hobject_t &r) const {
+    static rjhash<uint64_t> RJ;
+    return RJ(r.get_hash() ^ r.snap);
+  }
+};
 } // namespace std
 
-ostream& operator<<(ostream& out, const hobject_t& o);
-
-WRITE_EQ_OPERATORS_7(hobject_t, hash, oid, get_key(), snap, pool, max, nspace)
+std::ostream& operator<<(std::ostream& out, const hobject_t& o);
 
 template <typename T>
 struct always_false {
@@ -372,33 +386,33 @@ static inline int cmp(const T&, const hobject_t&r) {
 typedef version_t gen_t;
 
 struct ghobject_t {
-  hobject_t hobj;
-  gen_t generation;
-  shard_id_t shard_id;
-  bool max;
-
-public:
   static const gen_t NO_GEN = UINT64_MAX;
 
-  ghobject_t()
-    : generation(NO_GEN),
-      shard_id(shard_id_t::NO_SHARD),
-      max(false) {}
+  bool max = false;
+  shard_id_t shard_id = shard_id_t::NO_SHARD;
+  hobject_t hobj;
+  gen_t generation = NO_GEN;
+
+  ghobject_t() = default;
 
   explicit ghobject_t(const hobject_t &obj)
-    : hobj(obj),
-      generation(NO_GEN),
-      shard_id(shard_id_t::NO_SHARD),
-      max(false) {}
+    : hobj(obj) {}
 
   ghobject_t(const hobject_t &obj, gen_t gen, shard_id_t shard)
-    : hobj(obj),
-      generation(gen),
-      shard_id(shard),
-      max(false) {}
+    : shard_id(shard),
+      hobj(obj),
+      generation(gen) {}
+
+  // used by Crimson
+  ghobject_t(shard_id_t shard, int64_t pool, uint32_t reversed_hash,
+             const std::string& nspace, const std::string& oid,
+             snapid_t snap, gen_t gen)
+    : shard_id(shard),
+      hobj(oid, snap, reversed_hash, pool, nspace),
+      generation(gen) {}
 
   static ghobject_t make_pgmeta(int64_t pool, uint32_t hash, shard_id_t shard) {
-    hobject_t h(object_t(), string(), CEPH_NOSNAP, hash, pool, string());
+    hobject_t h(object_t(), std::string(), CEPH_NOSNAP, hash, pool, std::string());
     return ghobject_t(h, NO_GEN, shard);
   }
   bool is_pgmeta() const {
@@ -442,7 +456,7 @@ public:
     shard_id = s;
   }
 
-  bool parse(const string& s);
+  bool parse(const std::string& s);
 
   // maximum sorted value.
   static ghobject_t get_max() {
@@ -464,28 +478,15 @@ public:
     (*this) = temp;
   }
 
-  void encode(bufferlist& bl) const;
-  void decode(bufferlist::const_iterator& bl);
+  void encode(ceph::buffer::list& bl) const;
+  void decode(ceph::buffer::list::const_iterator& bl);
   void decode(json_spirit::Value& v);
   size_t encoded_size() const;
-  void dump(Formatter *f) const;
-  static void generate_test_instances(list<ghobject_t*>& o);
+  void dump(ceph::Formatter *f) const;
+  static void generate_test_instances(std::list<ghobject_t*>& o);
   friend int cmp(const ghobject_t& l, const ghobject_t& r);
-  friend bool operator>(const ghobject_t& l, const ghobject_t& r) {
-    return cmp(l, r) > 0;
-  }
-  friend bool operator>=(const ghobject_t& l, const ghobject_t& r) {
-    return cmp(l, r) >= 0;
-  }
-  friend bool operator<(const ghobject_t& l, const ghobject_t& r) {
-    return cmp(l, r) < 0;
-  }
-  friend bool operator<=(const ghobject_t& l, const ghobject_t& r) {
-    return cmp(l, r) <= 0;
-  }
-  friend bool operator==(const ghobject_t&, const ghobject_t&);
-  friend bool operator!=(const ghobject_t&, const ghobject_t&);
-
+  auto operator<=>(const ghobject_t&) const = default;
+  bool operator==(const ghobject_t&) const = default;
 };
 WRITE_CLASS_ENCODER(ghobject_t)
 
@@ -502,9 +503,11 @@ namespace std {
   };
 } // namespace std
 
-ostream& operator<<(ostream& out, const ghobject_t& o);
+std::ostream& operator<<(std::ostream& out, const ghobject_t& o);
 
-WRITE_EQ_OPERATORS_4(ghobject_t, max, shard_id, hobj, generation)
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<ghobject_t> : fmt::ostream_formatter {};
+#endif
 
 extern int cmp(const ghobject_t& l, const ghobject_t& r);
 

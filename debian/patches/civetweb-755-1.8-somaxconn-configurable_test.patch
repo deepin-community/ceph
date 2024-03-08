@@ -5,8 +5,8 @@ Bug: https://github.com/civetweb/civetweb/issues/775
 Bug-Ubuntu: https://bugs.launchpad.net/ubuntu/+source/ceph/+bug/1838109
 ---
 This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
---- a/src/civetweb/test/page3.ssjs
-+++ b/src/civetweb/test/page3.ssjs
+--- a/src/jaegertracing/opentelemetry-cpp/third_party/prometheus-cpp/3rdparty/civetweb/test/page3.ssjs
++++ b/src/jaegertracing/opentelemetry-cpp/third_party/prometheus-cpp/3rdparty/civetweb/test/page3.ssjs
 @@ -21,6 +21,7 @@ opts = [
  "document_root",
  "ssl_certificate",

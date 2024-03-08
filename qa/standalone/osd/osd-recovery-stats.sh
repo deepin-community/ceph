@@ -56,9 +56,9 @@ function above_margin() {
     return $(( $check >= $target && $check <= $target + $margin ? 0 : 1 ))
 }
 
-FIND_UPACT='grep "pg[[]${PG}.*recovering.*_update_calc_stats " $log | tail -1 | sed "s/.*[)] \([[][^ p]*\).*$/\1/"'
-FIND_FIRST='grep "pg[[]${PG}.*recovering.*_update_calc_stats $which " $log | grep -F " ${UPACT}${addp}" | grep -v est | head -1 | sed "s/.* \([0-9]*\)$/\1/"'
-FIND_LAST='grep "pg[[]${PG}.*recovering.*_update_calc_stats $which " $log | tail -1 | sed "s/.* \([0-9]*\)$/\1/"'
+FIND_UPACT='grep "pg[[]${PG}.*recovering.*update_calc_stats " $log | tail -1 | sed "s/.*[)] \([[][^ p]*\).*$/\1/"'
+FIND_FIRST='grep "pg[[]${PG}.*recovering.*update_calc_stats $which " $log | grep -F " ${UPACT}${addp}" | grep -v est | head -1 | sed "s/.* \([0-9]*\)$/\1/"'
+FIND_LAST='grep "pg[[]${PG}.*recovering.*update_calc_stats $which " $log | tail -1 | sed "s/.* \([0-9]*\)$/\1/"'
 
 function check() {
     local dir=$1
@@ -284,12 +284,12 @@ function TEST_recovery_sizedown() {
     local log=$dir/osd.${primary}.log
     check $dir $PG $primary replicated 0 0 $misplaced 0 || return 1
 
-    UPACT=$(grep "pg[[]${PG}.*recovering.*_update_calc_stats " $log | tail -1 | sed "s/.*[)] \([[][^ p]*\).*$/\1/")
+    UPACT=$(grep "pg[[]${PG}.*recovering.*update_calc_stats " $log | tail -1 | sed "s/.*[)] \([[][^ p]*\).*$/\1/")
 
     # This is the value of set into MISSING_ON_PRIMARY
-    FIRST=$(grep "pg[[]${PG}.*recovering.*_update_calc_stats shard $primary " $log | grep -F " $UPACT " | head -1 | sed "s/.* \([0-9]*\)$/\1/")
+    FIRST=$(grep "pg[[]${PG}.*recovering.*update_calc_stats shard $primary " $log | grep -F " $UPACT " | head -1 | sed "s/.* \([0-9]*\)$/\1/")
     below_margin $FIRST $objects || return 1
-    LAST=$(grep "pg[[]${PG}.*recovering.*_update_calc_stats shard $primary " $log | tail -1 | sed "s/.* \([0-9]*\)$/\1/")
+    LAST=$(grep "pg[[]${PG}.*recovering.*update_calc_stats shard $primary " $log | tail -1 | sed "s/.* \([0-9]*\)$/\1/")
     above_margin $LAST 0 || return 1
 
     delete_pool $poolname
@@ -314,7 +314,7 @@ function TEST_recovery_undersized() {
     done
 
     create_pool $poolname 1 1
-    ceph osd pool set $poolname size 1
+    ceph osd pool set $poolname size 1 --yes-i-really-mean-it
 
     wait_for_clean || return 1
 
@@ -347,13 +347,13 @@ function TEST_recovery_undersized() {
     # Wait for recovery to finish
     # Can't use wait_for_clean() because state goes from active+recovering+undersized+degraded
     # to  active+undersized+degraded
-    for i in $(seq 1 60)
+    for i in $(seq 1 300)
     do
       if ceph pg dump pgs | grep ^$PG | grep -qv recovering
       then
           break
       fi
-      if [ $i = "60" ];
+      if [ $i = "300" ];
       then
           echo "Timeout waiting for recovery to finish"
           return 1

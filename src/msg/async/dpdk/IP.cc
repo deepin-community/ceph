@@ -73,6 +73,17 @@ enum {
   l_dpdk_qp_last
 };
 
+struct icmp_hdr {
+  enum class msg_type : uint8_t {
+    echo_reply = 0,
+    echo_request = 8,
+  };
+  msg_type type;
+  uint8_t code;
+  uint16_t csum;
+  uint32_t rest;
+} __attribute__((packed));
+
 ipv4::ipv4(CephContext *c, EventCenter *cen, interface* netif)
   : cct(c), center(cen), _netif(netif), _global_arp(netif),
     _arp(c, _global_arp, cen),
@@ -322,7 +333,7 @@ void ipv4::send(ipv4_address to, ip_protocol_num proto_num,
   }
 }
 
-Tub<l3_protocol::l3packet> ipv4::get_packet() {
+std::optional<l3_protocol::l3packet> ipv4::get_packet() {
   // _packetq will be mostly empty here unless it hold remnants of previously
   // fragmented packet
   if (_packetq.empty()) {
@@ -339,7 +350,7 @@ Tub<l3_protocol::l3packet> ipv4::get_packet() {
     }
   }
 
-  Tub<l3_protocol::l3packet> p;
+  std::optional<l3_protocol::l3packet> p;
   if (!_packetq.empty()) {
     p = std::move(_packetq.front());
     _packetq.pop_front();

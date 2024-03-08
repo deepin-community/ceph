@@ -22,8 +22,11 @@
 
 #include <seastar/core/thread.hh>
 #include <seastar/core/posix.hh>
+#include <seastar/core/reactor.hh>
 #include <ucontext.h>
 #include <algorithm>
+
+#include <valgrind/valgrind.h>
 
 /// \cond internal
 
@@ -148,14 +151,27 @@ inline void jmp_buf_link::final_switch_out()
 
 #endif
 
-thread_context::thread_context(thread_attributes attr, std::function<void ()> func)
-        : _attr(std::move(attr))
-#ifdef SEASTAR_THREAD_STACK_GUARDS
-        , _stack_size(base_stack_size + getpagesize())
+// Both asan and optimizations can increase the stack used by a
+// function. When both are used, we need more than 128 KiB.
+#if defined(SEASTAR_ASAN_ENABLED)
+static constexpr size_t base_stack_size = 256 * 1024;
+#else
+static constexpr size_t base_stack_size = 128 * 1024;
 #endif
-        , _func(std::move(func))
-        , _scheduling_group(_attr.sched_group.value_or(current_scheduling_group())) {
-    setup();
+
+static size_t get_stack_size(thread_attributes attr) {
+#if defined(__OPTIMIZE__) && defined(SEASTAR_ASAN_ENABLED)
+    return std::max(base_stack_size, attr.stack_size);
+#else
+    return attr.stack_size ? attr.stack_size : base_stack_size;
+#endif
+}
+
+thread_context::thread_context(thread_attributes attr, noncopyable_function<void ()> func)
+        : task(attr.sched_group.value_or(current_scheduling_group()))
+        , _stack(make_stack(get_stack_size(attr)))
+        , _func(std::move(func)) {
+    setup(get_stack_size(attr));
     _all_threads.push_front(*this);
 }
 
@@ -167,34 +183,42 @@ thread_context::~thread_context() {
     _all_threads.erase(_all_threads.iterator_to(*this));
 }
 
+thread_context::stack_deleter::stack_deleter(int valgrind_id) : valgrind_id(valgrind_id) {}
+
 thread_context::stack_holder
-thread_context::make_stack() {
+thread_context::make_stack(size_t stack_size) {
 #ifdef SEASTAR_THREAD_STACK_GUARDS
-    void* mem = ::aligned_alloc(getpagesize(), _stack_size);
+    size_t page_size = getpagesize();
+    size_t alignment = page_size;
+#else
+    size_t alignment = 16; // ABI requirement on x86_64
+#endif
+    void* mem = ::aligned_alloc(alignment, stack_size);
     if (mem == nullptr) {
         throw std::bad_alloc();
     }
-    auto stack = stack_holder(new (mem) char[_stack_size]);
-#else
-    auto stack = stack_holder(new char[_stack_size]);
-#endif
+    int valgrind_id = VALGRIND_STACK_REGISTER(mem, reinterpret_cast<char*>(mem) + stack_size);
+    auto stack = stack_holder(new (mem) char[stack_size], stack_deleter(valgrind_id));
 #ifdef SEASTAR_ASAN_ENABLED
     // Avoid ASAN false positive due to garbage on stack
-    std::fill_n(stack.get(), _stack_size, 0);
+    std::fill_n(stack.get(), stack_size, 0);
 #endif
+
+#ifdef SEASTAR_THREAD_STACK_GUARDS
+    auto mp_status = mprotect(stack.get(), page_size, PROT_READ);
+    throw_system_error_on(mp_status != 0, "mprotect");
+#endif
+
     return stack;
 }
 
 void thread_context::stack_deleter::operator()(char* ptr) const noexcept {
-#ifdef SEASTAR_THREAD_STACK_GUARDS
+    VALGRIND_STACK_DEREGISTER(valgrind_id);
     free(ptr);
-#else
-    delete[] ptr;
-#endif
 }
 
 void
-thread_context::setup() {
+thread_context::setup(size_t stack_size) {
     // use setcontext() for the initial jump, as it allows us
     // to set up a stack, but continue with longjmp() as it's
     // much faster.
@@ -203,87 +227,46 @@ thread_context::setup() {
     auto main = reinterpret_cast<void (*)()>(&thread_context::s_main);
     auto r = getcontext(&initial_context);
     throw_system_error_on(r == -1);
-#ifdef SEASTAR_THREAD_STACK_GUARDS
-    size_t page_size = getpagesize();
-    assert(align_up(_stack.get(), page_size) == _stack.get());
-    auto mp_status = mprotect(_stack.get(), page_size, PROT_READ);
-    throw_system_error_on(mp_status != 0, "mprotect");
-#endif
     initial_context.uc_stack.ss_sp = _stack.get();
-    initial_context.uc_stack.ss_size = _stack_size;
+    initial_context.uc_stack.ss_size = stack_size;
     initial_context.uc_link = nullptr;
     makecontext(&initial_context, main, 2, int(q), int(q >> 32));
     _context.thread = this;
-    _context.initial_switch_in(&initial_context, _stack.get(), _stack_size);
+    _context.initial_switch_in(&initial_context, _stack.get(), stack_size);
 }
 
 void
 thread_context::switch_in() {
-    if (_attr.scheduling_group) {
-        _attr.scheduling_group->account_start();
-        _context.yield_at = _attr.scheduling_group->_this_run_start + _attr.scheduling_group->_this_period_remain;
-    } else {
-        _context.yield_at = {};
-    }
+    local_engine->_current_task = nullptr; // thread_wake_task is on the stack and will be invalid when we resume
     _context.switch_in();
 }
 
 void
 thread_context::switch_out() {
-    if (_attr.scheduling_group) {
-        _attr.scheduling_group->account_stop();
-    }
     _context.switch_out();
 }
 
 bool
 thread_context::should_yield() const {
-    if (!_attr.scheduling_group) {
-        return need_preempt();
-    }
-    return need_preempt() || bool(_attr.scheduling_group->next_scheduling_point());
+    return need_preempt();
 }
 
-thread_local thread_context::preempted_thread_list thread_context::_preempted_threads;
 thread_local thread_context::all_thread_list thread_context::_all_threads;
 
 void
-thread_context::yield() {
-    if (!_attr.scheduling_group) {
-        schedule(make_task(_scheduling_group, [this] {
-            switch_in();
-        }));
-        switch_out();
-    } else {
-        auto when = _attr.scheduling_group->next_scheduling_point();
-        if (when) {
-            _preempted_threads.push_back(*this);
-            _sched_promise.emplace();
-            auto fut = _sched_promise->get_future();
-            _sched_timer.arm(*when);
-            fut.get();
-            _sched_promise = compat::nullopt;
-        } else if (need_preempt()) {
-            later().get();
-        }
-    }
+thread_context::run_and_dispose() noexcept {
+    switch_in();
 }
 
-bool thread::try_run_one_yielded_thread() {
-    if (thread_context::_preempted_threads.empty()) {
-        return false;
-    }
-    auto&& t = thread_context::_preempted_threads.front();
-    t._sched_timer.cancel();
-    t._sched_promise->set_value();
-    thread_context::_preempted_threads.pop_front();
-    return true;
+void
+thread_context::yield() {
+    schedule(this);
+    switch_out();
 }
 
 void
 thread_context::reschedule() {
-    _preempted_threads.erase(_preempted_threads.iterator_to(*this));
-    _sched_promise->set_value();
+    schedule(this);
 }
 
 void
@@ -303,14 +286,13 @@ thread_context::main() {
     asm(".cfi_undefined lr");
 #elif defined(__aarch64__)
     asm(".cfi_undefined x30");
+#elif defined(__s390x__)
+    asm(".cfi_undefined %r14");
 #else
     #warning "Backtracing from seastar threads may be broken"
 #endif
     _context.initial_switch_in_completed();
-    if (_attr.scheduling_group) {
-        _attr.scheduling_group->account_start();
-    }
-    if (_scheduling_group != current_scheduling_group()) {
+    if (group() != current_scheduling_group()) {
         yield();
     }
     try {
@@ -318,9 +300,6 @@ thread_context::main() {
         _done.set_value();
     } catch (...) {
         _done.set_exception(std::current_exception());
-    }
-    if (_attr.scheduling_group) {
-        _attr.scheduling_group->account_stop();
     }
 
     _context.final_switch_out();
@@ -348,7 +327,7 @@ void init() {
 
 scheduling_group
 sched_group(const thread_context* thread) {
-    return thread->_scheduling_group;
+    return thread->group();
 }
 
 }
@@ -361,34 +340,11 @@ bool thread::should_yield() {
     return thread_impl::get()->should_yield();
 }
 
-thread_scheduling_group::thread_scheduling_group(std::chrono::nanoseconds period, float usage)
-        : _period(period), _quota(std::chrono::duration_cast<std::chrono::nanoseconds>(usage * period)) {
-}
-
-void
-thread_scheduling_group::account_start() {
-    auto now = thread_clock::now();
-    if (now >= _this_period_ends) {
-        _this_period_ends = now + _period;
-        _this_period_remain = _quota;
+void thread::maybe_yield() {
+    auto tctx = thread_impl::get();
+    if (tctx->should_yield()) {
+        tctx->yield();
     }
-    _this_run_start = now;
-}
-
-void
-thread_scheduling_group::account_stop() {
-    _this_period_remain -= thread_clock::now() - _this_run_start;
-}
-
-compat::optional<thread_clock::time_point>
-thread_scheduling_group::next_scheduling_point() const {
-    auto now = thread_clock::now();
-    auto current_remain = _this_period_remain - (now - _this_run_start);
-    if (current_remain > std::chrono::nanoseconds(0)) {
-        return compat::nullopt;
-    }
-    return _this_period_ends - current_remain;
-
 }
 
 }

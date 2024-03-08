@@ -17,6 +17,16 @@
 #undef dout_prefix
 #define dout_prefix _prefix(_dout)
 
+using std::list;
+using std::make_pair;
+using std::ostream;
+using std::pair;
+using std::set;
+using std::string;
+using std::stringstream;
+
+using ceph::Formatter;
+
 static ostream& _prefix(std::ostream* _dout)
 {
   return *_dout << "-- op tracker -- ";
@@ -78,8 +88,10 @@ void OpHistory::_insert_delayed(const utime_t& now, TrackedOpRef op)
   double opduration = op->get_duration();
   duration.insert(make_pair(opduration, op));
   arrived.insert(make_pair(op->get_initiated(), op));
-  if (opduration >= history_slow_op_threshold.load())
+  if (opduration >= history_slow_op_threshold.load()) {
     slow_op.insert(make_pair(op->get_initiated(), op));
+    logger->inc(l_osd_slow_op_count);
+  }
   cleanup(now);
 }
 
@@ -122,7 +134,7 @@ void OpHistory::dump_ops(utime_t now, Formatter *f, set<string> filters, bool by
 	if (!i->second->filter_out(filters))
 	  continue;
 	f->open_object_section("op");
-	i->second->dump(now, f);
+	i->second->dump(now, f, OpTracker::default_dumper);
 	f->close_section();
       }
     };
@@ -146,12 +158,13 @@ struct ShardedTrackingData {
 
 OpTracker::OpTracker(CephContext *cct_, bool tracking, uint32_t num_shards):
   seq(0),
+  history(cct_),
   num_optracker_shards(num_shards),
   complaint_time(0), log_threshold(0),
   tracking_enabled(tracking),
-  lock("OpTracker::lock"), cct(cct_) {
+  cct(cct_) {
     for (uint32_t i = 0; i < num_optracker_shards; i++) {
-      char lock_name[32] = {0};
+      char lock_name[34] = {0};
       snprintf(lock_name, sizeof(lock_name), "%s:%" PRIu32, "OpTracker::ShardedLock", i);
       ShardedTrackingData* one_shard = new ShardedTrackingData(lock_name);
       sharded_in_flight_list.push_back(one_shard);
@@ -160,6 +173,14 @@ OpTracker::OpTracker(CephContext *cct_, bool tracking, uint32_t num_shards):
 
 OpTracker::~OpTracker() {
   while (!sharded_in_flight_list.empty()) {
+    ShardedTrackingData* sdata = sharded_in_flight_list.back();
+    ceph_assert(NULL != sdata);
+    while (!sdata->ops_in_flight_sharded.empty()) {
+      {
+        std::lock_guard locker(sdata->ops_in_flight_lock_sharded);
+        sdata->ops_in_flight_sharded.pop_back();
+      }
+    }
     ceph_assert((sharded_in_flight_list.back())->ops_in_flight_sharded.empty());
     delete sharded_in_flight_list.back();
     sharded_in_flight_list.pop_back();
@@ -171,7 +192,7 @@ bool OpTracker::dump_historic_ops(Formatter *f, bool by_duration, set<string> fi
   if (!tracking_enabled)
     return false;
 
-  RWLock::RLocker l(lock);
+  std::shared_lock l{lock};
   utime_t now = ceph_clock_now();
   history.dump_ops(now, f, filters, by_duration);
   return true;
@@ -193,7 +214,7 @@ void OpHistory::dump_slow_ops(utime_t now, Formatter *f, set<string> filters)
       if (!i->second->filter_out(filters))
         continue;
       f->open_object_section("Op");
-      i->second->dump(now, f);
+      i->second->dump(now, f, OpTracker::default_dumper);
       f->close_section();
     }
     f->close_section();
@@ -206,21 +227,25 @@ bool OpTracker::dump_historic_slow_ops(Formatter *f, set<string> filters)
   if (!tracking_enabled)
     return false;
 
-  RWLock::RLocker l(lock);
+  std::shared_lock l{lock};
   utime_t now = ceph_clock_now();
   history.dump_slow_ops(now, f, filters);
   return true;
 }
 
-bool OpTracker::dump_ops_in_flight(Formatter *f, bool print_only_blocked, set<string> filters)
+bool OpTracker::dump_ops_in_flight(Formatter *f, bool print_only_blocked, set<string> filters, bool count_only, dumper lambda)
 {
   if (!tracking_enabled)
     return false;
 
-  RWLock::RLocker l(lock);
+  std::shared_lock l{lock};
   f->open_object_section("ops_in_flight"); // overall dump
   uint64_t total_ops_in_flight = 0;
-  f->open_array_section("ops"); // list of TrackedOps
+
+  if (!count_only) {
+    f->open_array_section("ops"); // list of TrackedOps
+  }
+
   utime_t now = ceph_clock_now();
   for (uint32_t i = 0; i < num_optracker_shards; i++) {
     ShardedTrackingData* sdata = sharded_in_flight_list[i];
@@ -231,18 +256,27 @@ bool OpTracker::dump_ops_in_flight(Formatter *f, bool print_only_blocked, set<st
         break;
       if (!op.filter_out(filters))
         continue;
-      f->open_object_section("op");
-      op.dump(now, f);
-      f->close_section(); // this TrackedOp
+      
+      if (!count_only) {
+        f->open_object_section("op");
+        op.dump(now, f, lambda);
+        f->close_section(); // this TrackedOp
+      }
+
       total_ops_in_flight++;
     }
   }
-  f->close_section(); // list of TrackedOps
+
+  if (!count_only) {
+    f->close_section(); // list of TrackedOps
+  }
+
   if (print_only_blocked) {
     f->dump_float("complaint_time", complaint_time);
     f->dump_int("num_blocked_ops", total_ops_in_flight);
-  } else
+  } else {
     f->dump_int("num_ops", total_ops_in_flight);
+  }
   f->close_section(); // overall dump
   return true;
 }
@@ -252,7 +286,7 @@ bool OpTracker::register_inflight_op(TrackedOp *i)
   if (!tracking_enabled)
     return false;
 
-  RWLock::RLocker l(lock);
+  std::shared_lock l{lock};
   uint64_t current_seq = ++seq;
   uint32_t shard_index = current_seq % num_optracker_shards;
   ShardedTrackingData* sdata = sharded_in_flight_list[shard_index];
@@ -282,7 +316,7 @@ void OpTracker::unregister_inflight_op(TrackedOp* const i)
 
 void OpTracker::record_history_op(TrackedOpRef&& i)
 {
-  RWLock::RLocker l(lock);
+  std::shared_lock l{lock};
   history.insert(ceph_clock_now(), std::move(i));
 }
 
@@ -304,7 +338,7 @@ bool OpTracker::visit_ops_in_flight(utime_t* oldest_secs,
   // hot path.
   std::vector<TrackedOpRef> ops_in_flight;
 
-  RWLock::RLocker l(lock);
+  std::shared_lock l{lock};
   for (const auto sdata : sharded_in_flight_list) {
     ceph_assert(sdata);
     std::lock_guard locker(sdata->ops_in_flight_lock_sharded);
@@ -462,7 +496,7 @@ void TrackedOp::mark_event(std::string_view event, utime_t stamp)
   _event_marked();
 }
 
-void TrackedOp::dump(utime_t now, Formatter *f) const
+void TrackedOp::dump(utime_t now, Formatter *f, OpTracker::dumper lambda) const
 {
   // Ignore if still in the constructor
   if (!state)
@@ -473,7 +507,7 @@ void TrackedOp::dump(utime_t now, Formatter *f) const
   f->dump_float("duration", get_duration());
   {
     f->open_object_section("type_data");
-    _dump(f);
+    lambda(*this, f);
     f->close_section();
   }
 }

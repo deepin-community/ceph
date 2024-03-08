@@ -78,14 +78,6 @@ TEST_F(BlockDevTest, discard)
   EXPECT_TRUE(sdb.support_discard());
 }
 
-TEST_F(BlockDevTest, is_nvme)
-{
-  // It would be nice to have a positive NVME test too, but I don't have any
-  // examples for the canned data.
-  EXPECT_FALSE(sda.is_nvme());
-  EXPECT_FALSE(sdb.is_nvme());
-}
-
 TEST_F(BlockDevTest, is_rotational)
 {
   EXPECT_FALSE(sda.is_rotational());
@@ -105,5 +97,18 @@ TEST(blkdev, _decode_model_enc)
     std::string d = _decode_model_enc(foo[i][0]);
     cout << " '" << foo[i][0] << "' -> '" << d << "'" << std::endl;
     ASSERT_EQ(std::string(foo[i][1]), d);
+  }
+}
+
+TEST(blkdev, get_device_id)
+{
+  // this doesn't really test anything; it's just a way to exercise the
+  // get_device_id() code.
+  for (char c = 'a'; c < 'z'; ++c) {
+    char devname[4] = {'s', 'd', c, 0};
+    std::string err;
+    auto i = get_device_id(devname, &err);
+    cout << "devname " << devname << " -> '" << i
+	 << "' (" << err << ")" << std::endl;
   }
 }

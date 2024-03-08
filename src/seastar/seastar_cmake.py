@@ -17,13 +17,13 @@
 
 import os
 
-SUPPORTED_MODES = ['release', 'debug', 'dev']
+SUPPORTED_MODES = ['release', 'debug', 'dev', 'sanitize']
 
 ROOT_PATH = os.path.realpath(os.path.dirname(__file__))
 
 BUILD_PATHS = { mode: os.path.join(ROOT_PATH, 'build', mode) for mode in SUPPORTED_MODES }
 
-COOKING_BASIC_ARGS = ['./cooking.sh', '-r', 'dev', '-i', 'fmt']
+COOKING_BASIC_ARGS = ['./cooking.sh']
 
 def is_release_mode(mode):
     return mode == 'release'
@@ -46,4 +46,7 @@ def translate_arg(arg, new_name, value_when_none='no'):
     else:
         value = arg
 
-    return '-DSeastar_{}={}'.format(new_name, value)
+    if value is None:
+        return ''
+    else:
+        return '-DSeastar_{}={}'.format(new_name, value)

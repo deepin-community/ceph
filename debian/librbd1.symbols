@@ -2,14 +2,18 @@ librbd.so.1 librbd1 #MINVER#
  (regex|c++)"^_.*" 0.87
  rbd_aio_close@Base 10.1.0
  rbd_aio_compare_and_write@Base 12.1.4
+ rbd_aio_compare_and_writev@Base 18.2.0+ds
  rbd_aio_create_completion@Base 0.72.2
  rbd_aio_discard@Base 0.72.2
  rbd_aio_flush@Base 0.72.2
  rbd_aio_get_arg@Base 10.1.0
  rbd_aio_get_return_value@Base 0.72.2
  rbd_aio_is_complete@Base 0.72.2
+ rbd_aio_mirror_image_create_snapshot@Base 16.2.6+ds
  rbd_aio_mirror_image_demote@Base 12.0.3
+ rbd_aio_mirror_image_get_global_status@Base 16.2.6+ds
  rbd_aio_mirror_image_get_info@Base 12.0.3
+ rbd_aio_mirror_image_get_mode@Base 16.2.6+ds
  rbd_aio_mirror_image_get_status@Base 12.0.3
  rbd_aio_mirror_image_promote@Base 12.0.3
  rbd_aio_open@Base 10.1.0
@@ -53,6 +57,11 @@ librbd.so.1 librbd1 #MINVER#
  rbd_diff_iterate2@Base 9.2.0
  rbd_diff_iterate@Base 0.72.2
  rbd_discard@Base 0.72.2
+ rbd_encryption_format@Base 16.2.6+ds
+ rbd_encryption_load2@Base 18.2.0+ds
+ rbd_encryption_load@Base 16.2.6+ds
+ rbd_features_from_string@Base 16.2.6+ds
+ rbd_features_to_string@Base 16.2.6+ds
  rbd_flatten@Base 0.72.2
  rbd_flatten_with_progress@Base 12.0.3
  rbd_flush@Base 0.72.2
@@ -64,6 +73,7 @@ librbd.so.1 librbd1 #MINVER#
  rbd_get_flags@Base 0.93
  rbd_get_group@Base 13.2.0
  rbd_get_id@Base 12.0.3
+ rbd_get_migration_source_spec@Base 16.2.6+ds
  rbd_get_modify_timestamp@Base 14.2.0
  rbd_get_name@Base 13.2.0
  rbd_get_old_format@Base 0.72.2
@@ -85,6 +95,7 @@ librbd.so.1 librbd1 #MINVER#
  rbd_group_list@Base 13.2.0
  rbd_group_remove@Base 13.2.0
  rbd_group_rename@Base 13.2.0
+ rbd_group_snap_create2@Base 16.2.6+ds
  rbd_group_snap_create@Base 13.2.0
  rbd_group_snap_list@Base 13.2.0
  rbd_group_snap_list_cleanup@Base 13.2.0
@@ -135,14 +146,26 @@ librbd.so.1 librbd1 #MINVER#
  rbd_migration_execute@Base 14.2.0
  rbd_migration_execute_with_progress@Base 14.2.0
  rbd_migration_prepare@Base 14.2.0
+ rbd_migration_prepare_import@Base 16.2.6+ds
  rbd_migration_status@Base 14.2.0
  rbd_migration_status_cleanup@Base 14.2.0
+ rbd_mirror_image_create_snapshot2@Base 16.2.6+ds
+ rbd_mirror_image_create_snapshot@Base 16.2.6+ds
  rbd_mirror_image_demote@Base 10.1.0
  rbd_mirror_image_disable@Base 10.1.0
+ rbd_mirror_image_enable2@Base 16.2.6+ds
  rbd_mirror_image_enable@Base 10.1.0
+ rbd_mirror_image_get_global_status@Base 16.2.6+ds
  rbd_mirror_image_get_info@Base 10.1.0
+ rbd_mirror_image_get_info_cleanup@Base 16.2.6+ds
  rbd_mirror_image_get_instance_id@Base 14.2.0
+ rbd_mirror_image_get_mode@Base 16.2.6+ds
  rbd_mirror_image_get_status@Base 12.0.3
+ rbd_mirror_image_global_status_cleanup@Base 16.2.6+ds
+ rbd_mirror_image_global_status_list@Base 16.2.6+ds
+ rbd_mirror_image_global_status_list_cleanup@Base 16.2.6+ds
+ rbd_mirror_image_info_list@Base 16.2.6+ds
+ rbd_mirror_image_info_list_cleanup@Base 16.2.6+ds
  rbd_mirror_image_instance_id_list@Base 14.2.0
  rbd_mirror_image_instance_id_list_cleanup@Base 14.2.0
  rbd_mirror_image_promote@Base 10.1.0
@@ -162,8 +185,18 @@ librbd.so.1 librbd1 #MINVER#
  rbd_mirror_peer_set_attributes@Base 14.2.0
  rbd_mirror_peer_set_client@Base 10.1.0
  rbd_mirror_peer_set_cluster@Base 10.1.0
+ rbd_mirror_peer_site_add@Base 16.2.6+ds
+ rbd_mirror_peer_site_get_attributes@Base 16.2.6+ds
+ rbd_mirror_peer_site_list@Base 16.2.6+ds
+ rbd_mirror_peer_site_list_cleanup@Base 16.2.6+ds
+ rbd_mirror_peer_site_remove@Base 16.2.6+ds
+ rbd_mirror_peer_site_set_attributes@Base 16.2.6+ds
+ rbd_mirror_peer_site_set_client_name@Base 16.2.6+ds
+ rbd_mirror_peer_site_set_direction@Base 16.2.6+ds
+ rbd_mirror_peer_site_set_name@Base 16.2.6+ds
  rbd_mirror_site_name_get@Base 14.2.5
  rbd_mirror_site_name_set@Base 14.2.5
+ rbd_mirror_uuid_get@Base 16.2.6+ds
  rbd_namespace_create@Base 14.2.0
  rbd_namespace_exists@Base 14.2.0
  rbd_namespace_list@Base 14.2.0
@@ -182,6 +215,9 @@ librbd.so.1 librbd1 #MINVER#
  rbd_pool_stats_destroy@Base 14.2.0
  rbd_pool_stats_get@Base 14.2.0
  rbd_pool_stats_option_add_uint64@Base 14.2.0
+ rbd_quiesce_complete@Base 18.2.0+ds
+ rbd_quiesce_unwatch@Base 16.2.6+ds
+ rbd_quiesce_watch@Base 16.2.6+ds
  rbd_read2@Base 0.93
  rbd_read@Base 0.72.2
  rbd_read_iterate2@Base 0.72.2
@@ -194,9 +230,14 @@ librbd.so.1 librbd1 #MINVER#
  rbd_resize@Base 0.72.2
  rbd_resize_with_progress@Base 0.72.2
  rbd_set_image_notification@Base 10.1.0
+ rbd_snap_create2@Base 16.2.6+ds
  rbd_snap_create@Base 0.72.2
+ rbd_snap_exists@Base 16.2.6+ds
  rbd_snap_get_group_namespace@Base 13.2.0
+ rbd_snap_get_id@Base 16.2.6+ds
  rbd_snap_get_limit@Base 12.0.3
+ rbd_snap_get_mirror_namespace@Base 16.2.6+ds
+ rbd_snap_get_name@Base 16.2.6+ds
  rbd_snap_get_namespace_type@Base 13.2.0
  rbd_snap_get_timestamp@Base 12.0.3
  rbd_snap_get_trash_namespace@Base 14.2.0
@@ -204,6 +245,7 @@ librbd.so.1 librbd1 #MINVER#
  rbd_snap_is_protected@Base 0.72.2
  rbd_snap_list@Base 0.72.2
  rbd_snap_list_end@Base 0.72.2
+ rbd_snap_mirror_namespace_cleanup@Base 16.2.6+ds
  rbd_snap_protect@Base 0.72.2
  rbd_snap_remove2@Base 12.0.3
  rbd_snap_remove@Base 0.72.2

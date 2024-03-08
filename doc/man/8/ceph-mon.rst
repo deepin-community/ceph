@@ -77,12 +77,17 @@ Options
 
    Specify a keyring for use with ``--mkfs``.
 
+.. option:: --no-config-file
+
+    Signal that we don't want to rely on a *ceph.conf*, either user provided
+    or the default, to run the daemon.  This will entail providing all
+    necessary options to the daemon as arguments.
 
 Availability
 ============
 
 **ceph-mon** is part of Ceph, a massively scalable, open-source, distributed storage system. Please refer
-to the Ceph documentation at http://ceph.com/docs for more
+to the Ceph documentation at https://docs.ceph.com for more
 information.
 
 

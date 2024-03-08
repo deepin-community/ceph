@@ -23,12 +23,13 @@ THE SOFTWARE.
  */
 
 import { Component, Injector, OnDestroy } from '@angular/core';
-import { ActivatedRouteSnapshot, NavigationEnd, Router } from '@angular/router';
+import { Title } from '@angular/platform-browser';
+import { ActivatedRouteSnapshot, NavigationEnd, NavigationStart, Router } from '@angular/router';
 
-import { from, Observable, of, Subscription } from 'rxjs';
-import { concat, distinct, filter, first, flatMap, toArray } from 'rxjs/operators';
+import { concat, from, Observable, of, Subscription } from 'rxjs';
+import { distinct, filter, first, mergeMap, toArray } from 'rxjs/operators';
 
-import { BreadcrumbsResolver, IBreadcrumb } from '../../../shared/models/breadcrumbs';
+import { BreadcrumbsResolver, IBreadcrumb } from '~/app/shared/models/breadcrumbs';
 
 @Component({
   selector: 'cd-breadcrumbs',
@@ -37,10 +38,24 @@ import { BreadcrumbsResolver, IBreadcrumb } from '../../../shared/models/breadcr
 })
 export class BreadcrumbsComponent implements OnDestroy {
   crumbs: IBreadcrumb[] = [];
+  /**
+   * Useful for e2e tests.
+   * This allow us to mark the breadcrumb as pending during the navigation from
+   * one page to another.
+   * This resolves the problem of validating the breadcrumb of a new page and
+   * still get the value from the previous
+   */
+  finished = false;
   subscription: Subscription;
   private defaultResolver = new BreadcrumbsResolver();
 
-  constructor(private router: Router, private injector: Injector) {
+  constructor(private router: Router, private injector: Injector, private titleService: Title) {
+    this.subscription = this.router.events
+      .pipe(filter((x) => x instanceof NavigationStart))
+      .subscribe(() => {
+        this.finished = false;
+      });
+
     this.subscription = this.router.events
       .pipe(filter((x) => x instanceof NavigationEnd))
       .subscribe(() => {
@@ -48,16 +63,19 @@ export class BreadcrumbsComponent implements OnDestroy {
 
         this._resolveCrumbs(currentRoot)
           .pipe(
-            flatMap((x) => x),
+            mergeMap((x) => x),
             distinct((x) => x.text),
             toArray(),
-            flatMap((x) => {
+            mergeMap((x) => {
               const y = this.postProcess(x);
               return this.wrapIntoObservable<IBreadcrumb[]>(y).pipe(first());
             })
           )
           .subscribe((x) => {
+            this.finished = true;
             this.crumbs = x;
+            const title = this.getTitleFromCrumbs(this.crumbs);
+            this.titleService.setTitle(title);
           });
       });
   }
@@ -75,7 +93,7 @@ export class BreadcrumbsComponent implements OnDestroy {
       let resolver: BreadcrumbsResolver;
 
       if (data.breadcrumbs.prototype instanceof BreadcrumbsResolver) {
-        resolver = this.injector.get(data.breadcrumbs);
+        resolver = this.injector.get<BreadcrumbsResolver>(data.breadcrumbs);
       } else {
         resolver = this.defaultResolver;
       }
@@ -87,14 +105,14 @@ export class BreadcrumbsComponent implements OnDestroy {
     }
 
     if (route.firstChild) {
-      crumbs$ = crumbs$.pipe(concat(this._resolveCrumbs(route.firstChild)));
+      crumbs$ = concat<IBreadcrumb[]>(crumbs$, this._resolveCrumbs(route.firstChild));
     }
 
     return crumbs$;
   }
 
   postProcess(breadcrumbs: IBreadcrumb[]) {
-    const result = [];
+    const result: IBreadcrumb[] = [];
     breadcrumbs.forEach((element) => {
       const split = element.text.split('/');
       if (split.length > 1) {
@@ -122,5 +140,18 @@ export class BreadcrumbsComponent implements OnDestroy {
     }
 
     return of(value as T);
+  }
+
+  private getTitleFromCrumbs(crumbs: IBreadcrumb[]): string {
+    const currentLocation = crumbs
+      .map((crumb: IBreadcrumb) => {
+        return crumb.text || '';
+      })
+      .join(' > ');
+    if (currentLocation.length > 0) {
+      return `Ceph: ${currentLocation}`;
+    } else {
+      return 'Ceph';
+    }
   }
 }

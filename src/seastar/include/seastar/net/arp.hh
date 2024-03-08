@@ -23,10 +23,8 @@
 #pragma once
 
 #include <seastar/net/net.hh>
-#include <seastar/core/reactor.hh>
 #include <seastar/core/byteorder.hh>
 #include <seastar/net/ethernet.hh>
-#include <seastar/core/print.hh>
 #include <unordered_map>
 
 namespace seastar {
@@ -52,7 +50,6 @@ public:
 class arp {
     interface* _netif;
     l3_protocol _proto;
-    subscription<packet, ethernet_address> _rx_packets;
     std::unordered_map<uint16_t, arp_for_protocol*> _arp_for_protocol;
     circular_buffer<l3_protocol::l3packet> _packetq;
 private:
@@ -73,10 +70,10 @@ public:
     void add(uint16_t proto_num, arp_for_protocol* afp);
     void del(uint16_t proto_num);
 private:
-    ethernet_address l2self() { return _netif->hw_address(); }
+    ethernet_address l2self() const noexcept { return _netif->hw_address(); }
     future<> process_packet(packet p, ethernet_address from);
     bool forward(forward_hash& out_hash_data, packet& p, size_t off);
-    compat::optional<l3_protocol::l3packet> get_packet();
+    std::optional<l3_protocol::l3packet> get_packet();
     template <class l3_proto>
     friend class arp_for;
 };
@@ -143,7 +140,7 @@ private:
     packet make_query_packet(l3addr paddr);
     virtual future<> received(packet p) override;
     future<> handle_request(arp_hdr* ah);
-    l2addr l2self() { return _arp.l2self(); }
+    l2addr l2self() const noexcept { return _arp.l2self(); }
     void send(l2addr to, packet p);
 public:
     future<> send_query(const l3addr& paddr);
@@ -220,14 +217,16 @@ arp_for<L3>::lookup(const l3addr& paddr) {
 
     if (first_request) {
         res._timeout_timer.set_callback([paddr, this, &res] {
-            send_query(paddr);
+            // FIXME: future is discarded
+            (void)send_query(paddr);
             for (auto& w : res._waiters) {
                 w.set_exception(arp_timeout_error());
             }
             res._waiters.clear();
         });
         res._timeout_timer.arm_periodic(std::chrono::seconds(1));
-        send_query(paddr);
+        // FIXME: future is discarded
+        (void)send_query(paddr);
     }
 
     if (res._waiters.size() >= max_waiters) {

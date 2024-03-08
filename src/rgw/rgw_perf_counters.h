@@ -1,10 +1,9 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 #pragma once
 
-class CephContext;
-class PerfCounters;
+#include "include/common_fwd.h"
 
 extern PerfCounters *perfcounter;
 
@@ -35,6 +34,13 @@ enum {
 
   l_rgw_gc_retire,
 
+  l_rgw_lc_expire_current,
+  l_rgw_lc_expire_noncurrent,
+  l_rgw_lc_expire_dm,
+  l_rgw_lc_transition_current,
+  l_rgw_lc_transition_noncurrent,
+  l_rgw_lc_abort_mpu,
+
   l_rgw_pubsub_event_triggered,
   l_rgw_pubsub_event_lost,
   l_rgw_pubsub_store_ok,
@@ -44,6 +50,10 @@ enum {
   l_rgw_pubsub_push_failed,
   l_rgw_pubsub_push_pending,
   l_rgw_pubsub_missing_conf,
+
+  l_rgw_lua_current_vms,
+  l_rgw_lua_script_ok,
+  l_rgw_lua_script_fail,
 
   l_rgw_last,
 };

@@ -4,10 +4,12 @@
 #ifndef CEPH_RBD_UTILS_H
 #define CEPH_RBD_UTILS_H
 
+#include "include/compat.h"
 #include "include/int_types.h"
 #include "include/rados/librados.hpp"
 #include "include/rbd/librbd.hpp"
 #include "tools/rbd/ArgumentTypes.h"
+#include <map>
 #include <string>
 #include <boost/program_options.hpp>
 
@@ -81,6 +83,45 @@ struct ProgressContext : public librbd::ProgressContext {
   void fail();
 };
 
+int get_percentage(uint64_t part, uint64_t whole);
+
+struct EncryptionOptions {
+  std::vector<librbd::encryption_spec_t> specs;
+
+  ~EncryptionOptions() {
+    for (auto& spec : specs) {
+      switch (spec.format) {
+      case RBD_ENCRYPTION_FORMAT_LUKS: {
+        auto opts =
+            static_cast<librbd::encryption_luks_format_options_t*>(spec.opts);
+        ceph_memzero_s(opts->passphrase.data(), opts->passphrase.size(),
+                       opts->passphrase.size());
+        delete opts;
+        break;
+      }
+      case RBD_ENCRYPTION_FORMAT_LUKS1: {
+        auto opts =
+            static_cast<librbd::encryption_luks1_format_options_t*>(spec.opts);
+        ceph_memzero_s(opts->passphrase.data(), opts->passphrase.size(),
+                       opts->passphrase.size());
+        delete opts;
+        break;
+      }
+      case RBD_ENCRYPTION_FORMAT_LUKS2: {
+        auto opts =
+            static_cast<librbd::encryption_luks2_format_options_t*>(spec.opts);
+        ceph_memzero_s(opts->passphrase.data(), opts->passphrase.size(),
+                       opts->passphrase.size());
+        delete opts;
+        break;
+      }
+      default:
+        ceph_abort();
+      }
+    }
+  }
+};
+
 template <typename T, void(T::*MF)(int)>
 librbd::RBD::AioCompletion *create_aio_completion(T *t) {
   return new librbd::RBD::AioCompletion(
@@ -98,10 +139,17 @@ int extract_spec(const std::string &spec, std::string *pool_name,
 std::string get_positional_argument(
     const boost::program_options::variables_map &vm, size_t index);
 
+void normalize_pool_name(std::string* pool_name);
 std::string get_default_pool_name();
+
+int get_image_or_snap_spec(const boost::program_options::variables_map &vm,
+                           std::string *spec);
+
+void append_options_as_args(const std::vector<std::string> &options,
+                            std::vector<std::string> *args);
+
 int get_pool_and_namespace_names(
-    const boost::program_options::variables_map &vm,
-    bool default_empty_pool_name, bool validate_pool_name,
+    const boost::program_options::variables_map &vm, bool validate_pool_name,
     std::string* pool_name, std::string* namespace_name, size_t *arg_index);
 
 int get_pool_image_snapshot_names(
@@ -149,13 +197,19 @@ int get_path(const boost::program_options::variables_map &vm,
 int get_formatter(const boost::program_options::variables_map &vm,
                   argument_types::Format::Formatter *formatter);
 
+int get_snap_create_flags(const boost::program_options::variables_map &vm,
+                          uint32_t *flags);
+
+int get_encryption_options(const boost::program_options::variables_map &vm,
+                           EncryptionOptions* result);
+
 void init_context();
 
 int init_rados(librados::Rados *rados);
 
-int init(const std::string &pool_name, const std::string& namespace_name,
+int init(const std::string& pool_name, const std::string& namespace_name,
          librados::Rados *rados, librados::IoCtx *io_ctx);
-int init_io_ctx(librados::Rados &rados, const std::string &pool_name,
+int init_io_ctx(librados::Rados &rados, std::string pool_name,
                 const std::string& namespace_name, librados::IoCtx *io_ctx);
 int set_namespace(const std::string& namespace_name, librados::IoCtx *io_ctx);
 
@@ -189,14 +243,39 @@ bool is_not_user_snap_namespace(librbd::Image* image,
 
 std::string image_id(librbd::Image& image);
 
-std::string mirror_image_state(librbd::mirror_image_state_t mirror_image_state);
-std::string mirror_image_status_state(librbd::mirror_image_status_state_t state);
-std::string mirror_image_status_state(librbd::mirror_image_status_t status);
+std::string mirror_image_mode(
+    librbd::mirror_image_mode_t mirror_image_mode);
+std::string mirror_image_state(
+    librbd::mirror_image_state_t mirror_image_state);
+std::string mirror_image_status_state(
+    librbd::mirror_image_status_state_t state);
+std::string mirror_image_site_status_state(
+    const librbd::mirror_image_site_status_t& status);
+std::string mirror_image_global_status_state(
+    const librbd::mirror_image_global_status_t& status);
+
+int get_local_mirror_image_status(
+    const librbd::mirror_image_global_status_t& status,
+    librbd::mirror_image_site_status_t* local_status);
 
 std::string timestr(time_t t);
 
 // duplicate here to not include librbd_internal lib
 uint64_t get_rbd_default_features(CephContext* cct);
+
+void get_mirror_peer_sites(
+    librados::IoCtx& io_ctx,
+    std::vector<librbd::mirror_peer_site_t>* mirror_peers);
+void get_mirror_peer_mirror_uuids_to_names(
+    const std::vector<librbd::mirror_peer_site_t>& mirror_peers,
+    std::map<std::string, std::string>* fsid_to_name);
+void populate_unknown_mirror_image_site_statuses(
+    const std::vector<librbd::mirror_peer_site_t>& mirror_peers,
+    librbd::mirror_image_global_status_t* global_status);
+
+int mgr_command(librados::Rados& rados, const std::string& cmd,
+                const std::map<std::string, std::string> &args,
+                std::ostream *out_os, std::ostream *err_os);
 
 } // namespace utils
 } // namespace rbd

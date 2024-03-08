@@ -28,8 +28,6 @@
 
 #include <boost/program_options/variables_map.hpp>
 #include <unordered_map>
-#include <vector>
-#include <seastar/core/future-util.hh>
 
 namespace seastar {
 
@@ -89,13 +87,14 @@ public:
      * @param handler the desire handler
      * @return it self
      */
-    routes& put(operation_type type, const sstring& url,
-            handler_base* handler) {
-        //FIXME if a handler is already exists, it need to be
-        // deleted to prevent memory leak
-        _map[type][url] = handler;
-        return *this;
-    }
+    routes& put(operation_type type, const sstring& url, handler_base* handler);
+
+    /**
+     * removing a handler from exact match
+     * @param url the url to match (note that url should start with /)
+     * @return the current handler (to be removed by caller)
+     */
+    handler_base* drop(operation_type type, const sstring& url);
 
     /**
      * add a rule to be used.
@@ -107,7 +106,7 @@ public:
      * @return it self
      */
     routes& add(match_rule* rule, operation_type type = GET) {
-        _rules[type].push_back(rule);
+        _rules[type][_rover++] = rule;
         return *this;
     }
 
@@ -122,6 +121,14 @@ public:
     routes& add(operation_type type, const url& url, handler_base* handler);
 
     /**
+     * Add a default handler - handles any HTTP Method and Path (/\*) combination:
+     * Example  routes.add_default_handler(handler);
+     * @param handler
+     * @return
+     */
+    routes& add_default_handler(handler_base* handler);
+
+    /**
      * the main entry point.
      * the general handler calls this method with the request
      * the method takes the headers from the request and find the
@@ -131,19 +138,17 @@ public:
      * @param req the http request
      * @param rep the http reply
      */
-    future<std::unique_ptr<reply> > handle(const sstring& path, std::unique_ptr<request> req, std::unique_ptr<reply> rep);
+    future<std::unique_ptr<http::reply> > handle(const sstring& path, std::unique_ptr<http::request> req, std::unique_ptr<http::reply> rep);
 
     /**
      * Search and return an exact match
      * @param url the request url
      * @return the handler if exists or nullptr if it does not
      */
-    handler_base* get_exact_match(operation_type type, const sstring& url) {
-        return (_map[type].find(url) == _map[type].end()) ?
-                nullptr : _map[type][url];
+    handler_base* get_exact_match(operation_type type, const sstring& url) const {
+        auto i = _map[type].find(url);
+        return (i == _map[type].end()) ? nullptr : i->second;
     }
-
-private:
 
     /**
      * Search and return a handler by the operation type and url
@@ -155,6 +160,7 @@ private:
     handler_base* get_handler(operation_type type, const sstring& url,
             parameters& params);
 
+private:
     /**
      * Normalize the url to remove the last / if exists
      * and get the parameter part
@@ -165,9 +171,15 @@ private:
     sstring normalize_url(const sstring& url);
 
     std::unordered_map<sstring, handler_base*> _map[NUM_OPERATION];
-    std::vector<match_rule*> _rules[NUM_OPERATION];
 public:
-    using exception_handler_fun = std::function<std::unique_ptr<reply>(std::exception_ptr eptr)>;
+    using rule_cookie = uint64_t;
+private:
+    rule_cookie _rover = 0;
+    std::map<rule_cookie, match_rule*> _rules[NUM_OPERATION];
+    //default Handler -- for any HTTP Method and Path (/*)
+    handler_base* _default_handler = nullptr;
+public:
+    using exception_handler_fun = std::function<std::unique_ptr<http::reply>(std::exception_ptr eptr)>;
     using exception_handler_id = size_t;
 private:
     std::map<exception_handler_id, exception_handler_fun> _exceptions;
@@ -192,7 +204,7 @@ public:
         _exceptions.erase(id);
     }
 
-    std::unique_ptr<reply> exception_reply(std::exception_ptr eptr);
+    std::unique_ptr<http::reply> exception_reply(std::exception_ptr eptr);
 
     routes();
 
@@ -203,6 +215,26 @@ public:
      *
      */
     void add_alias(const path_description& old_path, const path_description& new_path);
+
+    /**
+     * Add a rule to be used.
+     * @param rule a rule to add
+     * @param type the operation type
+     * @return a cookie using which the rule can be removed
+     */
+    rule_cookie add_cookie(match_rule* rule, operation_type type) {
+        auto pos = _rover++;
+        _rules[type][pos] = rule;
+        return pos;
+    }
+
+    /**
+     * Del a rule by cookie
+     * @param cookie a cookie returned previously by add_cookie
+     * @param type the operation type
+     * @return the pointer to the rule
+     */
+    match_rule* del_cookie(rule_cookie cookie, operation_type type);
 };
 
 /**
@@ -211,7 +243,56 @@ public:
  * @param params the parameters object
  * @param param the parameter to look for
  */
-void verify_param(const httpd::request& req, const sstring& param);
+void verify_param(const http::request& req, const sstring& param);
+
+/**
+ * The handler_registration object facilitates registration and auto
+ * unregistration of an exact-match handler_base into \ref routes "routes"
+ */
+class handler_registration {
+    routes& _routes;
+    const sstring _url;
+    operation_type _op;
+
+public:
+    /**
+     * Registers the handler_base into routes with routes::put
+     * @param rs the routes object reference
+     * @param h the desire handler
+     * @param url the url to match
+     * @param op the operation type (`GET` by default)
+     */
+    handler_registration(routes& rs, handler_base& h, const sstring& url, operation_type op = GET);
+
+    /**
+     * Unregisters the handler from routes with routes::drop
+     */
+    ~handler_registration();
+};
+
+/**
+ * The rule_registration object facilitates registration and auto
+ * unregistration of a match_rule handler into \ref routes "routes"
+ */
+class rule_registration {
+    routes& _routes;
+    operation_type _op;
+    routes::rule_cookie _cookie;
+
+public:
+    /**
+     * Registers the match_rule into routes with routes::add_cookie
+     * @param rs the routes object reference
+     * @param rule a rule to add
+     * @param op the operation type (`GET` by default)
+     */
+    rule_registration(routes& rs, match_rule& rule, operation_type op = GET);
+
+    /**
+     * Unregisters the rule from routes with routes::del_cookie
+     */
+    ~rule_registration();
+};
 
 }
 

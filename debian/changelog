@@ -1,3 +1,390 @@
+ceph (18.2.1+ds-1) unstable; urgency=medium
+
+  * Uploading to unstable.
+  * New upstream release:
+    - Fixes FTBFS (Closes: #1058543, #1056085).
+  * Add pybind-rbd-make-cdef-functions-not-propagate-excepti.patch from
+    upstream master branch to fix FTBFS of rbd.pyx with Cython 3.0.
+    (Closes: #1056793).
+  * Manually install systemd services in each package.
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 19 Feb 2024 08:55:30 +0100
+
+ceph (18.2.0+ds-8) experimental; urgency=medium
+
+  * [0d064de] Relaxed back the dependencies to Boost 1.81.
+
+ -- Thomas Goirand <zigo@debian.org>  Tue, 24 Oct 2023 09:19:43 +0200
+
+ceph (18.2.0+ds-7) experimental; urgency=medium
+
+  * [1627149] Do not build bools on mips64el with context.
+
+ -- Thomas Goirand <zigo@debian.org>  Fri, 20 Oct 2023 09:58:18 +0200
+
+ceph (18.2.0+ds-6) experimental; urgency=medium
+
+  * [947e325] Add add-mips-support-to-toku-time.patch
+
+ -- Thomas Goirand <zigo@debian.org>  Wed, 04 Oct 2023 08:33:59 +0200
+
+ceph (18.2.0+ds-5) experimental; urgency=medium
+
+  * [997d930] mipsel64: use -DWITH_SPDK=OFF, as libpmem-dev and libpmemobj-dev
+    aren't available.
+
+ -- Thomas Goirand <zigo@debian.org>  Tue, 03 Oct 2023 12:26:33 +0200
+
+ceph (18.2.0+ds-4) experimental; urgency=medium
+
+  * [d5eff11] Add libpmem-dev build-depends on riscv64.
+  * [90b7ddd] ceph-volume: replaced breaks+replaces by Conflicts: ceph-osd
+    (<< 18), as suggested by helmut and http://subdivi.de/~helmut/dep17.html
+    in section M17.
+  * [8b0ecf2] And libpmemobj-dev build-depends on riscv64.
+  * [016e0b2] Add -latomic for riscv.
+  * [56c5945] Add architecture-is-64-bit as build-depends.
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 02 Oct 2023 08:57:16 +0200
+
+ceph (18.2.0+ds-3) experimental; urgency=medium
+
+  * [1b72d20] Add extraopts += -DWITH_RADOSGW_SELECT_PARQUET=OFF to avoid
+    download at build time when building arrow.
+  * [ee65aa1] reaks: + Replaces: radosgw (<< 18) (Closes: #1052762).
+
+ -- Thomas Goirand <zigo@debian.org>  Tue, 26 Sep 2023 20:45:31 +0200
+
+ceph (18.2.0+ds-2) experimental; urgency=medium
+
+  * [2031a0e] Allow more threads to build on bigger systems.
+  * [8990221] Fix nasm build-depends on non-amd64.
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 25 Sep 2023 21:05:34 +0200
+
+ceph (18.2.0+ds-1) experimental; urgency=medium
+
+  * New upstream release (Closes: #1037602).
+  * [5fd8d25] d/ceph-base.install: add usr/lib/*/ceph/extblkdev/*.
+  * [f537626] d/ceph-common.install: add in /usr/bin crushdiff, rgw-gap-list,
+    rgw-gap-list-comparator, rgw-restore-bucket-index, rgw-orphan-list, add in
+    manpages: crushdiff.8, rgw-policy-check.8
+  * [bedb3fe] d/ceph-common.postinst: clean-ups and re-indent. Remove obsolete
+    code handling /etc/default/ceph.
+  * [f342988] d/cephfs-mirror.install: add missing
+    lib/systemd/system/cephfs-mirror* and man page.
+  * [c02902c] debian/cephfs-shell.install: rewrite.
+  * [8b45e87] d/control: add missing Python3 packages depends for
+    ceph-mgr-cephadm.
+  * [55a4d0b] d/control: Package: ceph-mgr-dashboard: fix new Python3 depends
+    for this release.
+  * [a24b5bd] d/ceph-mgr.install: add usr/share/ceph/mgr/object_format.*
+  * [441ab14] d/control: Package: ceph-mgr-k8sevents, add python3-yaml depends.
+  * [b7da3ed] d/control: Package: ceph-mgr-modules-core, add missing depends
+    for this release.
+  * [9a73529] d/control: Package: ceph-mgr: add missing python3 depends.
+  * [1a22a83] d/control: Package: ceph-mgr-rook: add missing python3 depends.
+  * [a20e59b] Follow upstream and move all ceph-volume stuff into its own
+    package. To avoid any surprise, make ceph-osd Depends: on it.
+  * [7c18874] d/ceph-test.install: adopt upstream file.
+  * [196553b] d/control: add a lot of missing build-depends.
+  * [8e3577c] d/libcephfs-dev.install: adopt upstream file, listing all files
+    manually instead of wildcard matching.
+  * [d0bfce9] d/python3-cephfs.install: do not package ceph_volume_client.py,
+    gone from upstream.
+  * [7f373af] debian/radosgw.install: do not install usr/*/lib/libradosgw.so*,
+    add man page.
+  * [276f6dd] debian/control: add libutf8proc-dev as build-depends.
+  * [3803693] d/rules:
+    - include /usr/share/dpkg/default.mk
+    - Add extraopts += -DWITH_SYSTEM_UTF8PROC=ON
+    - always do extraopts += -DWITH_SYSTEM_PMDK=ON 
+    - do not install usr/sbin/cephadm from debian/rules, but with d/*.install
+    - dh_shlibdeps: add --exclude=ceph_crypto
+  * [c2b24a8] d/patches/*: rebase/refresh/delete for use with latest upstream
+    release.
+  * [5b701a8] d/control: build-depends on libboost >= 1.81.0~
+  * [67080ed] Add a repack file, to rework the upstream tarball a little bit.
+  * [5480c76] Add -fpermissive and extraopts += -DWITH_JAEGER=OFF
+  * [e544664] Using -DWITH_SYSTEM_LIBURING=OFF.
+  * [1ff48d1] Add ry-fix-fmt-call.patch.
+  * [fee3c3d] Remove bins from ceph-test.
+  * [e33a625] Fix debian/*.symbols files for this new upstream release.
+  * [20d9818] Fix tipoe in ceph-mgr-cephadm depends.
+  * [3dd09d1] ceph-volume: do not depends on util-linux which is essential.
+  * [73f11f3] Fix not-binnmuable-all-depends-any ceph-volume and ceph-osd.
+  * [476d6af] Add dh_python3 -p ceph-volume --shebang=/usr/bin/python3.
+  * [d708d5b] Fix for ceph-mgr.postinst
+  * [c09275a] ceph-volume doesn't depend on ceph-osd.
+  * [5352e15] source lintian-overrides: fix path to rapidjson license.txt and
+    dashboard path too.
+  * [6a35fbc] Remove Suggests: btrfs-tools, logrotate, as it's already in
+    depends.
+  * [1315241] Fix missing dots in d/copyright.
+  * [292de96] Cleans better.
+  * [ede3837] d/repack: Delete file removed by clean target from orig tarball.
+  * [2c3a7a6] No version in ceph-volume depends.
+  * [69d197e] Build ceph-test bins.
+  * [6cf1bd0] Tweak extraopts.
+  * [fb653fa] Install all binaries in the ceph-test package.
+  * [ef4a175] Add ceph-test-dbg package.
+  * [97eafc2] Add ceph-fuse-dbg.
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 25 Sep 2023 11:02:26 +0200
+
+ceph (16.2.11+ds-2) unstable; urgency=medium
+
+  * Add missing python3-distutils runtime depends in ceph-common.
+
+ -- Thomas Goirand <zigo@debian.org>  Thu, 16 Feb 2023 11:54:41 +0100
+
+ceph (16.2.11+ds-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Removed patches applied upstream:
+    - CVE-2022-3854_2_rgw_Fix_rgw_sal_Bucket_empty_static_method_signatures.patch
+    - fix-FTBFS-include-memory.h.patch
+    - mgr-Define-PY_SSIZE_T_CLEAN-ahead-of-every-Python.h.patch
+  * Refreshed patches:
+    - 32bit-fixes.patch
+    - CVE-2022-3854_1_rgw_Guard_against_malformed_bucket_URLs.patch
+    - enable-strsignal.patch
+  * Fix cephfs-shell.install.
+
+ -- Thomas Goirand <zigo@debian.org>  Fri, 27 Jan 2023 16:46:08 +0100
+
+ceph (16.2.10+ds-5) unstable; urgency=medium
+
+  [ Thomas Goirand ]
+  * Add adduser as depends for cephadm and ceph-common, fixing piupart run
+    (Closes: #1027175).
+  * CVE-2022-3854: RGW Segmentation fault when requested resource includes a
+    colon. Added upstream patches (Closes: #1027151):
+    - CVE-2022-3854_1_rgw_Guard_against_malformed_bucket_URLs.patch
+    - CVE-2022-3854_2_rgw_Fix_rgw_sal_Bucket_empty_static_method_....patch
+
+  [ Charles Plessy ]
+  * Replace transition package mime-support with media-types
+    (Closes: #1024700).
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 09 Jan 2023 11:41:27 +0100
+
+ceph (16.2.10+ds-4) unstable; urgency=high
+
+  * CVE-2022-3650: ceph to root privilege escalation via ceph-crash.service.
+    Add upstream patches (Closes: #1024932):
+    - ceph-crash_drop_privleges_to_run_as_ceph_user_rather_than_root.patch
+    - ceph-crash_fix_stderr_handling.patch
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 28 Nov 2022 12:02:57 +0100
+
+ceph (16.2.10+ds-3) unstable; urgency=medium
+
+  * Fix mgr modules fail to run due to "PY_SSIZE_T_CLEAN macro must be defined
+    for '#'": add mgr-Define-PY_SSIZE_T_CLEAN-ahead-of-every-Python.h.patch
+    backported from upstream (Closes: #1020489, #1003890).
+  * Fix debian/cephfs-shell.install (it was doing FTBFS with file not found).
+  * Add fix-CheckCxxAtomic-riscv64.patch (Closes: #1018837).
+  * Remove arch-qualifier for libboost-context-dev and libboost-coroutine-dev
+    as Ceph FTBFS without these libs anyways (Closes: #1012489).
+
+ -- Thomas Goirand <zigo@debian.org>  Thu, 22 Sep 2022 15:35:37 +0200
+
+ceph (16.2.10+ds-2) unstable; urgency=medium
+
+  * Replace Fix-build-with-fmt-8.1.1.patch by Fix-build-with-fmt-8-9.patch
+    thanks to Shengjing Zhu <zhushengjing@cambricon.com> (Closes: #1014549).
+
+ -- Thomas Goirand <zigo@debian.org>  Sun, 31 Jul 2022 21:59:55 +0200
+
+ceph (16.2.10+ds-1) unstable; urgency=high
+
+  * New upstream hotfix release:
+    - CVE-2022-0670: Users who were running OpenStack Manila to export native
+      CephFS, who upgraded their Ceph cluster from Nautilus (or earlier) to a
+      later major version, were vulnerable to an attack by malicious users
+      (Closes: #1016069).
+    - A regression made it possible to dereference a null pointer for for
+      s3website requests that don’t refer to a bucket resulting in an RGW
+      segfault.
+  * Add fix-FTBFS-include-memory.h.patch to address FTBFS under GCC 12.
+
+ -- Thomas Goirand <zigo@debian.org>  Wed, 27 Jul 2022 09:30:47 +0200
+
+ceph (16.2.9+ds-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Fix patches:
+    - refreshed enable-strsignal.patch.
+    - removed disable-log-slow-requests.patch.
+  * Fix prometheus_alerts.yml path in d/rules.
+
+ -- Thomas Goirand <zigo@debian.org>  Fri, 15 Jul 2022 17:27:25 +0200
+
+ceph (16.2.7+ds-5) unstable; urgency=medium
+
+  * Fix cephfs-top package long and short description (Closes: #1004246).
+  * Drop the ceph-mgr-diskprediction-local package, because it relies on the
+    python3-sklearn package, which the release team is dropping. Also, it
+    relies on pre-trained data, which aren't built from source, so it is
+    considered non-free in Debian (Closes: #1014641).
+
+ -- Thomas Goirand <zigo@debian.org>  Fri, 15 Jul 2022 11:31:04 +0200
+
+ceph (16.2.7+ds-4) unstable; urgency=medium
+
+  * Add fix-build-with-fmt-8.1.1.patch (Closes: #1003469).
+
+ -- Thomas Goirand <zigo@debian.org>  Fri, 14 Jan 2022 10:50:50 +0100
+
+ceph (16.2.7+ds-3) unstable; urgency=medium
+
+  * Rebuild source-only.
+  * Fix cephadm user creation that was failing, and subsequent chown failing as
+    the package installation as a consequence.
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 10 Jan 2022 11:45:19 +0100
+
+ceph (16.2.7+ds-2) unstable; urgency=medium
+
+  * Add libgf-complete-dev as build-dependency, since the Ceph repository
+    contains the exact same code as the Debian packaged version.
+  * Add libjerasure-dev as build-dependency, as the code of the Debian package
+    only contains a little bit further input checking and nothing else, so the
+    Ceph embedded copy is just less good (a simple diff shows this). This also
+    closes a very long silly debate that could have been solved by simply
+    reading the diff (Closes: #791445).
+  * libsqlite3-mod-ceph-dbg: do not depend on libsqlite3-0-dbgsym.
+  * Add missing python3-ceph-common package (Closes: #1003013).
+  * Set --max-parallel=8 when 32 GB (this optimizes build on my laptop).
+  * Kill the ceph-fuse-dbg package that is uninstallable.
+  * Remove ceph-base depends on essential packages: debianutils, findutils.
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 03 Jan 2022 15:24:32 +0100
+
+ceph (16.2.7+ds-1) unstable; urgency=medium
+
+  * New upstream release:
+    - Fix data corruption on upgrades from older releases (Closes: #1002749).
+  * Remove build-dependency on clang: we use gcc on all arch.
+  * Move smartmontools and nvme-cli to ceph-base, as per upstream.
+  * Increase the number of parallel processes when building with a lot of RAM.
+  * Refreshed a few patches.
+
+ -- Thomas Goirand <zigo@debian.org>  Wed, 29 Dec 2021 09:29:49 +0100
+
+ceph (16.2.6+ds-11) unstable; urgency=medium
+
+  * Revert libcephfs2.symbols "fix".
+
+ -- Thomas Goirand <zigo@debian.org>  Tue, 28 Dec 2021 08:45:18 +0100
+
+ceph (16.2.6+ds-10) unstable; urgency=medium
+
+  * Fix libcephfs2.symbols.
+  * Build-depends only on python3-dev, not python3-all-dev (Closes: #1002688).
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 27 Dec 2021 15:48:02 +0100
+
+ceph (16.2.6+ds-9) unstable; urgency=medium
+
+  * Fix ceph-mgr-modules-core,ceph-mgr: both ship /usr/share/ceph/mgr/*
+    (Closes: #998826).
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 27 Dec 2021 10:16:27 +0100
+
+ceph (16.2.6+ds-8) unstable; urgency=medium
+
+  * Uploading to unstable.
+
+ -- Thomas Goirand <zigo@debian.org>  Fri, 24 Dec 2021 23:46:33 +0100
+
+ceph (16.2.6+ds-7) experimental; urgency=medium
+
+    [ Adrian Bunk ]
+    * Use the system libfmt
+    * Use the system liburing
+    * Optimize for space on 32bit architectures
+    * Don't let cmake append CFLAGS/CXXFLAGS is -O/-g settings different from
+      what we set.
+
+ -- Thomas Goirand <zigo@debian.org>  Thu, 23 Dec 2021 15:53:49 +0100
+
+ceph (16.2.6+ds-6) experimental; urgency=medium
+
+  * Use -DWITH_BOOST_CONTEXT=ON in s390x mips64el and riscv64.
+  * Fix cmake-test-for-16-bytes-atomic-support-on-mips-also.patch so that it
+    works also for 32 bits mips.
+
+ -- Thomas Goirand <zigo@debian.org>  Thu, 09 Dec 2021 13:54:42 +0100
+
+ceph (16.2.6+ds-5) experimental; urgency=medium
+
+  * Add cmake-test-for-16-bytes-atomic-support-on-mips-also.patch which fixes
+    FTBFS on mips64el.
+  * Add only-yied-under-armv7-and-above.patch which fixes FTBFS on armel.
+
+ -- Thomas Goirand <zigo@debian.org>  Sat, 20 Nov 2021 15:00:51 +0100
+
+ceph (16.2.6+ds-4) experimental; urgency=medium
+
+  * Add libgoogle-perftools-dev build-depends on all available arch.
+  * Remove a symbol in debian/libcephfs2.symbols that is missing on ppc64el.
+  * Removed useless libsqlite3-mod-ceph.symbols.
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 08 Nov 2021 20:44:04 +0100
+
+ceph (16.2.6+ds-3) experimental; urgency=medium
+
+  * Do not maintain debian/librados2.symbols.
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 08 Nov 2021 08:36:08 +0100
+
+ceph (16.2.6+ds-2) experimental; urgency=medium
+
+  * Build-depends on valgrind for all avialable arch.
+  * Build-depends on libboost-context-dev and libboost-coroutine-dev on
+    s390x, mips64el and riscv64.
+
+ -- Thomas Goirand <zigo@debian.org>  Sun, 07 Nov 2021 15:14:08 +0100
+
+ceph (16.2.6+ds-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Exclude debian folder from upstream orig tarball.
+  * Commit some of the upstream packaging to be closer to their packaging.
+  * Refreshed patch:
+    - disable-crypto.patch
+    - riscv64-link-pthread.patch
+    - compile-ppc.c-on-all-powerpc-machines.patch
+  * Remove patch (now useless / NA):
+    - 32bit-avoid-overloading.patch
+    - 32bit-avoid-size_t.patch
+    - make-ceph-python-3.9-aware.patch
+    - patches/another-cmakelists-fix.patch
+    - cmake_add_1.74_to_known_versions.patch
+    - cmake_define_BOOST_ASIO_USE_TS_EXECUTOR_AS_DEFAULT_for_Boost...sers.patch
+    - allow-bgp-to-host.patch
+  * Add patch taken from Ubuntu:
+    - enable-strsignal.patch
+    - 32bit-fixes.patch
+    - disable-log-slow-requests.patch
+    - bug1914584.patch
+    - bug1917414.patch
+  * Removed patch applied upstream:
+    - bluefs-use-uint64_t-for-len.patch
+    - debian/patches/mds-purgequeue-use_uint64_t.patch
+  * Rebased patch:
+    - add-option-to-disable-ceph-dencoder.patch
+  * d/rules: import stuff from the Ubuntu packaging.
+  * Reviewed build-dependency list.
+  * Switch to debhelper-compat 11.
+  * Use dh_installsystemd, not dh_systemd_enable which is deprecated.
+  * Reviewed (and rewrote a lot of) debian/copyright.
+  * Do not override dh_systemd_enable and dh_systemd_start.
+
+ -- Thomas Goirand <zigo@debian.org>  Tue, 02 Nov 2021 14:48:40 +0100
+
 ceph (14.2.21-1.1) unstable; urgency=medium
 
   * Non-maintainer upload.

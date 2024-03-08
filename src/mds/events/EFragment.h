@@ -19,7 +19,7 @@
 #include "EMetaBlob.h"
 
 struct dirfrag_rollback {
-  fnode_t fnode;
+  CDir::fnode_const_ptr fnode;
   dirfrag_rollback() { }
   void encode(bufferlist& bl) const;
   void decode(bufferlist::const_iterator& bl);
@@ -41,7 +41,7 @@ public:
     LogEvent(EVENT_FRAGMENT),
     op(o), ino(df.ino), basefrag(df.frag), bits(b) { }
 
-  void print(ostream& out) const override {
+  void print(std::ostream& out) const override {
     out << "EFragment " << op_name(op) << " " << ino << " " << basefrag << " by " << bits << " " << metablob;
   }
 
@@ -73,7 +73,7 @@ public:
   void encode(bufferlist &bl, uint64_t features) const override;
   void decode(bufferlist::const_iterator &bl) override;
   void dump(Formatter *f) const override;
-  static void generate_test_instances(list<EFragment*>& ls);
+  static void generate_test_instances(std::list<EFragment*>& ls);
   void replay(MDSRank *mds) override;
 };
 WRITE_CLASS_ENCODER_FEATURES(EFragment)

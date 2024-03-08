@@ -1,7 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
-#include "rgw/rgw_url.h"
+#include "rgw_url.h"
 #include <string>
 #include <gtest/gtest.h>
 
@@ -17,6 +17,18 @@ TEST(TestURL, SimpleAuthority)
     ASSERT_TRUE(user.empty());
     ASSERT_TRUE(password.empty());
     EXPECT_STREQ(host.c_str(), "example.com"); 
+}
+
+TEST(TestURL, SimpleAuthority_1)
+{
+    std::string host;
+    std::string user;
+    std::string password;
+    const std::string url = "http://example.com/";
+    ASSERT_TRUE(parse_url_authority(url, host, user, password));
+    ASSERT_TRUE(user.empty());
+    ASSERT_TRUE(password.empty());
+    EXPECT_STREQ(host.c_str(), "example.com");
 }
 
 TEST(TestURL, IPAuthority)

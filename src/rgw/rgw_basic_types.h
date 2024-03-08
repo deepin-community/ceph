@@ -1,111 +1,126 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef CEPH_RGW_BASIC_TYPES_H
-#define CEPH_RGW_BASIC_TYPES_H
+/*
+ * Ceph - scalable distributed file system
+ *
+ * Copyright (C) 2019 Red Hat, Inc.
+ *
+ * This is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License version 2.1, as published by the Free Software
+ * Foundation. See file COPYING.
+ *
+ */
+
+/* N.B., this header defines fundamental serialized types.  Do not
+ * introduce changes or include files which can only be compiled in
+ * radosgw or OSD contexts (e.g., rgw_sal.h, rgw_common.h)
+ */
+
+#pragma once
 
 #include <string>
+#include <fmt/format.h>
 
 #include "include/types.h"
+#include "rgw_compression_types.h"
+#include "rgw_pool_types.h"
+#include "rgw_acl_types.h"
+#include "rgw_zone_types.h"
+#include "rgw_user_types.h"
+#include "rgw_bucket_types.h"
+#include "rgw_obj_types.h"
+#include "rgw_obj_manifest.h"
 
-struct rgw_user {
-  std::string tenant;
+#include "common/Formatter.h"
+
+class JSONObj;
+class cls_user_bucket;
+
+enum RGWIntentEvent {
+  DEL_OBJ = 0,
+  DEL_DIR = 1,
+};
+
+/** Store error returns for output at a different point in the program */
+struct rgw_err {
+  rgw_err();
+  void clear();
+  bool is_clear() const;
+  bool is_err() const;
+  friend std::ostream& operator<<(std::ostream& oss, const rgw_err &err);
+
+  int http_ret;
+  int ret;
+  std::string err_code;
+  std::string message;
+}; /* rgw_err */
+
+struct rgw_zone_id {
   std::string id;
 
-  rgw_user() {}
-  // cppcheck-suppress noExplicitConstructor
-  rgw_user(const std::string& s) {
-    from_str(s);
-  }
-  rgw_user(const std::string& tenant, const std::string& id)
-    : tenant(tenant),
-      id(id) {
-  }
-  rgw_user(std::string&& tenant, std::string&& id)
-    : tenant(std::move(tenant)),
-      id(std::move(id)) {
+  rgw_zone_id() {}
+  rgw_zone_id(const std::string& _id) : id(_id) {}
+  rgw_zone_id(std::string&& _id) : id(std::move(_id)) {}
+
+  void encode(ceph::buffer::list& bl) const {
+    /* backward compatiblity, not using ENCODE_{START,END} macros */
+    ceph::encode(id, bl);
   }
 
-  void encode(bufferlist& bl) const {
-    ENCODE_START(1, 1, bl);
-    encode(tenant, bl);
-    encode(id, bl);
-    ENCODE_FINISH(bl);
-  }
-  void decode(bufferlist::const_iterator& bl) {
-    DECODE_START(1, bl);
-    decode(tenant, bl);
-    decode(id, bl);
-    DECODE_FINISH(bl);
-  }
-
-  void to_str(std::string& str) const {
-    if (!tenant.empty()) {
-      str = tenant + '$' + id;
-    } else {
-      str = id;
-    }
+  void decode(ceph::buffer::list::const_iterator& bl) {
+    /* backward compatiblity, not using DECODE_{START,END} macros */
+    ceph::decode(id, bl);
   }
 
   void clear() {
-    tenant.clear();
     id.clear();
+  }
+
+  bool operator==(const std::string& _id) const {
+    return (id == _id);
+  }
+  bool operator==(const rgw_zone_id& zid) const {
+    return (id == zid.id);
+  }
+  bool operator!=(const rgw_zone_id& zid) const {
+    return (id != zid.id);
+  }
+  bool operator<(const rgw_zone_id& zid) const {
+    return (id < zid.id);
+  }
+  bool operator>(const rgw_zone_id& zid) const {
+    return (id > zid.id);
   }
 
   bool empty() const {
     return id.empty();
   }
-
-  string to_str() const {
-    string s;
-    to_str(s);
-    return s;
-  }
-
-  void from_str(const std::string& str) {
-    size_t pos = str.find('$');
-    if (pos != std::string::npos) {
-      tenant = str.substr(0, pos);
-      id = str.substr(pos + 1);
-    } else {
-      tenant.clear();
-      id = str;
-    }
-  }
-
-  rgw_user& operator=(const string& str) {
-    from_str(str);
-    return *this;
-  }
-
-  int compare(const rgw_user& u) const {
-    int r = tenant.compare(u.tenant);
-    if (r != 0)
-      return r;
-
-    return id.compare(u.id);
-  }
-  int compare(const string& str) const {
-    rgw_user u(str);
-    return compare(u);
-  }
-
-  bool operator!=(const rgw_user& rhs) const {
-    return (compare(rhs) != 0);
-  }
-  bool operator==(const rgw_user& rhs) const {
-    return (compare(rhs) == 0);
-  }
-  bool operator<(const rgw_user& rhs) const {
-    if (tenant < rhs.tenant) {
-      return true;
-    } else if (tenant > rhs.tenant) {
-      return false;
-    }
-    return (id < rhs.id);
-  }
 };
-WRITE_CLASS_ENCODER(rgw_user)
+WRITE_CLASS_ENCODER(rgw_zone_id)
+
+inline std::ostream& operator<<(std::ostream& os, const rgw_zone_id& zid) {
+  os << zid.id;
+  return os;
+}
+
+struct obj_version;
+struct rgw_placement_rule;
+struct RGWAccessKey;
+class RGWUserCaps;
+
+extern void encode_json(const char *name, const obj_version& v, Formatter *f);
+extern void encode_json(const char *name, const RGWUserCaps& val, Formatter *f);
+extern void encode_json(const char *name, const rgw_pool& pool, Formatter *f);
+extern void encode_json(const char *name, const rgw_placement_rule& r, Formatter *f);
+extern void encode_json_impl(const char *name, const rgw_zone_id& zid, ceph::Formatter *f);
+extern void encode_json_plain(const char *name, const RGWAccessKey& val, Formatter *f);
+
+extern void decode_json_obj(obj_version& v, JSONObj *obj);
+extern void decode_json_obj(rgw_zone_id& zid, JSONObj *obj);
+extern void decode_json_obj(rgw_pool& pool, JSONObj *obj);
+extern void decode_json_obj(rgw_placement_rule& v, JSONObj *obj);
 
 // Represents an identity. This is more wide-ranging than a
 // 'User'. Its purposes is to be matched against by an
@@ -116,10 +131,10 @@ WRITE_CLASS_ENCODER(rgw_user)
 namespace rgw {
 namespace auth {
 class Principal {
-  enum types { User, Role, Tenant, Wildcard, OidcProvider };
+  enum types { User, Role, Tenant, Wildcard, OidcProvider, AssumedRole };
   types t;
   rgw_user u;
-  string idp_url;
+  std::string idp_url;
 
   explicit Principal(types t)
     : t(t) {}
@@ -127,7 +142,7 @@ class Principal {
   Principal(types t, std::string&& n, std::string i)
     : t(t), u(std::move(n), std::move(i)) {}
 
-  Principal(string&& idp_url)
+  Principal(std::string&& idp_url)
     : t(OidcProvider), idp_url(std::move(idp_url)) {}
 
 public:
@@ -148,8 +163,12 @@ public:
     return Principal(Tenant, std::move(t), {});
   }
 
-  static Principal oidc_provider(string&& idp_url) {
+  static Principal oidc_provider(std::string&& idp_url) {
     return Principal(std::move(idp_url));
+  }
+
+  static Principal assumed_role(std::string&& t, std::string&& u) {
+    return Principal(AssumedRole, std::move(t), std::move(u));
   }
 
   bool is_wildcard() const {
@@ -172,6 +191,10 @@ public:
     return t == OidcProvider;
   }
 
+  bool is_assumed_role() const {
+    return t == AssumedRole;
+  }
+
   const std::string& get_tenant() const {
     return u.tenant;
   }
@@ -180,8 +203,16 @@ public:
     return u.id;
   }
 
-  const string& get_idp_url() const {
+  const std::string& get_idp_url() const {
     return idp_url;
+  }
+
+  const std::string& get_role_session() const {
+    return u.id;
+  }
+
+  const std::string& get_role() const {
+    return u.id;
   }
 
   bool operator ==(const Principal& o) const {
@@ -200,14 +231,61 @@ std::ostream& operator <<(std::ostream& m, const Principal& p);
 class JSONObj;
 
 void decode_json_obj(rgw_user& val, JSONObj *obj);
-void encode_json(const char *name, const rgw_user& val, Formatter *f);
-void encode_xml(const char *name, const rgw_user& val, Formatter *f);
+void encode_json(const char *name, const rgw_user& val, ceph::Formatter *f);
+void encode_xml(const char *name, const rgw_user& val, ceph::Formatter *f);
 
-inline ostream& operator<<(ostream& out, const rgw_user &u) {
-  string s;
+inline std::ostream& operator<<(std::ostream& out, const rgw_user &u) {
+  std::string s;
   u.to_str(s);
   return out << s;
 }
 
+struct RGWUploadPartInfo {
+  uint32_t num;
+  uint64_t size;
+  uint64_t accounted_size{0};
+  std::string etag;
+  ceph::real_time modified;
+  RGWObjManifest manifest;
+  RGWCompressionInfo cs_info;
 
-#endif
+  // Previous part obj prefixes. Recorded here for later cleanup.
+  std::set<std::string> past_prefixes; 
+
+  RGWUploadPartInfo() : num(0), size(0) {}
+
+  void encode(bufferlist& bl) const {
+    ENCODE_START(5, 2, bl);
+    encode(num, bl);
+    encode(size, bl);
+    encode(etag, bl);
+    encode(modified, bl);
+    encode(manifest, bl);
+    encode(cs_info, bl);
+    encode(accounted_size, bl);
+    encode(past_prefixes, bl);
+    ENCODE_FINISH(bl);
+  }
+  void decode(bufferlist::const_iterator& bl) {
+    DECODE_START_LEGACY_COMPAT_LEN(5, 2, 2, bl);
+    decode(num, bl);
+    decode(size, bl);
+    decode(etag, bl);
+    decode(modified, bl);
+    if (struct_v >= 3)
+      decode(manifest, bl);
+    if (struct_v >= 4) {
+      decode(cs_info, bl);
+      decode(accounted_size, bl);
+    } else {
+      accounted_size = size;
+    }
+    if (struct_v >= 5) {
+      decode(past_prefixes, bl);
+    }
+    DECODE_FINISH(bl);
+  }
+  void dump(Formatter *f) const;
+  static void generate_test_instances(std::list<RGWUploadPartInfo*>& o);
+};
+WRITE_CLASS_ENCODER(RGWUploadPartInfo)

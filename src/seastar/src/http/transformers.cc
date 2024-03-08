@@ -19,6 +19,8 @@
  * Copyright 2015 Cloudius Systems
  */
 
+#include <seastar/core/do_with.hh>
+#include <seastar/core/loop.hh>
 #include <boost/algorithm/string/replace.hpp>
 #include <seastar/http/transformers.hh>
 #include <list>
@@ -196,14 +198,16 @@ public:
                 std::move(out), std::move(key_value))) {}
 };
 
-output_stream<char> content_replace::transform(std::unique_ptr<request> req,
+output_stream<char> content_replace::transform(std::unique_ptr<http::request> req,
             const sstring& extension, output_stream<char>&& s) {
     sstring host = req->get_header("Host");
     if (host == "" || (this->extension != "" && extension != this->extension)) {
         return std::move(s);
     }
     sstring protocol = req->get_protocol_name();
-    return output_stream<char>(content_replace_data_sink(std::move(s), {std::make_tuple("Protocol", protocol), std::make_tuple("Host", host)}), 32000, true);
+    output_stream_options opts;
+    opts.trim_to_size = true;
+    return output_stream<char>(content_replace_data_sink(std::move(s), {std::make_tuple("Protocol", protocol), std::make_tuple("Host", host)}), 32000, opts);
 
 }
 
@@ -245,7 +249,7 @@ temporary_buffer<char> buffer_replace::match(temporary_buffer<char>& buf) {
             if (_current.last()) {
                 auto res = get_remaining();
                 _current.erase(first);
-                return std::move(res);
+                return res;
             }
             first = _current.erase(first);
         } else {
@@ -257,7 +261,7 @@ temporary_buffer<char> buffer_replace::match(temporary_buffer<char>& buf) {
                 temporary_buffer<char> res(value.data(), value.size());
                 buf.trim_front(len_compare);
                 _current.clear();
-                return std::move(res);
+                return res;
             }
             // only partial match
             pos += len_compare;
@@ -276,7 +280,7 @@ temporary_buffer<char> buffer_replace::get_remaining() {
     size_t pos = _current.get_pos();
     const sstring& key = get_key(pos);
     auto size = key.size() - _current.get_remaining_length();
-    return temporary_buffer<char>(key.begin(), size);
+    return temporary_buffer<char>(key.data(), size);
 }
 
 temporary_buffer<char> buffer_replace::replace(temporary_buffer<char>& buf) {
@@ -295,7 +299,7 @@ temporary_buffer<char> buffer_replace::replace(temporary_buffer<char>& buf) {
         size_t pos = 0;
         for (auto&& i : _values) {
             sstring& key = std::get<0>(i);
-            _current.add_potential_match(key.begin() + 1, key.end(), pos++);
+            _current.add_potential_match(key.data() + 1, key.data() + key.size(), pos++);
         }
         temporary_buffer<char> res = buf.share(0, start);
         buf.trim_front(start + 1);

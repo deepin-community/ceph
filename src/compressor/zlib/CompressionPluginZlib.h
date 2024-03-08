@@ -19,12 +19,13 @@
 #include "arch/probe.h"
 #include "arch/intel.h"
 #include "arch/arm.h"
+#include "common/ceph_context.h"
 #include "compressor/CompressionPlugin.h"
 #include "ZlibCompressor.h"
 
 // -----------------------------------------------------------------------------
 
-class CompressionPluginZlib : public CompressionPlugin {
+class CompressionPluginZlib : public ceph::CompressionPlugin {
 public:
   bool has_isal = false;
 
@@ -40,6 +41,11 @@ public:
     if (cct->_conf->compressor_zlib_isal) {
       ceph_arch_probe();
       isal = (ceph_arch_intel_pclmul && ceph_arch_intel_sse41);
+    }
+#elif defined(__aarch64__)
+    if (cct->_conf->compressor_zlib_isal) {
+      ceph_arch_probe();
+      isal = (ceph_arch_aarch64_pmull && ceph_arch_neon);
     }
 #endif
     if (compressor == 0 || has_isal != isal) {

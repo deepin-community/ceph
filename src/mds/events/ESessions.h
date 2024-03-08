@@ -26,12 +26,12 @@ protected:
   bool old_style_encode;
 
 public:
-  map<client_t,entity_inst_t> client_map;
-  map<client_t,client_metadata_t> client_metadata_map;
+  std::map<client_t,entity_inst_t> client_map;
+  std::map<client_t,client_metadata_t> client_metadata_map;
 
   ESessions() : LogEvent(EVENT_SESSIONS), cmapv(0), old_style_encode(false) { }
-  ESessions(version_t pv, map<client_t,entity_inst_t>&& cm,
-	    map<client_t,client_metadata_t>&& cmm) :
+  ESessions(version_t pv, std::map<client_t,entity_inst_t>&& cm,
+	    std::map<client_t,client_metadata_t>&& cmm) :
     LogEvent(EVENT_SESSIONS),
     cmapv(pv), old_style_encode(false),
     client_map(std::move(cm)),
@@ -47,9 +47,9 @@ public:
     else decode_new(bl);
   }
   void dump(Formatter *f) const override;
-  static void generate_test_instances(list<ESessions*>& ls);
+  static void generate_test_instances(std::list<ESessions*>& ls);
 
-  void print(ostream& out) const override {
+  void print(std::ostream& out) const override {
     out << "ESessions " << client_map.size() << " opens cmapv " << cmapv;
   }
   

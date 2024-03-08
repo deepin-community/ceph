@@ -153,9 +153,10 @@ bool ipv4_tcp::forward(forward_hash& out_hash_data, Packet& p, size_t off)
 }
 
 int tcpv4_listen(tcp<ipv4_traits>& tcpv4, uint16_t port, const SocketOptions &opts,
-                 int type, ServerSocket *sock)
+                 int type, unsigned addr_slot, ServerSocket *sock)
 {
-  auto p = new DPDKServerSocketImpl<tcp<ipv4_traits>>(tcpv4, port, opts, type);
+  auto p = new DPDKServerSocketImpl<tcp<ipv4_traits>>(tcpv4, port, opts,
+						      type, addr_slot);
   int r = p->listen();
   if (r < 0) {
     delete p;
@@ -221,7 +222,7 @@ void tcp<InetTraits>::respond_with_reset(tcp_hdr* rth, ipaddr local_ip, ipaddr f
 #undef dout_prefix
 #define dout_prefix _prefix(_dout)
 template<typename InetTraits>
-ostream& tcp<InetTraits>::tcb::_prefix(std::ostream *_dout) {
+std::ostream& tcp<InetTraits>::tcb::_prefix(std::ostream *_dout) {
   return *_dout << "tcp " << _local_ip << ":" << _local_port << " -> " << _foreign_ip << ":" << _foreign_port
                 << " tcb(" << this << " fd=" << fd << " s=" << _state << ").";
 }

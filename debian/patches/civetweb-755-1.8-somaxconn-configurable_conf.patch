@@ -5,8 +5,8 @@ Bug: https://github.com/civetweb/civetweb/issues/775
 Bug-Ubuntu: https://bugs.launchpad.net/ubuntu/+source/ceph/+bug/1838109
 ---
 This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
---- a/src/civetweb/resources/civetweb.conf
-+++ b/src/civetweb/resources/civetweb.conf
+--- a/src/jaegertracing/opentelemetry-cpp/third_party/prometheus-cpp/3rdparty/civetweb/resources/civetweb.conf
++++ b/src/jaegertracing/opentelemetry-cpp/third_party/prometheus-cpp/3rdparty/civetweb/resources/civetweb.conf
 @@ -8,6 +8,8 @@
  document_root .
  listening_ports 8080

@@ -19,8 +19,7 @@
 
 #include "gtest/gtest.h"
 
-using std::string;
-using std::cout;
+using namespace std;
 
 entity_addr_t addr;
 
@@ -46,6 +45,11 @@ const char *parse_good[] = {
   "allow r uid=1 gids=1,2,3, allow * uid=2",
   "allow r network 1.2.3.4/8",
   "allow rw path=/foo uid=1 gids=1,2,3 network 2.3.4.5/16",
+  "allow r root_squash",
+  "allow rw path=/foo root_squash",
+  "allow rw fsname=a root_squash",
+  "allow rw fsname=a path=/foo root_squash",
+  "allow rw fsname=a root_squash, allow rwp fsname=a path=/volumes",
   0
 };
 
@@ -54,7 +58,7 @@ TEST(MDSAuthCaps, ParseGood) {
     string str = parse_good[i];
     MDSAuthCaps cap;
     std::cout << "Testing good input: '" << str << "'" << std::endl;
-    ASSERT_TRUE(cap.parse(g_ceph_context, str, &cout));
+    ASSERT_TRUE(cap.parse(str, &cout));
   }
 }
 
@@ -93,7 +97,7 @@ TEST(MDSAuthCaps, ParseBad) {
     string str = parse_bad[i];
     MDSAuthCaps cap;
     std::cout << "Testing bad input: '" << str << "'" << std::endl;
-    ASSERT_FALSE(cap.parse(g_ceph_context, str, &cout));
+    ASSERT_FALSE(cap.parse(str, &cout));
   }
 }
 
@@ -101,26 +105,26 @@ TEST(MDSAuthCaps, AllowAll) {
   MDSAuthCaps cap;
   ASSERT_FALSE(cap.allow_all());
 
-  ASSERT_TRUE(cap.parse(g_ceph_context, "allow r", NULL));
+  ASSERT_TRUE(cap.parse("allow r", NULL));
   ASSERT_FALSE(cap.allow_all());
   cap = MDSAuthCaps();
 
-  ASSERT_TRUE(cap.parse(g_ceph_context, "allow rw", NULL));
+  ASSERT_TRUE(cap.parse("allow rw", NULL));
   ASSERT_FALSE(cap.allow_all());
   cap = MDSAuthCaps();
 
-  ASSERT_TRUE(cap.parse(g_ceph_context, "allow", NULL));
+  ASSERT_TRUE(cap.parse("allow", NULL));
   ASSERT_FALSE(cap.allow_all());
   cap = MDSAuthCaps();
 
-  ASSERT_TRUE(cap.parse(g_ceph_context, "allow *", NULL));
+  ASSERT_TRUE(cap.parse("allow *", NULL));
   ASSERT_TRUE(cap.allow_all());
   ASSERT_TRUE(cap.is_capable("foo/bar", 0, 0, 0777, 0, 0, NULL, MAY_READ | MAY_WRITE, 0, 0, addr));
 }
 
 TEST(MDSAuthCaps, AllowUid) {
-  MDSAuthCaps cap(g_ceph_context);
-  ASSERT_TRUE(cap.parse(g_ceph_context, "allow * uid=10", NULL));
+  MDSAuthCaps cap;
+  ASSERT_TRUE(cap.parse("allow * uid=10", NULL));
   ASSERT_FALSE(cap.allow_all());
 
   // uid/gid must be valid
@@ -132,8 +136,8 @@ TEST(MDSAuthCaps, AllowUid) {
 }
 
 TEST(MDSAuthCaps, AllowUidGid) {
-  MDSAuthCaps cap(g_ceph_context);
-  ASSERT_TRUE(cap.parse(g_ceph_context, "allow * uid=10 gids=10,11,12; allow * uid=12 gids=12,10", NULL));
+  MDSAuthCaps cap;
+  ASSERT_TRUE(cap.parse("allow * uid=10 gids=10,11,12; allow * uid=12 gids=12,10", NULL));
   ASSERT_FALSE(cap.allow_all());
 
   // uid/gid must be valid
@@ -203,7 +207,7 @@ TEST(MDSAuthCaps, AllowUidGid) {
 
 TEST(MDSAuthCaps, AllowPath) {
   MDSAuthCaps cap;
-  ASSERT_TRUE(cap.parse(g_ceph_context, "allow * path=/sandbox", NULL));
+  ASSERT_TRUE(cap.parse("allow * path=/sandbox", NULL));
   ASSERT_FALSE(cap.allow_all());
   ASSERT_TRUE(cap.is_capable("sandbox/foo", 0, 0, 0777, 0, 0, NULL, MAY_READ | MAY_WRITE, 0, 0, addr));
   ASSERT_TRUE(cap.is_capable("sandbox", 0, 0, 0777, 0, 0, NULL, MAY_READ | MAY_WRITE, 0, 0, addr));
@@ -213,7 +217,7 @@ TEST(MDSAuthCaps, AllowPath) {
 
 TEST(MDSAuthCaps, AllowPathChars) {
   MDSAuthCaps unquo_cap;
-  ASSERT_TRUE(unquo_cap.parse(g_ceph_context, "allow * path=/sandbox-._foo", NULL));
+  ASSERT_TRUE(unquo_cap.parse("allow * path=/sandbox-._foo", NULL));
   ASSERT_FALSE(unquo_cap.allow_all());
   ASSERT_TRUE(unquo_cap.is_capable("sandbox-._foo/foo", 0, 0, 0777, 0, 0, NULL, MAY_READ | MAY_WRITE, 0, 0, addr));
   ASSERT_FALSE(unquo_cap.is_capable("sandbox", 0, 0, 0777, 0, 0, NULL, MAY_READ | MAY_WRITE, 0, 0, addr));
@@ -224,12 +228,23 @@ TEST(MDSAuthCaps, AllowPathChars) {
 
 TEST(MDSAuthCaps, AllowPathCharsQuoted) {
   MDSAuthCaps quo_cap;
-  ASSERT_TRUE(quo_cap.parse(g_ceph_context, "allow * path=\"/sandbox-._foo\"", NULL));
+  ASSERT_TRUE(quo_cap.parse("allow * path=\"/sandbox-._foo\"", NULL));
   ASSERT_FALSE(quo_cap.allow_all());
   ASSERT_TRUE(quo_cap.is_capable("sandbox-._foo/foo", 0, 0, 0777, 0, 0, NULL, MAY_READ | MAY_WRITE, 0, 0, addr));
   ASSERT_FALSE(quo_cap.is_capable("sandbox", 0, 0, 0777, 0, 0, NULL, MAY_READ | MAY_WRITE, 0, 0, addr));
   ASSERT_FALSE(quo_cap.is_capable("sandbox-._food", 0, 0, 0777, 0, 0, NULL, MAY_READ | MAY_WRITE, 0, 0, addr));
   ASSERT_FALSE(quo_cap.is_capable("foo", 0, 0, 0777, 0, 0, NULL, MAY_READ | MAY_WRITE, 0, 0, addr));
+}
+
+TEST(MDSAuthCaps, RootSquash) {
+  MDSAuthCaps rs_cap;
+  ASSERT_TRUE(rs_cap.parse("allow rw root_squash, allow rw path=/sandbox", NULL));
+  ASSERT_TRUE(rs_cap.is_capable("foo", 0, 0, 0777, 0, 0, NULL, MAY_READ, 0, 0, addr));
+  ASSERT_TRUE(rs_cap.is_capable("foo", 0, 0, 0777, 10, 10, NULL, MAY_READ | MAY_WRITE, 0, 0, addr));
+  ASSERT_FALSE(rs_cap.is_capable("foo", 0, 0, 0777, 0, 0, NULL, MAY_READ | MAY_WRITE, 0, 0, addr));
+  ASSERT_TRUE(rs_cap.is_capable("sandbox", 0, 0, 0777, 0, 0, NULL, MAY_READ | MAY_WRITE, 0, 0, addr));
+  ASSERT_TRUE(rs_cap.is_capable("sandbox/foo", 0, 0, 0777, 0, 0, NULL, MAY_READ | MAY_WRITE, 0, 0, addr));
+  ASSERT_TRUE(rs_cap.is_capable("sandbox/foo", 0, 0, 0777, 10, 10, NULL, MAY_READ | MAY_WRITE, 0, 0, addr));
 }
 
 TEST(MDSAuthCaps, OutputParsed) {
@@ -256,6 +271,12 @@ TEST(MDSAuthCaps, OutputParsed) {
      "MDSAuthCaps[allow * path=\"/foo\"]"},
     {"allow * path=\"/foo\"",
      "MDSAuthCaps[allow * path=\"/foo\"]"},
+    {"allow rw root_squash",
+     "MDSAuthCaps[allow rw root_squash]"},
+    {"allow rw fsname=a root_squash",
+     "MDSAuthCaps[allow rw fsname=a root_squash]"},
+    {"allow * path=\"/foo\" root_squash",
+     "MDSAuthCaps[allow * path=\"/foo\" root_squash]"},
     {"allow * path=\"/foo\" uid=1",
      "MDSAuthCaps[allow * path=\"/foo\" uid=1]"},
     {"allow * path=\"/foo\" uid=1 gids=1,2,3",
@@ -264,12 +285,14 @@ TEST(MDSAuthCaps, OutputParsed) {
      "MDSAuthCaps[allow r uid=1 gids=1,2,3, allow * uid=2]"},
     {"allow r uid=1 gids=1,2,3, allow * uid=2 network 10.0.0.0/8",
      "MDSAuthCaps[allow r uid=1 gids=1,2,3, allow * uid=2 network 10.0.0.0/8]"},
+    {"allow rw fsname=b, allow rw fsname=a root_squash",
+     "MDSAuthCaps[allow rw fsname=b, allow rw fsname=a root_squash]"},
   };
   size_t num_tests = sizeof(test_values) / sizeof(*test_values);
   for (size_t i = 0; i < num_tests; ++i) {
     MDSAuthCaps cap;
     std::cout << "Testing input '" << test_values[i].input << "'" << std::endl;
-    ASSERT_TRUE(cap.parse(g_ceph_context, test_values[i].input, &cout));
+    ASSERT_TRUE(cap.parse(test_values[i].input, &cout));
     ASSERT_EQ(test_values[i].output, stringify(cap));
   }
 }
@@ -281,7 +304,7 @@ TEST(MDSAuthCaps, network) {
   c.parse("192.167.2.3");
 
   MDSAuthCaps cap;
-  ASSERT_TRUE(cap.parse(g_ceph_context, "allow * network 192.168.0.0/16, allow * network 10.0.0.0/8", NULL));
+  ASSERT_TRUE(cap.parse("allow * network 192.168.0.0/16, allow * network 10.0.0.0/8", NULL));
 
   ASSERT_TRUE(cap.is_capable("foo", 0, 0, 0777, 0, 0, NULL, MAY_READ, 0, 0, a));
   ASSERT_TRUE(cap.is_capable("foo", 0, 0, 0777, 0, 0, NULL, MAY_READ, 0, 0, b));

@@ -22,12 +22,9 @@
 #include "include/types.h"
 
 
-class MMgrBeacon : public MessageInstance<MMgrBeacon, PaxosServiceMessage> {
-public:
-  friend factory;
+class MMgrBeacon final : public PaxosServiceMessage {
 private:
-
-  static constexpr int HEAD_VERSION = 8;
+  static constexpr int HEAD_VERSION = 11;
   static constexpr int COMPAT_VERSION = 8;
 
 protected:
@@ -46,22 +43,29 @@ protected:
   // Information about the modules found locally on this daemon
   std::vector<MgrMap::ModuleInfo> modules;
 
-  map<string,string> metadata; ///< misc metadata about this osd
+  std::map<std::string,std::string> metadata; ///< misc metadata about this osd
+
+  std::multimap<std::string, entity_addrvec_t> clients;
+
+  uint64_t mgr_features = 0;   ///< reporting mgr's features
 
 public:
   MMgrBeacon()
-    : MessageInstance(MSG_MGR_BEACON, 0, HEAD_VERSION, COMPAT_VERSION),
+    : PaxosServiceMessage{MSG_MGR_BEACON, 0, HEAD_VERSION, COMPAT_VERSION},
       gid(0), available(false)
-  {
-  }
+  {}
 
   MMgrBeacon(const uuid_d& fsid_, uint64_t gid_, const std::string &name_,
              entity_addrvec_t server_addrs_, bool available_,
 	     std::vector<MgrMap::ModuleInfo>&& modules_,
-	     map<string,string>&& metadata_)
-    : MessageInstance(MSG_MGR_BEACON, 0, HEAD_VERSION, COMPAT_VERSION),
+	     std::map<std::string,std::string>&& metadata_,
+             std::multimap<std::string, entity_addrvec_t>&& clients_,
+	     uint64_t feat)
+    : PaxosServiceMessage{MSG_MGR_BEACON, 0, HEAD_VERSION, COMPAT_VERSION},
       gid(gid_), server_addrs(server_addrs_), available(available_), name(name_),
-      fsid(fsid_), modules(std::move(modules_)), metadata(std::move(metadata_))
+      fsid(fsid_), modules(std::move(modules_)), metadata(std::move(metadata_)),
+      clients(std::move(clients_)),
+      mgr_features(feat)
   {
   }
 
@@ -73,10 +77,10 @@ public:
   const std::map<std::string,std::string>& get_metadata() const {
     return metadata;
   }
-
   const std::map<std::string,std::string>& get_services() const {
     return services;
   }
+  uint64_t get_mgr_features() const { return mgr_features; }
 
   void set_services(const std::map<std::string, std::string> &svcs)
   {
@@ -98,14 +102,19 @@ public:
     return modules;
   }
 
+  const auto& get_clients() const
+  {
+    return clients;
+  }
+
 private:
-  ~MMgrBeacon() override {}
+  ~MMgrBeacon() final {}
 
 public:
 
   std::string_view get_type_name() const override { return "mgrbeacon"; }
 
-  void print(ostream& out) const override {
+  void print(std::ostream& out) const override {
     out << get_type_name() << " mgr." << name << "(" << fsid << ","
 	<< gid << ", " << server_addrs << ", " << available
 	<< ")";
@@ -117,13 +126,8 @@ public:
     using ceph::encode;
     paxos_encode();
 
-    if (!HAVE_FEATURE(features, SERVER_NAUTILUS)) {
-      header.version = 7;
-      header.compat_version = 1;
-      encode(server_addrs.legacy_addr(), payload, features);
-    } else {
-      encode(server_addrs, payload, features);
-    }
+    assert(HAVE_FEATURE(features, SERVER_NAUTILUS));
+    encode(server_addrs, payload, features);
     encode(gid, payload);
     encode(available, payload);
     encode(name, payload);
@@ -142,43 +146,64 @@ public:
     encode(services, payload);
 
     encode(modules, payload);
+    encode(mgr_features, payload);
+
+    std::vector<std::string> clients_names;
+    std::vector<entity_addrvec_t> clients_addrs;
+    for (const auto& i : clients) {
+      clients_names.push_back(i.first);
+      clients_addrs.push_back(i.second);
+    }
+    // The address vector needs to be encoded first to produce a
+    // backwards compatible messsage for older monitors.
+    encode(clients_addrs, payload, features);
+    encode(clients_names, payload, features);
   }
   void decode_payload() override {
+    using ceph::decode;
     auto p = payload.cbegin();
     paxos_decode(p);
+    assert(header.version >= 8);
     decode(server_addrs, p);  // entity_addr_t for version < 8
     decode(gid, p);
     decode(available, p);
     decode(name, p);
-    if (header.version >= 2) {
-      decode(fsid, p);
+    decode(fsid, p);
+    std::set<std::string> module_name_list;
+    decode(module_name_list, p);
+    decode(command_descs, p);
+    decode(metadata, p);
+    decode(services, p);
+    decode(modules, p);
+    if (header.version >= 9) {
+      decode(mgr_features, p);
     }
-    if (header.version >= 3) {
-      std::set<std::string> module_name_list;
-      decode(module_name_list, p);
-      // Only need to unpack this field if we won't have the full
-      // ModuleInfo structures added in v7
-      if (header.version < 7) {
-        for (const auto &i : module_name_list) {
-          MgrMap::ModuleInfo info;
-          info.name = i;
-          modules.push_back(std::move(info));
-        }
+    if (header.version >= 10) {
+      std::vector<entity_addrvec_t> clients_addrs;
+      decode(clients_addrs, p);
+      clients.clear();
+      if (header.version >= 11) {
+	std::vector<std::string> clients_names;
+	decode(clients_names, p);
+	if (clients_names.size() != clients_addrs.size()) {
+	  throw ceph::buffer::malformed_input(
+	    "clients_names.size() != clients_addrs.size()");
+	}
+	auto cn = clients_names.begin();
+	auto ca = clients_addrs.begin();
+	for(; cn != clients_names.end(); ++cn, ++ca) {
+	  clients.emplace(*cn, *ca);
+	}
+      } else {
+	for (const auto& i : clients_addrs) {
+	  clients.emplace("", i);
+	}
       }
     }
-    if (header.version >= 4) {
-      decode(command_descs, p);
-    }
-    if (header.version >= 5) {
-      decode(metadata, p);
-    }
-    if (header.version >= 6) {
-      decode(services, p);
-    }
-    if (header.version >= 7) {
-      decode(modules, p);
-    }
   }
+private:
+  template<class T, typename... Args>
+  friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
 };
 
 

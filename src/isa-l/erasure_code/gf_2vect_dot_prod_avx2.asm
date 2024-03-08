@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2015 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -54,7 +54,7 @@
  %define PS     8
  %define LOG_PS 3
 
- %define func(x) x:
+ %define func(x) x: endbranch
  %macro FUNC_SAVE 0
 	push	r12
  %endmacro
@@ -131,7 +131,7 @@
 
  %define PS 4
  %define LOG_PS 2
- %define func(x) x:
+ %define func(x) x: endbranch
  %define arg(x) [ebp + PS*2 + PS*x]
  %define var(x) [ebp - PS - PS*x]
 
@@ -248,7 +248,7 @@ section .text
 %endif
 
 align 16
-global gf_2vect_dot_prod_avx2:function
+mk_global gf_2vect_dot_prod_avx2, function
 
 func(gf_2vect_dot_prod_avx2)
 	FUNC_SAVE

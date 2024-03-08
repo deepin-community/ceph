@@ -1,5 +1,5 @@
-..  BSD LICENSE
-    Copyright(c) 2017 Intel Corporation. All rights reserved.
+..  SPDX-License-Identifier: BSD-3-Clause
+    Copyright(c) 2017 Intel Corporation.
 
 OPDL Eventdev Poll Mode Driver
 ==================================
@@ -8,7 +8,7 @@ The OPDL (Ordered Packet Distribution Library) eventdev is a specific\
 implementation of the eventdev API. It is particularly suited to packet\
 processing workloads that have high throughput and low latency requirements.\
 All packets follow the same path through the device. The order in which\
-packets  follow is determinted by the order in which queues are set up.\
+packets  follow is determined by the order in which queues are set up.\
 Events are left on the ring until they are transmitted. As a result packets\
 do not go out of order
 
@@ -62,7 +62,7 @@ Queue Dependencies
 As stated the order in which packets travel through queues is static in
 nature. They go through the queues in the order the queues are setup at
 initialisation ``rte_event_queue_setup()``. For example if an application
-sets up 3 queues, Q0, Q1, Q2 and has 3 assoicated ports P0, P1, P2 and
+sets up 3 queues, Q0, Q1, Q2 and has 3 associated ports P0, P1, P2 and
 P3 then packets must be
 
  * Enqueued onto Q0 (typically through P0), then

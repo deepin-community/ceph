@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 /*
  * Ceph - scalable distributed file system
  *
@@ -12,8 +12,7 @@
  *
  */
 
-#ifndef RGW_DMCLOCK_SYNC_SCHEDULER_H
-#define RGW_DMCLOCK_SYNC_SCHEDULER_H
+#pragma once
 
 #include "rgw_dmclock_scheduler.h"
 #include "rgw_dmclock_scheduler_ctx.h"
@@ -76,4 +75,3 @@ SyncScheduler::SyncScheduler(CephContext *cct, GetClientCounters&& counters,
 {}
 
 } // namespace rgw::dmclock
-#endif /* RGW_DMCLOCK_SYNC_SCHEDULER_H */

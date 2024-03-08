@@ -1,14 +1,15 @@
-Format-Specification: http://anonscm.debian.org/viewvc/dep/web/deps/dep5/copyright-format.xml?revision=279&view=markup
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Name: ceph
 Maintainer: Sage Weil <sage@newdream.net>
 Source: http://ceph.com/
+Files-Excluded: debian
 
 Files: *
 Copyright: 2004-2014 Sage Weil <sage@newdream.net>
            2004-2014 Inktank <info@inktank.com>
                      Inktank, Inc
                      Inktank Storage, Inc.
-           2012-2014 Red Hat <contact@redhat.com>
+           2012-2021 Red Hat <contact@redhat.com>
            2013-2014 Cloudwatt <libre.licensing@cloudwatt.com>
            2013      CohortFS, LLC
            2004-2011 Dreamhost
@@ -22,7 +23,188 @@ Copyright: 2004-2014 Sage Weil <sage@newdream.net>
            2011      Stanislav Sedov <stas@FreeBSD.org>
            2013-2014 UnitedStack <haomai@unitedstack.com>
            2011      Wido den Hollander <wido@widodh.nl>
+           2004-2021, The Ceph Project Developers
+           2008-2011, New Dream Network
+           2019-2021, SUSE LINUX GmbH
+           2004-2006, Intel Corporation
+           2011-2014, Stanford University
+           2017 OVH
+           2016       Allen Samuels <allen.samuels@sandisk.com>
+           2014       UnitedStack <haomai@unitedstack.com>
+           2015       XSky <haomai@xsky.com>
+           2017       International Business Machines Corp.
+           2015       CohortFS, LLC.
+           2015-2016  Mirantis, Inc.
+           2011-2015 Edward Diener
+           2014 FUJITSU LIMITED
+           2012 Eleanor Cawthon
+           2011-2018, Facebook, Inc.
+           2011 The LevelDB Authors.
+           2016 Mehdi Abaakouk <sileht@redhat.com>
+           2011 Josh Durgin
+           2011 Hannu Valtonen <hannu.valtonen@ormod.com>
+           2015 Hector Martin <marcan@marcan.st>
 License: LGPL2.1 (see COPYING-LGPL2.1)
+
+Files: src/fmt/*
+ src/googletest/*
+ src/isa-l/*
+Copyright: (c) 2012-2018, Victor Zverovich
+ (c) 2019, Paul Dreik
+ (c) 2018, Remotion (Igor Schulz)
+ (c) 2007-2013, Google Inc.
+ (c) 2007, Neal Norwitz
+ 2011-2017 Intel Corporation
+License: BSD 3-clause
+
+Files: src/jaegertracing/thrift/*
+Copyright: (c) 2006-2019, The Apache Software Foundation
+ (c) 2009,2010 Dustin J. Mitchell
+ (c) 2009,2010 Zmanda Inc.
+ (c) 2009 David Reiss
+ (c) 2015 Jens Geyer <jensg@apache.org>
+ (c) 2008 Benjamin Kosnik <bkoz@redhat.com>
+ (c) 2012 Zack Weinberg <zackw@panix.com>
+ (c) 2013 Roy Stogner <roystgnr@ices.utexas.edu>
+ (c) 2014, 2015 Google Inc.; contributed by Alexey Sokolov <sokolov@google.com>
+ (c) 2015 Paul Norman <penorman@mac.com>
+ (c) 2015 Moritz Klammler <moritz@klammler.eu>
+ (c) 2016, 2018 Krzesimir Nowak <qdlacz@gmail.com>
+ (c) 2011 David Nadlinger
+License: Apache-2.0
+
+Files: src/jaegertracing/jaeger-client-cpp/*
+Copyright: (c) 2017 Uber Technologies, Inc.
+ (c) 2019, The Jaeger Authors
+ (c) 2004, 2006 The Linux Foundation and its contributors.
+ (c) 2012, Twitter Inc.
+License: Apache-2.0
+
+Files: src/jaegertracing/opentracing-cpp/3rd_party/include/opentracing/expected/*
+Copyright: (C) 2016 Martin Moene.
+ (c) 2002-2003 Eric Friedman, Itay Maman
+ (c) 2015 Microsoft Corporation
+License: Expat
+
+Files: src/jaegertracing/opentracing-cpp/3rd_party/include/opentracing/variant/*
+ src/jaegertracing/opentracing-cpp/3rd_party/include/catch2/*
+Copyright: (c) MapBox
+License: BSD 3-clause
+
+Files: src/java/*
+Copyright: Ceph authors
+License: Expat
+
+Files: src/json_spirit/*
+Copyright: 2007-2011, John W. Wilkinson
+License: BSL-1.0
+
+Files: src/libkmip
+Copyright: (c) 2018-2019, The Johns Hopkins University/Applied Physics Laboratory
+License: Apache-2.0
+
+Files: src/liburing
+Copyright: (c) 2019 Jens Axboe
+ (c) 2019 Christoph Hellwig
+License: LGPL2.1 or later
+
+Files: src/rapidjson
+Copyright: (c) 2006-2013 Alexander Chemeris
+ (c) 2015 THL A29 Limited, a Tencent company, and Milo Yip
+License: BSD 3-clause
+
+Files: src/rocksdb/*
+Copyright:  Google Inc.
+ (c) 2011-present, Facebook, Inc.
+License: GPL-2
+
+Files: src/spawn/*
+Copyright: (c) 2006-2019 Google Inc.
+License: BSL-1.0
+
+Files: src/spdk/*
+Copyright: (c) Intel Corporation.
+License: BSD 3 clause
+
+Files: src/xxHash/*
+Copyright: (c) 2012-2014, Yann Collet
+License: BSD 3-clause
+
+Files: src/zstd/*
+Copyright: (c) 2016, Facebook, Inc. All rights reserved.
+License: BSD 3-clause
+
+Files: src/seastar/*
+Copyright: (C) 2016-2020, ScyllaDB
+ (c) 2017-2019, Red Hat, Inc.
+ (c) 2014-2020, Cloudius Systems, Ltd.
+ (c) 2010-2018, Intel Corporation
+ (c) 2003-2013, Christopher M. Kohlhoff
+ (c) 2012-2018, 6WIND S.A.
+ (c) 2018, Luca Boccassi <bluca@debian.org>
+ (c) 2010, David Malone <dwmalone@FreeBSD.org>
+ (c) 2019, Elazar Leibovich
+ (c) 2013, Prometheus Team
+ (c) 2017-2018, Marvell International Ltd.
+ (c) 2014-2017, IBM Corporation
+ (c) 2015-2018, RehiveTech
+ (c) 2015-2018, CESNET
+ (c) 2015-2018, Cavium, Inc
+ (c) 2016-2018, NXP
+ (c) 2000-2018, Kitware, Inc. and Contributors
+ (c) 2017, Marek Waszkiewicz <marek.waszkiewicz77@gmail.com>
+ (C) 2019, Lightbits Labs Ltd.
+ (c) 2016, Canonical Limited.
+ (c) 2019, Netcope Technologies, a.s. <info@netcope.com>
+ (c) 2015-2018, Atomic Rules LLC
+ (c) 2015-2016, QLogic Corporation
+ (c) 2017-2018, Semihalf.
+ (c) 2013-2018, Broadcom
+ (c) 2008-2018, Cisco Systems, Inc.
+ (c) 2014-2016, Freescale Semiconductor, Inc.
+ (c) 2013-2017, Wind River Systems, Inc.
+ (c) 2015-2018, Mellanox Technologies, Ltd
+ (c) 2018-2019, Arm Limited
+ (c) 2019, Cesnet
+ (c) 2014-2018, Chelsio Communications.
+ (c) 2018, Aquantia Corporation
+ (c) 2018, Microsoft Corporation.
+ (c) 2018, The DPDK contributors
+ (c) 2017-2018, Solarflare Communications Inc.
+ (c) 2015-2016, Amazon.com, Inc.
+ (c) 2014-2018, Netronome Systems, Inc.
+ (c) 2016, IGEL Co., Ltd.
+ (c) 2018, Advanced Micro Devices, Inc.
+ (c) 2018, ARM Corporation.
+ (c) 2014-2017, aQuantia Corporation.
+ (c) 2018, Synopsys, Inc. All rights reserved.
+ (c) 2007, Nuova Systems, Inc.  All rights reserved.
+ (c) 2013-2015, Brocade Communications Systems, Inc.
+ (c) 2012, NetApp Inc.
+ (c) 2010, Jonathan Armani <armani@openbsd.org>
+ (c) 2010, Fabien Romano <fabien@openbsd.org>
+ (c) 2010, Michael Knudsen <mk@openbsd.org>
+License: Apache-2.0
+Comment:
+ The dpdk folder is under various folders:
+ bsd-3-clause, gpl-2.0 and lgpl-2.1.
+
+Files: src/common/crc32c_intel_baseline.c
+Copyright: 2012-2013 Intel Corporation
+License: BSD 3-clause
+
+Files: src/crimson/common/layout.h
+Copyright: 2018 The Abseil Authors
+License: Apache-2.0
+
+Files: cmake/modules/FindPython3.cmake cmake/modules/FindBacktrace.cmake
+ cmake/modules/FindBoost.cmake cmake/modules/FindPython/Support.cmake
+Copyright: (c) 2013 Vadim Zhukov
+License: BSD 3-clause
+
+Files: cmake/modules/Findblkid.cmake
+Copyright: (c) 2007-2012 Hypertable, Inc.
+License: GPL-3+
 
 Files: cmake/modules/FindLTTngUST.cmake
 Copyright:
@@ -30,9 +212,28 @@ Copyright:
     Copyright 2016 Philippe Proulx <pproulx@efficios.com>
 License: BSD 3-clause
 
+Files: make-debs.sh
+Copyright: (c) Loic Dachary <loic@dachary.org>
+ (c) 2015 Red Hat <contact@redhat.com>
+License: GPL-2+
+
+Files: fusetrace/fusetrace_ll.cc
+Copyright: (C) 2001-2007  Miklos Szeredi <miklos@szeredi.hu>
+License: GPL-2
+
 Files: doc/*
 Copyright: (c) 2010-2012 New Dream Network and contributors
 License: Creative Commons Attribution Share Alike 3.0 (CC-BY-SA-3.0)
+
+Files: src/boost/*
+Copyright: Boost project contributors
+License: BSL-1.0
+Comment:
+ Ceph embedds boost sources, which has complex copyright. Rather than
+ duplicating its debian copyright, this package relies on the package
+ maintainer of Boost for this work.
+ .
+ Please see /usr/share/doc/libboost*/copyright fore more details.
 
 Files: bin/git-archive-all.sh
 License: GPL3
@@ -52,7 +253,7 @@ License: Public domain
 
 Files: src/common/bloom_filter.hpp
 Copyright: Copyright (C) 2000 Arash Partow <arash@partow.net>
-License: Boost Software License, Version 1.0
+License: BSL-1.0
 
 Files: src/common/crc32c_intel*:
 Copyright:
@@ -66,18 +267,18 @@ Copyright:
 License:
   Redistribution and use in source and binary forms, with or without
   modification, are permitted provided that the following conditions are met:
-
+ .
   a) Redistributions of source code must retain the above copyright notice,
     this list of conditions and the following disclaimer.
-
+ .
   b) Redistributions in binary form must reproduce the above copyright
      notice, this list of conditions and the following disclaimer in
     the documentation and/or other materials provided with the distribution.
-
+ .
   c) Neither the name of Cisco Systems, Inc. nor the names of its
      contributors may be used to endorse or promote products derived
      from this software without specific prior written permission.
-
+ .
   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
   THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -95,9 +296,9 @@ Copyright:
 	Copyright John W. Wilkinson 2007 - 2011
 License:
   The MIT License
-
+ .
   Copyright (c) 2007 - 2010 John W. Wilkinson
-
+ .
   Permission is hereby granted, free of charge, to any person
   obtaining a copy of this software and associated documentation
   files (the "Software"), to deal in the Software without
@@ -106,10 +307,10 @@ License:
   copies of the Software, and to permit persons to whom the
   Software is furnished to do so, subject to the following
   conditions:
-
+ .
   The above copyright notice and this permission notice shall be
   included in all copies or substantial portions of the Software.
-
+ .
   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
   OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
@@ -122,8 +323,6 @@ License:
 Files: src/test/common/Throttle.cc src/test/filestore/chain_xattr.cc
 Copyright: Copyright (C) 2013 Cloudwatt <libre.licensing@cloudwatt.com>
 License: LGPL2.1 or later
-
-
 
 Files: src/osd/ErasureCodePluginJerasure/*.{c,h}
 Copyright: Copyright (c) 2011, James S. Plank <plank@cs.utk.edu>
@@ -169,7 +368,7 @@ License: MIT
 Files: src/include/timegm.h
 Copyright: Howard Hinnant
            2010-2011 Vicente J. Botet Escriba
-License: Boost Software License, Version 1.0
+License: BSL-1.0
 
 Files: src/pybind/mgr/diskprediction_local/models/*
 Copyright: None
@@ -178,7 +377,6 @@ License: Public domain
 Files: src/ceph-volume/plugin/zfs/*
 Copyright: 2018, Willem Jan Withagen
 License: BSD 3-clause
-
 
 Files: src/test/perf_local.cc
 Copyright:
@@ -270,8 +468,6 @@ License: BSD-2-clause
  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-
-
 Files: src/mount/canonicalize.c
        src/test/common/test_config.cc
        src/test/crush/TestCrushWrapper.cc
@@ -304,28 +500,7 @@ License: public-domain
 
 Files: src/common/bloom_filter.hpp
 Copyright: 2000 Arash Partow
-License: Boost-Software-License-1.0
- Permission is hereby granted, free of charge, to any person or organization
- obtaining a copy of the software and accompanying documentation covered by
- this license (the "Software") to use, reproduce, display, distribute,
- execute, and transmit the Software, and to prepare derivative works of the
- Software, and to permit third-parties to whom the Software is furnished to
- do so, all subject to the following:
- .
-   The copyright notices in the Software and this entire statement,
-   including the above license grant, this restriction and the following
-   disclaimer, must be included in all copies of the Software, in whole or
-   in part, and all derivative works of the Software, unless such copies
-   or derivative works are solely in the form of machine-executable object
-   code generated by a source language processor.
- .
- THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT. IN NO EVENT
- SHALL THE COPYRIGHT HOLDERS OR ANYONE DISTRIBUTING THE SOFTWARE BE LIABLE
- FOR ANY DAMAGES OR OTHER LIABILITY, WHETHER IN CONTRACT, TORT OR OTHERWISE,
- ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- DEALINGS IN THE SOFTWARE.
+License: BSL-1.0
 
 Files: src/common/crc32c_intel*
 Copyright: 2012-2013 Intel Corporation All Rights Reserved.
@@ -370,20 +545,6 @@ Files: src/java/native/ScopedLocalRef.h
        src/java/native/JniConstants.*
 Copyright: 2010 The Android Open Source Project
 License: Apache-2.0
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
- .
-      http://www.apache.org/licenses/LICENSE-2.0
- .
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
- .
- The complete text of the Apache License, Version 2.0
- can be found in "/usr/share/common-licenses/Apache-2.0".
 
 Files: src/libs3/*
 Copyright: 2008 Bryan Ischo <bryan@ischo.com>
@@ -438,7 +599,6 @@ Files: man/*
 Copyright: 2010-2014, Inktank Storage, Inc. and contributors.
 License: CC-BY-SA-3.0
 
-
 Files: debian/missing-sources/bootstrap.js
 Copyright: 2011-2015 Twitter, Inc
 License: MIT
@@ -447,6 +607,80 @@ Files: debian/missing-sources/two.js
 Copyright: 2012 - 2017 jonobr1 / http://jonobr1.com
 License: MIT
 
+Files: src/arrow/*
+Comment:
+ This product includes software from the SFrame project (BSD, 3-clause).
+ * Copyright (C) 2015 Dato, Inc.
+ * Copyright (c) 2009 Carnegie Mellon University.
+ This product includes software from the Feather project (Apache 2.0)
+ https://github.com/wesm/feather
+ .
+ This product includes software from the DyND project (BSD 2-clause)
+ https://github.com/libdynd
+ .
+ This product includes software from the LLVM project
+ * distributed under the University of Illinois Open Source
+ .
+ This product includes software from the google-lint project
+ * Copyright (c) 2009 Google Inc. All rights reserved.
+ .
+ This product includes software from the mman-win32 project
+ * Copyright https://code.google.com/p/mman-win32/
+ * Licensed under the MIT License;
+ .
+ This product includes software from the LevelDB project
+ * Copyright (c) 2011 The LevelDB Authors. All rights reserved.
+ * Use of this source code is governed by a BSD-style license that can be
+ * Moved from Kudu http://github.com/cloudera/kudu
+ .
+ This product includes software from the CMake project
+ * Copyright 2001-2009 Kitware, Inc.
+ * Copyright 2012-2014 Continuum Analytics, Inc.
+ * All rights reserved.
+ .
+ This product includes software from https://github.com/matthew-brett/multibuild (BSD 2-clause)
+ * Copyright (c) 2013-2016, Matt Terry and Matthew Brett; all rights reserved.
+ .
+ This product includes software from the Ibis project (Apache 2.0)
+ * Copyright (c) 2015 Cloudera, Inc.
+ * https://github.com/cloudera/ibis
+ .
+ This product includes software from Dremio (Apache 2.0)
+  * Copyright (C) 2017-2018 Dremio Corporation
+  * https://github.com/dremio/dremio-oss
+ This product includes software from Google Guava (Apache 2.0)
+  * Copyright (C) 2007 The Guava Authors
+  * https://github.com/google/guava
+ .
+ This product include software from CMake (BSD 3-Clause)
+  * CMake - Cross Platform Makefile Generator
+  * Copyright 2000-2019 Kitware, Inc. and Contributors
+ .
+ The web site includes files generated by Jekyll.
+ This product includes code from Apache Kudu, which includes the following in
+ its NOTICE file:
+ .
+  Apache Kudu
+  Copyright 2016 The Apache Software Foundation
+ .
+  This product includes software developed at
+  The Apache Software Foundation (http://www.apache.org/).
+ .
+  Portions of this software were developed at
+  Cloudera, Inc (http://www.cloudera.com/).
+ This product includes code from Apache ORC, which includes the following in
+ its NOTICE file:
+ .
+  Apache ORC
+  Copyright 2013-2019 The Apache Software Foundation
+ .
+  This product includes software developed by The Apache Software
+  Foundation (http://www.apache.org/).
+ .
+  This product includes software developed by Hewlett-Packard:
+  (c) Copyright [2014-2015] Hewlett-Packard Development Company, L.P
+License: Apache-2.0
+
 Files: debian/*
 Copyright: 2010      Sage Weil <sage@newdream.net>
            2010      Canonical, Ltd.
@@ -454,7 +688,48 @@ Copyright: 2010      Sage Weil <sage@newdream.net>
            2013-2014 James Page <james.page@ubuntu.com>
            2014      Dmitry Smirnov <onlyjob@debian.org>
            2019      Bernd Zeimetz <bzed@debian.org>
+           2019-2023 Thomas Goirand <zigo@debian.org>
 License: LGPL-2.1
+
+License: Expat
+ Permission is hereby granted, free of charge, to any person or organization
+ obtaining a copy of the software and accompanying documentation covered by
+ this license (the "Software") to use, reproduce, display, distribute,
+ execute, and transmit the Software, and to prepare derivative works of the
+ Software, and to permit third-parties to whom the Software is furnished to
+ do so, all subject to the following:
+ .
+   The copyright notices in the Software and this entire statement,
+   including the above license grant, this restriction and the following
+   disclaimer, must be included in all copies of the Software, in whole or
+   in part, and all derivative works of the Software, unless such copies
+   or derivative works are solely in the form of machine-executable object
+   code generated by a source language processor.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT. IN NO EVENT
+ SHALL THE COPYRIGHT HOLDERS OR ANYONE DISTRIBUTING THE SOFTWARE BE LIABLE
+ FOR ANY DAMAGES OR OTHER LIABILITY, WHETHER IN CONTRACT, TORT OR OTHERWISE,
+ ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ DEALINGS IN THE SOFTWARE.
+
+License: Apache-2.0
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+ .
+      http://www.apache.org/licenses/LICENSE-2.0
+ .
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+ .
+ The complete text of the Apache License, Version 2.0
+ can be found in "/usr/share/common-licenses/Apache-2.0".
+
 
 License: GPL-2
  This program is free software; you can redistribute it and/or modify
@@ -490,6 +765,23 @@ License: GPL-2+
  .
  On Debian systems, the complete text of the GNU General Public License
  version 2 can be found in `/usr/share/common-licenses/GPL-2'.
+
+License: GPL-3+
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation; either version 3 of the License, or
+ (at your option) any later version.
+ .
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+ .
+ You should have received a copy of the GNU General Public License
+ along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ .
+ On Debian systems, the complete text of the GNU General Public
+ License version 3 can be found in `/usr/share/common-licenses/GPL-3'.
 
 License: LGPL-2.1
  This library is free software; you can redistribute it and/or

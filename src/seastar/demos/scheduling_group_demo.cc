@@ -24,11 +24,15 @@
 #include <seastar/core/future.hh>
 #include <seastar/core/scheduling.hh>
 #include <seastar/core/thread.hh>
-#include <seastar/core/future-util.hh>
-#include <seastar/core/reactor.hh>
+#include <seastar/core/loop.hh>
+#include <seastar/core/when_all.hh>
+#include <seastar/core/with_scheduling_group.hh>
+#include <seastar/core/condition-variable.hh>
 #include <seastar/util/defer.hh>
+#include <fmt/printf.h>
 #include <chrono>
 #include <cmath>
+#include <boost/range/irange.hpp>
 
 using namespace seastar;
 using namespace std::chrono_literals;
@@ -72,13 +76,14 @@ using done_func = std::function<bool ()>;
 
 future<>
 run_compute_intensive_tasks(seastar::scheduling_group sg, done_func done, unsigned concurrency, unsigned& counter, std::function<future<> (unsigned& counter)> task) {
-    return seastar::async([task, sg, concurrency, done, &counter] {
+    return seastar::async([task = std::move(task), sg, concurrency, done, &counter] () mutable {
         while (!done()) {
-            parallel_for_each(boost::irange(0u, concurrency), [task, sg, &counter] (unsigned i) {
+            parallel_for_each(boost::irange(0u, concurrency), [task, sg, &counter] (unsigned i) mutable {
                 return with_scheduling_group(sg, [task, &counter] {
                     return task(counter);
                 });
             }).get();
+            thread::maybe_yield();
         }
     });
 }
@@ -91,6 +96,7 @@ run_compute_intensive_tasks_in_threads(seastar::scheduling_group sg, done_func d
         return seastar::async(attr, [done, &counter, task] {
             while (!done()) {
                 task(counter).get();
+                thread::maybe_yield();
             }
         });
     });
@@ -112,6 +118,7 @@ run_with_duty_cycle(float utilization, std::chrono::steady_clock::duration perio
         while (!done()) {
             while (!combined_done()) {
                 task(std::cref(combined_done)).get();
+                thread::maybe_yield();
             }
             cv.wait([&] {
                 return done() || duty_toggle;
@@ -134,11 +141,11 @@ int main(int ac, char** av) {
     return app.run(ac, av, [] {
         return seastar::async([] {
             auto sg100 = seastar::create_scheduling_group("sg100", 100).get0();
-            auto ksg100 = seastar::defer([&] { seastar::destroy_scheduling_group(sg100).get(); });
+            auto ksg100 = seastar::defer([&] () noexcept { seastar::destroy_scheduling_group(sg100).get(); });
             auto sg20 = seastar::create_scheduling_group("sg20", 20).get0();
-            auto ksg20 = seastar::defer([&] { seastar::destroy_scheduling_group(sg20).get(); });
+            auto ksg20 = seastar::defer([&] () noexcept { seastar::destroy_scheduling_group(sg20).get(); });
             auto sg50 = seastar::create_scheduling_group("sg50", 50).get0();
-            auto ksg50 = seastar::defer([&] { seastar::destroy_scheduling_group(sg50).get(); });
+            auto ksg50 = seastar::defer([&] () noexcept { seastar::destroy_scheduling_group(sg50).get(); });
 
             bool done = false;
             auto end = timer<>([&done] {

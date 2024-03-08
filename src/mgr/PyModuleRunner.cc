@@ -13,7 +13,7 @@
 
 
 // Python.h comes first because otherwise it clobbers ceph's assert
-#include "PythonCompat.h"
+#include <Python.h>
 
 #include "PyModule.h"
 
@@ -63,7 +63,7 @@ int PyModuleRunner::serve()
                   << "' while running on mgr." << g_conf()->name.get_id()
                   << ": " << exc_msg;
     derr << get_name() << ".serve:" << dendl;
-    derr << handle_pyerror() << dendl;
+    derr << handle_pyerror(true, get_name(), "PyModuleRunner::serve") << dendl;
 
     py_module->fail(exc_msg);
 
@@ -86,17 +86,17 @@ void PyModuleRunner::shutdown()
     Py_DECREF(pValue);
   } else {
     derr << "Failed to invoke shutdown() on " << get_name() << dendl;
-    derr << handle_pyerror() << dendl;
+    derr << handle_pyerror(true, get_name(), "PyModuleRunner::shutdown") << dendl;
   }
 
   dead = true;
 }
 
-void PyModuleRunner::log(int level, const std::string &record)
+void PyModuleRunner::log(const std::string &record)
 {
 #undef dout_prefix
-#define dout_prefix *_dout << "mgr[" << get_name() << "] "
-  dout(ceph::dout::need_dynamic(level)) << record << dendl;
+#define dout_prefix *_dout
+  dout(0) << record << dendl;
 #undef dout_prefix
 #define dout_prefix *_dout << "mgr " << __func__ << " "
 }

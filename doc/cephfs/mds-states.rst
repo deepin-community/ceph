@@ -154,7 +154,10 @@ No MDS actually holds this state. Instead, it is applied to the rank in the file
     failed  0
     ...
 
-Rank 0 is part of the failed set.
+Rank 0 is part of the failed set and is pending to be taken over by a standby
+MDS. If this state persists, it indicates no suitable MDS daemons found to be
+assigned to this rank. This may be caused by not enough standby daemons, or all
+standby daemons have incompatible compat (see also :ref:`upgrade-mds-cluster`).
 
 
 ::
@@ -211,7 +214,7 @@ Color
 - Orange: MDS is in transient state trying to become active.
 - Red: MDS is indicating a state that causes the rank to be marked failed.
 - Purple: MDS and rank is stopping.
-- Red: MDS is indicating a state that causes the rank to be marked damaged.
+- Black: MDS is indicating a state that causes the rank to be marked damaged.
 
 Shape
 ~~~~~
@@ -224,4 +227,4 @@ Lines
 
 - A double-lined shape indicates the rank is "in".
 
-.. image:: mds-state-diagram.svg
+.. graphviz:: mds-state-diagram.dot

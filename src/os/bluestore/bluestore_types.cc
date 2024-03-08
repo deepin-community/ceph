@@ -17,6 +17,16 @@
 #include "common/Checksummer.h"
 #include "include/stringify.h"
 
+using std::list;
+using std::map;
+using std::make_pair;
+using std::ostream;
+using std::string;
+
+using ceph::bufferlist;
+using ceph::bufferptr;
+using ceph::Formatter;
+
 // bluestore_bdev_label_t
 
 void bluestore_bdev_label_t::encode(bufferlist& bl) const
@@ -36,7 +46,7 @@ void bluestore_bdev_label_t::encode(bufferlist& bl) const
 
 void bluestore_bdev_label_t::decode(bufferlist::const_iterator& p)
 {
-  p.advance(60u); // see above
+  p += 60u; // see above
   DECODE_START(2, p);
   decode(osd_uuid, p);
   decode(size, p);
@@ -353,17 +363,60 @@ ostream& operator<<(ostream& out, const bluestore_extent_ref_map_t& m)
 }
 
 // bluestore_blob_use_tracker_t
-
-void bluestore_blob_use_tracker_t::allocate()
+bluestore_blob_use_tracker_t::bluestore_blob_use_tracker_t(
+  const bluestore_blob_use_tracker_t& tracker)
+ : au_size{tracker.au_size},
+   num_au(0),
+   alloc_au(0),
+   bytes_per_au{nullptr}
 {
-  ceph_assert(num_au != 0);
-  bytes_per_au = new uint32_t[num_au];
+  if (tracker.num_au > 0) {
+    allocate(tracker.num_au);
+    std::copy(tracker.bytes_per_au, tracker.bytes_per_au + num_au, bytes_per_au);
+  } else {
+    total_bytes = tracker.total_bytes;
+  }
+}
+
+bluestore_blob_use_tracker_t&
+bluestore_blob_use_tracker_t::operator=(const bluestore_blob_use_tracker_t& rhs)
+{
+  if (this == &rhs) {
+    return *this;
+  }
+  clear();
+  au_size = rhs.au_size;
+  if (rhs.num_au > 0) {
+    allocate( rhs.num_au);
+    std::copy(rhs.bytes_per_au, rhs.bytes_per_au + num_au, bytes_per_au);
+  } else {
+    total_bytes = rhs.total_bytes;
+  }
+  return *this;
+}
+
+void bluestore_blob_use_tracker_t::allocate(uint32_t au_count)
+{
+  ceph_assert(au_count != 0);
+  ceph_assert(num_au == 0);
+  ceph_assert(alloc_au == 0);
+  num_au = alloc_au = au_count;
+  bytes_per_au = new uint32_t[alloc_au];
   mempool::get_pool(
     mempool::pool_index_t(mempool::mempool_bluestore_cache_other)).
-      adjust_count(1, sizeof(uint32_t) * num_au);
+      adjust_count(alloc_au, sizeof(uint32_t) * alloc_au);
 
   for (uint32_t i = 0; i < num_au; ++i) {
     bytes_per_au[i] = 0;
+  }
+}
+
+void bluestore_blob_use_tracker_t::release(uint32_t au_count, uint32_t* ptr) {
+  if (au_count) {
+    delete[] ptr;
+    mempool::get_pool(
+      mempool::pool_index_t(mempool::mempool_bluestore_cache_other)).
+        adjust_count(-(int32_t)au_count, -(int32_t)(sizeof(uint32_t) * au_count));
   }
 }
 
@@ -376,8 +429,7 @@ void bluestore_blob_use_tracker_t::init(
   uint32_t _num_au = round_up_to(full_length, _au_size) / _au_size;
   au_size = _au_size;
   if ( _num_au > 1 ) {
-    num_au = _num_au;
-    allocate();
+    allocate(_num_au);
   }
 }
 
@@ -425,6 +477,7 @@ bool bluestore_blob_use_tracker_t::put(
 	if (release_units) {
           if (release_units->empty() || next_offs != pos * au_size) {
   	    release_units->emplace_back(pos * au_size, au_size);
+            next_offs = pos * au_size;
           } else {
             release_units->back().length += au_size;
           }
@@ -649,7 +702,7 @@ void bluestore_blob_t::generate_test_instances(list<bluestore_blob_t*>& ls)
   ls.back()->allocated_test(bluestore_pextent_t(111, 222));
   ls.push_back(new bluestore_blob_t);
   ls.back()->init_csum(Checksummer::CSUM_XXHASH32, 16, 65536);
-  ls.back()->csum_data = buffer::claim_malloc(4, strdup("abcd"));
+  ls.back()->csum_data = ceph::buffer::claim_malloc(4, strdup("abcd"));
   ls.back()->add_unused(0, 3);
   ls.back()->add_unused(8, 8);
   ls.back()->allocated_test(bluestore_pextent_t(0x40100000, 0x10000));
@@ -1005,7 +1058,7 @@ void bluestore_blob_t::split(uint32_t blob_offset, bluestore_blob_t& rb)
 
 // bluestore_shared_blob_t
 MEMPOOL_DEFINE_OBJECT_FACTORY(bluestore_shared_blob_t, bluestore_shared_blob_t,
-	          bluestore_cache_other);
+	          bluestore_shared_blob);
 
 void bluestore_shared_blob_t::dump(Formatter *f) const
 {
@@ -1127,6 +1180,9 @@ void bluestore_compression_header_t::dump(Formatter *f) const
 {
   f->dump_unsigned("type", type);
   f->dump_unsigned("length", length);
+  if (compressor_message) {
+    f->dump_int("compressor_message", *compressor_message);
+  }
 }
 
 void bluestore_compression_header_t::generate_test_instances(
@@ -1135,4 +1191,89 @@ void bluestore_compression_header_t::generate_test_instances(
   o.push_back(new bluestore_compression_header_t);
   o.push_back(new bluestore_compression_header_t(1));
   o.back()->length = 1234;
+}
+
+// adds more salt to build a hash func input
+shared_blob_2hash_tracker_t::hash_input_t
+  shared_blob_2hash_tracker_t::build_hash_input(
+    uint64_t sbid,
+    uint64_t offset) const
+{
+  hash_input_t res = {
+    sbid,
+    offset >> au_void_bits,
+    ((sbid & 0xffffffff) << 32) + ~(uint32_t((offset >> au_void_bits) & 0xffffffff))
+  };
+  return res;
+}
+
+void shared_blob_2hash_tracker_t::inc(
+  uint64_t sbid,
+  uint64_t offset,
+  int n)
+{
+  auto hash_input = build_hash_input(sbid, offset);
+  ref_counter_2hash_tracker_t::inc(
+    (char*)hash_input.data(),
+    get_hash_input_size(),
+    n);
+}
+
+void shared_blob_2hash_tracker_t::inc_range(
+  uint64_t sbid,
+  uint64_t offset,
+  uint32_t len,
+  int n)
+{
+  uint32_t alloc_unit = 1 << au_void_bits;
+  int64_t l = len;
+  while (l > 0) {
+    // don't care about ofset alignment as inc() trims it anyway
+    inc(sbid, offset, n);
+    offset += alloc_unit;
+    l -= alloc_unit;
+  }
+}
+
+bool shared_blob_2hash_tracker_t::test_hash_conflict(
+  uint64_t sbid1,
+  uint64_t offset1,
+  uint64_t sbid2,
+  uint64_t offset2) const
+{
+  auto hash_input1 = build_hash_input(sbid1, offset1);
+  auto hash_input2 = build_hash_input(sbid2, offset2);
+  return ref_counter_2hash_tracker_t::test_hash_conflict(
+    (char*)hash_input1.data(),
+    (char*)hash_input2.data(),
+    get_hash_input_size());
+}
+
+bool shared_blob_2hash_tracker_t::test_all_zero(
+  uint64_t sbid,
+  uint64_t offset) const
+{
+  auto hash_input = build_hash_input(sbid, offset);
+  return
+    ref_counter_2hash_tracker_t::test_all_zero(
+      (char*)hash_input.data(),
+      get_hash_input_size());
+}
+
+bool shared_blob_2hash_tracker_t::test_all_zero_range(
+  uint64_t sbid,
+  uint64_t offset,
+  uint32_t len) const
+{
+  uint32_t alloc_unit = 1 << au_void_bits;
+  int64_t l = len;
+  while (l > 0) {
+    // don't care about ofset alignment as inc() trims it anyway
+    if (!test_all_zero(sbid, offset)) {
+      return false;
+    }
+    offset += alloc_unit;
+    l -= alloc_unit;
+  }
+  return true;
 }

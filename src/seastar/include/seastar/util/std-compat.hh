@@ -21,158 +21,58 @@
 
 #pragma once
 
-#ifdef SEASTAR_USE_STD_OPTIONAL_VARIANT_STRINGVIEW
 #include <optional>
 #include <string_view>
 #include <variant>
+
+#include <filesystem>
+
+#if __has_include(<memory_resource>)
+#include <memory_resource>
 #else
-#include <experimental/optional>
-#include <experimental/string_view>
-#include <boost/variant.hpp>
+#include <experimental/memory_resource>
+namespace std::pmr {
+    using namespace std::experimental::pmr;
+}
 #endif
 
-namespace seastar {
-
-/// \cond internal
-
-namespace compat {
-
-#ifdef SEASTAR_USE_STD_OPTIONAL_VARIANT_STRINGVIEW
-
-template <typename T>
-using optional = std::optional<T>;
-
-using nullopt_t = std::nullopt_t;
-
-inline constexpr auto nullopt = std::nullopt;
-
-template <typename T>
-inline constexpr optional<std::decay_t<T>> make_optional(T&& value) {
-    return std::make_optional(std::forward<T>(value));
-}
-
-template <typename CharT, typename Traits = std::char_traits<CharT>>
-using basic_string_view = std::basic_string_view<CharT, Traits>;
-
-template <typename CharT, typename Traits = std::char_traits<CharT>>
-std::string string_view_to_string(const basic_string_view<CharT, Traits>& v) {
-    return std::string(v);
-}
-
-template <typename... Types>
-using variant = std::variant<Types...>;
-
-template <std::size_t I, typename... Types>
-constexpr std::variant_alternative_t<I, variant<Types...>>& get(variant<Types...>& v) {
-    return std::get<I>(v);
-}
-
-template <std::size_t I, typename... Types>
-constexpr const std::variant_alternative_t<I, variant<Types...>>& get(const variant<Types...>& v) {
-    return std::get<I>(v);
-}
-
-template <std::size_t I, typename... Types>
-constexpr std::variant_alternative_t<I, variant<Types...>>&& get(variant<Types...>&& v) {
-    return std::get<I>(v);
-}
-
-template <std::size_t I, typename... Types>
-constexpr const std::variant_alternative_t<I, variant<Types...>>&& get(const variant<Types...>&& v) {
-    return std::get<I>(v);
-}
-
-template <typename U, typename... Types>
-constexpr U& get(variant<Types...>& v) {
-    return std::get<U>(v);
-}
-
-template <typename U, typename... Types>
-constexpr const U& get(const variant<Types...>& v) {
-    return std::get<U>(v);
-}
-
-template <typename U, typename... Types>
-constexpr U&& get(variant<Types...>&& v) {
-    return std::get<U>(v);
-}
-
-template <typename U, typename... Types>
-constexpr const U&& get(const variant<Types...>&& v) {
-    return std::get<U>(v);
-}
-
-template <typename U, typename... Types>
-constexpr U* get_if(variant<Types...>* v) {
-    return std::get_if<U>(v);
-}
-
-template <typename U, typename... Types>
-constexpr const U* get_if(const variant<Types...>* v) {
-    return std::get_if<U>(v);
-}
-
+#if defined(__cpp_impl_coroutine) || defined(__cpp_coroutines)
+#if __has_include(<coroutine>)
+#define SEASTAR_COROUTINES_ENABLED
 #else
-
-template <typename T>
-using optional = std::experimental::optional<T>;
-
-using nullopt_t = std::experimental::nullopt_t;
-
-constexpr auto nullopt = std::experimental::nullopt;
-
-template <typename T>
-inline constexpr optional<std::decay_t<T>> make_optional(T&& value) {
-    return std::experimental::make_optional(std::forward<T>(value));
-}
-
-template <typename CharT, typename Traits = std::char_traits<CharT>>
-using basic_string_view = std::experimental::basic_string_view<CharT, Traits>;
-
-template <typename CharT, typename Traits = std::char_traits<CharT>>
-std::string string_view_to_string(const basic_string_view<CharT, Traits>& v) {
-    return v.to_string();
-}
-
-template <typename... Types>
-using variant = boost::variant<Types...>;
-
-template<typename U, typename... Types>
-U& get(variant<Types...>& v) {
-    return boost::get<U, Types...>(v);
-}
-
-template<typename U, typename... Types>
-U&& get(variant<Types...>&& v) {
-    return boost::get<U, Types...>(v);
-}
-
-template<typename U, typename... Types>
-const U& get(const variant<Types...>& v) {
-    return boost::get<U, Types...>(v);
-}
-
-template<typename U, typename... Types>
-const U&& get(const variant<Types...>&& v) {
-    return boost::get<U, Types...>(v);
-}
-
-template<typename U, typename... Types>
-U* get_if(variant<Types...>* v) {
-    return boost::get<U, Types...>(v);
-}
-
-template<typename U, typename... Types>
-const U* get_if(const variant<Types...>* v) {
-    return boost::get<U, Types...>(v);
-}
-
+#error Please use a C++ compiler with C++20 coroutines support
+#endif
 #endif
 
-using string_view = basic_string_view<char>;
+// Defining SEASTAR_ASAN_ENABLED in here is a bit of a hack, but
+// convenient since it is build system independent and in practice
+// everything includes this header.
 
-} // namespace compat
+#ifndef __has_feature
+#define __has_feature(x) 0
+#endif
 
-/// \endcond
+// clang uses __has_feature, gcc defines __SANITIZE_ADDRESS__
+#if __has_feature(address_sanitizer) || defined(__SANITIZE_ADDRESS__)
+#define SEASTAR_ASAN_ENABLED
+#endif
 
-} // namespace seastar
+#if __has_include(<source_location>)
+#include <source_location>
+#endif
+
+#if defined(__cpp_lib_source_location) && !defined(SEASTAR_BROKEN_SOURCE_LOCATION)
+namespace seastar::compat {
+using source_location = std::source_location;
+}
+#elif __has_include(<experimental/source_location>) && !defined(SEASTAR_BROKEN_SOURCE_LOCATION)
+#include <experimental/source_location>
+namespace seastar::compat {
+using source_location = std::experimental::source_location;
+}
+#else
+#include <seastar/util/source_location-compat.hh>
+namespace seastar::compat {
+using source_location = seastar::internal::source_location;
+}
+#endif

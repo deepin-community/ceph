@@ -22,6 +22,9 @@
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rbd
 
+using std::cerr;
+using std::string;
+
 namespace rbd {
 namespace action {
 namespace import {
@@ -324,7 +327,7 @@ static int skip_tag(int fd, uint64_t length)
   if (fd == STDIN_FILENO) {
     // read the appending data out to skip this tag.
     char buf[4096];
-    uint64_t len = min<uint64_t>(length, sizeof(buf));
+    uint64_t len = std::min<uint64_t>(length, sizeof(buf));
     while (len > 0) {
       r = safe_read_exact(fd, buf, len);
       if (r < 0) {
@@ -332,7 +335,7 @@ static int skip_tag(int fd, uint64_t length)
         return r;
       }
       length -= len;
-      len = min<uint64_t>(length, sizeof(buf));
+      len = std::min<uint64_t>(length, sizeof(buf));
     }
   } else {
     // lseek to skip this tag
@@ -449,7 +452,7 @@ int do_import_diff(librados::Rados &rados, librbd::Image &image,
   if (strcmp(path, "-") == 0) {
     fd = STDIN_FILENO;
   } else {
-    fd = open(path, O_RDONLY);
+    fd = open(path, O_RDONLY|O_BINARY);
     if (fd < 0) {
       r = -errno;
       std::cerr << "rbd: error opening " << path << std::endl;
@@ -739,7 +742,7 @@ static int do_import_v1(int fd, librbd::Image &image, uint64_t size,
       g_conf().get_val<uint64_t>("rbd_concurrent_management_ops"), false));
   }
 
-  reqlen = min<uint64_t>(reqlen, size);
+  reqlen = std::min<uint64_t>(reqlen, size);
   // loop body handles 0 return, as we may have a block to flush
   while ((readlen = ::read(fd, p + blklen, reqlen)) >= 0) {
     if (throttle->pending_error()) {
@@ -843,7 +846,7 @@ static int do_import(librados::Rados &rados, librbd::RBD &rbd,
     fd = STDIN_FILENO;
     size = 1ULL << order;
   } else {
-    if ((fd = open(path, O_RDONLY)) < 0) {
+    if ((fd = open(path, O_RDONLY|O_BINARY)) < 0) {
       r = -errno;
       std::cerr << "rbd: error opening " << path << std::endl;
       goto done2;
@@ -941,8 +944,8 @@ void get_arguments(po::options_description *positional,
 
   // TODO legacy rbd allowed import to accept both 'image'/'dest' and
   //      'pool'/'dest-pool'
-  at::add_pool_option(options, at::ARGUMENT_MODIFIER_NONE, " (deprecated)");
-  at::add_image_option(options, at::ARGUMENT_MODIFIER_NONE, " (deprecated)");
+  at::add_pool_option(options, at::ARGUMENT_MODIFIER_NONE, " deprecated[:dest-pool]");
+  at::add_image_option(options, at::ARGUMENT_MODIFIER_NONE, " deprecated[:dest]");
 }
 
 int execute(const po::variables_map &vm,
@@ -958,17 +961,13 @@ int execute(const po::variables_map &vm,
   std::string deprecated_pool_name;
   if (vm.count(at::POOL_NAME)) {
     deprecated_pool_name = vm[at::POOL_NAME].as<std::string>();
-    std::cerr << "rbd: --pool is deprecated for import, use --dest-pool"
-              << std::endl;
   }
 
   std::string deprecated_image_name;
   if (vm.count(at::IMAGE_NAME)) {
     deprecated_image_name = vm[at::IMAGE_NAME].as<std::string>();
-    std::cerr << "rbd: --image is deprecated for import, use --dest"
-              << std::endl;
   } else {
-    deprecated_image_name = path.substr(path.find_last_of("/") + 1);
+    deprecated_image_name = path.substr(path.find_last_of("/\\") + 1);
   }
 
   std::string deprecated_snap_name;

@@ -1,3 +1,4 @@
+
 # An Overview of SPDK Applications {#app_overview}
 
 SPDK is primarily a development kit that delivers libraries and header files for
@@ -37,14 +38,14 @@ Param    | Long Param             | Type     | Default                | Descript
 -p       | --master-core          | integer  | first core in CPU mask | master (primary) core for DPDK
 -r       | --rpc-socket           | string   | /var/tmp/spdk.sock     | RPC listen address
 -s       | --mem-size             | integer  | all hugepage memory    | @ref cmd_arg_memory_size
-         | --silence-noticelog    | flag     |                        | disable notice level logging to `stderr`
+|        | --silence-noticelog    | flag     |                        | disable notice level logging to `stderr`
 -u       | --no-pci               | flag     |                        | @ref cmd_arg_disable_pci_access.
-         | --wait-for-rpc         | flag     |                        | @ref cmd_arg_deferred_initialization
+|        | --wait-for-rpc         | flag     |                        | @ref cmd_arg_deferred_initialization
 -B       | --pci-blacklist        | B:D:F    |                        | @ref cmd_arg_pci_blacklist_whitelist.
 -W       | --pci-whitelist        | B:D:F    |                        | @ref cmd_arg_pci_blacklist_whitelist.
 -R       | --huge-unlink          | flag     |                        | @ref cmd_arg_huge_unlink
--L       | --traceflag            | string   |                        | @ref cmd_arg_debug_log_flags
-
+|        | --huge-dir             | string   | the first discovered   | allocate hugepages from a specific mount
+-L       | --logflag              | string   |                        | @ref cmd_arg_debug_log_flags
 
 ### Configuration file {#cmd_arg_config_file}
 
@@ -74,17 +75,17 @@ SPDK applications progress through a set of states beginning with `STARTUP` and
 ending with `RUNTIME`.
 
 If the `--wait-for-rpc` parameter is provided SPDK will pause just before starting
-subsystem initialization. This state is called `STARTUP`. The JSON RPC server is
-ready but only a small subsystem of commands are available to set up initialization
+framework initialization. This state is called `STARTUP`. The JSON RPC server is
+ready but only a small subset of commands are available to set up initialization
 parameters. Those parameters can't be changed after the SPDK application enters
 `RUNTIME` state. When the client finishes configuring the SPDK subsystems it
-needs to issue the @ref rpc_start_subsystem_init RPC command to begin the
-initialization process. After `rpc_start_subsystem_init` returns `true` SPDK
+needs to issue the @ref rpc_framework_start_init RPC command to begin the
+initialization process. After `rpc_framework_start_init` returns `true` SPDK
 will enter the `RUNTIME` state and the list of available commands becomes much
 larger.
 
 To see which RPC methods are available in the current state, issue the
-`get_rpc_methods` with the parameter `current` set to `true`.
+`rpc_get_methods` with the parameter `current` set to `true`.
 
 For more details see @ref jsonrpc documentation.
 
@@ -112,6 +113,11 @@ reserve memory from all available hugetlbfs mounts, starting with the one with
 the highest page size. This option accepts a number of bytes with a possible
 binary prefix, e.g. 1024, 1024M, 1G. The default unit is megabyte.
 
+Starting with DPDK 18.05.1, it's possible to reserve hugepages at runtime, meaning
+that SPDK application can be started with 0 pre-reserved memory. Unlike hugepages
+pre-reserved at the application startup, the hugepages reserved at runtime will be
+released to the system as soon as they're no longer used.
+
 ### Disable PCI access {#cmd_arg_disable_pci_access}
 
 If SPDK is run with PCI access disabled it won't detect any PCI devices. This
@@ -134,7 +140,7 @@ process as soon as they're created, but is not compatible with `--shm-id`.
 ### Debug log {#cmd_arg_debug_log_flags}
 
 Enable a specific debug log type. This option can be used more than once. A list of
-all available types is provided in the `--help` output, with `--traceflag all`
+all available types is provided in the `--help` output, with `--logflag all`
 enabling all of them. Debug logs are only available in debug builds of SPDK.
 
 ## CPU mask {#cpu_mask}

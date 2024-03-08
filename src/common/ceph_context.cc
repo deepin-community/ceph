@@ -22,16 +22,22 @@
 
 #include <boost/algorithm/string.hpp>
 
+#include "include/common_fwd.h"
 #include "include/mempool.h"
+#include "include/stringify.h"
 #include "common/admin_socket.h"
 #include "common/code_environment.h"
 #include "common/ceph_mutex.h"
 #include "common/debug.h"
 #include "common/config.h"
 #include "common/ceph_crypto.h"
+#include "common/hostname.h"
 #include "common/HeartbeatMap.h"
 #include "common/errno.h"
 #include "common/Graylog.h"
+#ifdef CEPH_DEBUG_MUTEX
+#include "common/lockdep.h"
+#endif
 
 #include "log/Log.h"
 
@@ -42,12 +48,9 @@
 #include "common/PluginRegistry.h"
 #include "common/valgrind.h"
 #include "include/spinlock.h"
-#ifndef WITH_SEASTAR
+#if !(defined(WITH_SEASTAR) && !defined(WITH_ALIEN))
 #include "mon/MonMap.h"
 #endif
-
-using ceph::bufferlist;
-using ceph::HeartbeatMap;
 
 // for CINIT_FLAGS
 #include "common/common_init.h"
@@ -55,10 +58,17 @@ using ceph::HeartbeatMap;
 #include <iostream>
 #include <pthread.h>
 
-#ifdef WITH_SEASTAR
+using namespace std::literals;
+
+using ceph::bufferlist;
+using ceph::HeartbeatMap;
+
+
+#if defined(WITH_SEASTAR) && !defined(WITH_ALIEN)
+namespace crimson::common {
 CephContext::CephContext()
-  : _conf{ceph::common::local_conf()},
-    _perf_counters_collection{ceph::common::local_perf_coll()},
+  : _conf{crimson::common::local_conf()},
+    _perf_counters_collection{crimson::common::local_perf_coll()},
     _crypto_random{std::make_unique<CryptoRandom>()}
 {}
 
@@ -94,9 +104,11 @@ PerfCountersCollectionImpl* CephContext::get_perfcounters_collection()
   return _perf_counters_collection.get_perf_collection();
 }
 
+}
 #else  // WITH_SEASTAR
 namespace {
 
+#ifdef CEPH_DEBUG_MUTEX
 class LockdepObs : public md_config_obs_t {
 public:
   explicit LockdepObs(CephContext *cct)
@@ -129,6 +141,7 @@ private:
   bool m_registered;
   ceph::mutex lock;
 };
+#endif // CEPH_DEBUG_MUTEX
 
 class MempoolObs : public md_config_obs_t,
 		  public AdminSocketHook {
@@ -141,14 +154,13 @@ public:
     cct->_conf.add_observer(this);
     int r = cct->get_admin_socket()->register_command(
       "dump_mempools",
-      "dump_mempools",
       this,
       "get mempool stats");
     ceph_assert(r == 0);
   }
   ~MempoolObs() override {
     cct->_conf.remove_observer(this);
-    cct->get_admin_socket()->unregister_command("dump_mempools");
+    cct->get_admin_socket()->unregister_commands(this);
   }
 
   // md_config_obs_t
@@ -169,22 +181,24 @@ public:
   }
 
   // AdminSocketHook
-  bool call(std::string_view command, const cmdmap_t& cmdmap,
-	    std::string_view format, bufferlist& out) override {
+  int call(std::string_view command, const cmdmap_t& cmdmap,
+	   const bufferlist& inbl,
+	   ceph::Formatter *f,
+	   std::ostream& errss,
+	   bufferlist& out) override {
     if (command == "dump_mempools") {
-      std::unique_ptr<Formatter> f(Formatter::create(format));
       f->open_object_section("mempools");
-      mempool::dump(f.get());
+      mempool::dump(f);
       f->close_section();
-      f->flush(out);
-      return true;
+      return 0;
     }
-    return false;
+    return -ENOSYS;
   }
 };
 
 } // anonymous namespace
 
+namespace ceph::common {
 class CephContextServiceThread : public Thread
 {
 public:
@@ -246,7 +260,7 @@ private:
   bool _exit_thread;
   CephContext *_cct;
 };
-
+}
 
 /**
  * observe logging config changes
@@ -279,6 +293,8 @@ public:
       "err_to_graylog",
       "log_graylog_host",
       "log_graylog_port",
+      "log_to_journald",
+      "err_to_journald",
       "log_coarse_timestamps",
       "fsid",
       "host",
@@ -314,7 +330,7 @@ public:
     }
 
     if (changed.count("log_stderr_prefix")) {
-      log->set_log_stderr_prefix(conf.get_val<string>("log_stderr_prefix"));
+      log->set_log_stderr_prefix(conf.get_val<std::string>("log_stderr_prefix"));
     }
 
     if (changed.count("log_max_new")) {
@@ -332,7 +348,7 @@ public:
       log->set_graylog_level(l, l);
 
       if (conf->log_to_graylog || conf->err_to_graylog) {
-	log->start_graylog();
+	log->start_graylog(conf->host, conf.get_val<uuid_d>("fsid"));
       } else if (! (conf->log_to_graylog && conf->err_to_graylog)) {
 	log->stop_graylog();
       }
@@ -340,6 +356,18 @@ public:
 
     if (log->graylog() && (changed.count("log_graylog_host") || changed.count("log_graylog_port"))) {
       log->graylog()->set_destination(conf->log_graylog_host, conf->log_graylog_port);
+    }
+
+    // journald
+    if (changed.count("log_to_journald") || changed.count("err_to_journald")) {
+      int l = conf.get_val<bool>("log_to_journald") ? 99 : (conf.get_val<bool>("err_to_journald") ? -1 : -2);
+      log->set_journald_level(l, l);
+
+      if (l > -2) {
+        log->start_journald_logger();
+      } else {
+        log->stop_journald_logger();
+      }
     }
 
     if (changed.find("log_coarse_timestamps") != changed.end()) {
@@ -358,6 +386,7 @@ public:
 };
 
 
+namespace ceph::common {
 // cct config watcher
 class CephContextObs : public md_config_obs_t {
   CephContext *cct;
@@ -369,6 +398,7 @@ public:
     static const char *KEYS[] = {
       "enable_experimental_unrecoverable_data_corrupting_features",
       "crush_location",
+      "container_image",  // just so we don't hear complaints about it!
       NULL
     };
     return KEYS;
@@ -379,9 +409,14 @@ public:
     if (changed.count(
 	  "enable_experimental_unrecoverable_data_corrupting_features")) {
       std::lock_guard lg(cct->_feature_lock);
-      get_str_set(
-	conf->enable_experimental_unrecoverable_data_corrupting_features,
-	cct->_experimental_features);
+
+      cct->_experimental_features.clear();
+      auto add_experimental_feature = [this] (auto feature) {
+        cct->_experimental_features.emplace(std::string{feature});
+      };
+      for_each_substr(conf->enable_experimental_unrecoverable_data_corrupting_features,
+          ";,= \t", add_experimental_feature);
+
       if (getenv("CEPH_DEV") == NULL) {
         if (!cct->_experimental_features.empty()) {
           if (cct->_experimental_features.count("*")) {
@@ -399,10 +434,31 @@ public:
     }
   }
 };
+// perfcounter hooks
+
+class CephContextHook : public AdminSocketHook {
+  CephContext *m_cct;
+
+public:
+  explicit CephContextHook(CephContext *cct) : m_cct(cct) {}
+
+  int call(std::string_view command, const cmdmap_t& cmdmap,
+	   const bufferlist& inbl,
+	   Formatter *f,
+	   std::ostream& errss,
+	   bufferlist& out) override {
+    try {
+      return m_cct->do_command(command, cmdmap, f, errss, &out);
+    } catch (const bad_cmd_get& e) {
+      return -EINVAL;
+    }
+  }
+};
+
 
 bool CephContext::check_experimental_feature_enabled(const std::string& feat)
 {
-  stringstream message;
+  std::stringstream message;
   bool enabled = check_experimental_feature_enabled(feat, &message);
   lderr(this) << message.str() << dendl;
   return enabled;
@@ -435,58 +491,70 @@ bool CephContext::check_experimental_feature_enabled(const std::string& feat,
   return enabled;
 }
 
-// perfcounter hooks
-
-class CephContextHook : public AdminSocketHook {
-  CephContext *m_cct;
-
-public:
-  explicit CephContextHook(CephContext *cct) : m_cct(cct) {}
-
-  bool call(std::string_view command, const cmdmap_t& cmdmap,
-	    std::string_view format, bufferlist& out) override {
-    try {
-      m_cct->do_command(command, cmdmap, format, &out);
-    } catch (const bad_cmd_get& e) {
-      return false;
-    }
-    return true;
-  }
-};
-
-void CephContext::do_command(std::string_view command, const cmdmap_t& cmdmap,
-			     std::string_view format, bufferlist *out)
+int CephContext::do_command(std::string_view command, const cmdmap_t& cmdmap,
+			    Formatter *f,
+			    std::ostream& ss,
+			    bufferlist *out)
 {
-  Formatter *f = Formatter::create(format, "json-pretty", "json-pretty");
-  stringstream ss;
-  for (auto it = cmdmap.begin(); it != cmdmap.end(); ++it) {
-    if (it->first != "prefix") {
-      ss << it->first  << ":" << cmd_vartype_stringify(it->second) << " ";
+  try {
+    return _do_command(command, cmdmap, f, ss, out);
+  } catch (const bad_cmd_get& e) {
+    ss << e.what();
+    return -EINVAL;
+  }
+}
+
+#pragma GCC push_options
+#pragma GCC optimize ("O0")
+static void leak_some_memory() {
+  volatile char *foo = new char[1234];
+  (void)foo;
+}
+#pragma GCC pop_options
+
+int CephContext::_do_command(
+  std::string_view command, const cmdmap_t& cmdmap,
+  Formatter *f,
+  std::ostream& ss,
+  bufferlist *out)
+{
+  int r = 0;
+  lgeneric_dout(this, 1) << "do_command '" << command << "' '" << cmdmap << "'"
+			 << dendl;
+  ceph_assert_always(!(command == "assert" && _conf->debug_asok_assert_abort));
+  if (command == "abort") {
+    if (_conf->debug_asok_assert_abort) {
+      ceph_abort();
+    } else {
+      return -EPERM;
     }
   }
-  lgeneric_dout(this, 1) << "do_command '" << command << "' '"
-			 << ss.str() << dendl;
-  ceph_assert_always(!(command == "assert" && _conf->debug_asok_assert_abort));
-  if (command == "abort" && _conf->debug_asok_assert_abort) {
-   ceph_abort();
+  if (command == "leak_some_memory") {
+    leak_some_memory();
   }
-  if (command == "perfcounters_dump" || command == "1" ||
+  else if (command == "perfcounters_dump" || command == "1" ||
       command == "perf dump") {
     std::string logger;
     std::string counter;
-    cmd_getval(this, cmdmap, "logger", logger);
-    cmd_getval(this, cmdmap, "counter", counter);
-    _perf_counters_collection->dump_formatted(f, false, logger, counter);
+    cmd_getval(cmdmap, "logger", logger);
+    cmd_getval(cmdmap, "counter", counter);
+    _perf_counters_collection->dump_formatted(f, false, false, logger, counter);
   }
   else if (command == "perfcounters_schema" || command == "2" ||
     command == "perf schema") {
-    _perf_counters_collection->dump_formatted(f, true);
+    _perf_counters_collection->dump_formatted(f, true, false);
+  }
+  else if (command == "counter dump") {
+    _perf_counters_collection->dump_formatted(f, false, true);
+  }
+  else if (command == "counter schema") {
+    _perf_counters_collection->dump_formatted(f, true, true);
   }
   else if (command == "perf histogram dump") {
     std::string logger;
     std::string counter;
-    cmd_getval(this, cmdmap, "logger", logger);
-    cmd_getval(this, cmdmap, "counter", counter);
+    cmd_getval(cmdmap, "logger", logger);
+    cmd_getval(cmdmap, "counter", counter);
     _perf_counters_collection->dump_formatted_histograms(f, false, logger,
                                                          counter);
   }
@@ -497,7 +565,7 @@ void CephContext::do_command(std::string_view command, const cmdmap_t& cmdmap,
     std::string var;
     std::string section(command);
     f->open_object_section(section.c_str());
-    if (!cmd_getval(this, cmdmap, "var", var)) {
+    if (!cmd_getval(cmdmap, "var", var)) {
       f->dump_string("error", "syntax error: 'perf reset <var>'");
     } else {
      if(!_perf_counters_collection->reset(var))
@@ -516,17 +584,16 @@ void CephContext::do_command(std::string_view command, const cmdmap_t& cmdmap,
     }
     else if (command == "config unset") {
       std::string var;
-      if (!(cmd_getval(this, cmdmap, "var", var))) {
-        f->dump_string("error", "syntax error: 'config unset <var>'");
+      if (!(cmd_getval(cmdmap, "var", var))) {
+	r = -EINVAL;
       } else {
-        int r = _conf.rm_val(var.c_str());
+        r = _conf.rm_val(var.c_str());
         if (r < 0 && r != -ENOENT) {
-          f->dump_stream("error") << "error unsetting '" << var << "': "
-				  << cpp_strerror(r);
+          ss << "error unsetting '" << var << "': "
+	     << cpp_strerror(r);
         } else {
-          ostringstream ss;
           _conf.apply_changes(&ss);
-          f->dump_string("success", ss.str());
+	  r = 0;
         }
       }
 
@@ -535,47 +602,47 @@ void CephContext::do_command(std::string_view command, const cmdmap_t& cmdmap,
       std::string var;
       std::vector<std::string> val;
 
-      if (!(cmd_getval(this, cmdmap, "var", var)) ||
-          !(cmd_getval(this, cmdmap, "val", val))) {
-        f->dump_string("error", "syntax error: 'config set <var> <value>'");
+      if (!(cmd_getval(cmdmap, "var", var)) ||
+          !(cmd_getval(cmdmap, "val", val))) {
+	r = -EINVAL;
       } else {
 	// val may be multiple words
-	string valstr = str_join(val, " ");
-        int r = _conf.set_val(var.c_str(), valstr.c_str());
+	auto valstr = str_join(val, " ");
+        r = _conf.set_val(var.c_str(), valstr.c_str());
         if (r < 0) {
-          f->dump_stream("error") << "error setting '" << var << "' to '" << valstr << "': " << cpp_strerror(r);
+          ss << "error setting '" << var << "' to '" << valstr << "': "
+	     << cpp_strerror(r);
         } else {
-          ostringstream ss;
+	  std::stringstream ss;
           _conf.apply_changes(&ss);
-          f->dump_string("success", ss.str());
+	  f->dump_string("success", ss.str());
         }
       }
     } else if (command == "config get") {
       std::string var;
-      if (!cmd_getval(this, cmdmap, "var", var)) {
-	f->dump_string("error", "syntax error: 'config get <var>'");
+      if (!cmd_getval(cmdmap, "var", var)) {
+	r = -EINVAL;
       } else {
 	char buf[4096];
 	// FIPS zeroization audit 20191115: this memset is not security related.
 	memset(buf, 0, sizeof(buf));
 	char *tmp = buf;
-	int r = _conf.get_val(var.c_str(), &tmp, sizeof(buf));
+	r = _conf.get_val(var.c_str(), &tmp, sizeof(buf));
 	if (r < 0) {
-	    f->dump_stream("error") << "error getting '" << var << "': " << cpp_strerror(r);
+	  ss << "error getting '" << var << "': " << cpp_strerror(r);
 	} else {
-	    f->dump_string(var.c_str(), buf);
+	  f->dump_string(var.c_str(), buf);
 	}
       }
     } else if (command == "config help") {
       std::string var;
-      if (cmd_getval(this, cmdmap, "var", var)) {
+      if (cmd_getval(cmdmap, "var", var)) {
         // Output a single one
         std::string key = ConfFile::normalize_key_name(var);
 	auto schema = _conf.get_schema(key);
         if (!schema) {
-          std::ostringstream msg;
-          msg << "Setting not found: '" << key << "'";
-          f->dump_string("error", msg.str());
+          ss << "Setting not found: '" << key << "'";
+	  r = -ENOENT;
         } else {
           f->dump_object("option", *schema);
         }
@@ -596,7 +663,16 @@ void CephContext::do_command(std::string_view command, const cmdmap_t& cmdmap,
       f->open_object_section("diff");
       _conf.diff(f, setting);
       f->close_section(); // unknown
-    } else if (command == "log flush") {
+    }
+    else if (command == "injectargs") {
+      std::vector<std::string> argsvec;
+      cmd_getval(cmdmap, "injected_args", argsvec);
+      if (!argsvec.empty()) {
+	auto args = joinify<std::string>(argsvec.begin(), argsvec.end(), " ");
+	r = _conf.injectargs(args, &ss);
+      }
+    }
+    else if (command == "log flush") {
       _log->flush();
     }
     else if (command == "log dump") {
@@ -610,20 +686,24 @@ void CephContext::do_command(std::string_view command, const cmdmap_t& cmdmap,
     }
     f->close_section();
   }
-  f->flush(*out);
-  delete f;
-  lgeneric_dout(this, 1) << "do_command '" << command << "' '" << ss.str()
-		         << "result is " << out->length() << " bytes" << dendl;
+  lgeneric_dout(this, 1) << "do_command '" << command << "' '" << cmdmap
+		         << "' result is " << out->length() << " bytes" << dendl;
+  return r;
 }
 
 CephContext::CephContext(uint32_t module_type_,
                          enum code_environment_t code_env,
                          int init_flags_)
+  : CephContext(module_type_, create_options{code_env, init_flags_, nullptr})
+{}
+
+CephContext::CephContext(uint32_t module_type_,
+			 const create_options& options)
   : nref(1),
-    _conf{code_env == CODE_ENVIRONMENT_DAEMON},
+    _conf{options.code_env == CODE_ENVIRONMENT_DAEMON},
     _log(NULL),
     _module_type(module_type_),
-    _init_flags(init_flags_),
+    _init_flags(options.init_flags),
     _set_uid(0),
     _set_gid(0),
     _set_uid_string(),
@@ -638,20 +718,26 @@ CephContext::CephContext(uint32_t module_type_,
     _crypto_none(NULL),
     _crypto_aes(NULL),
     _plugin_registry(NULL),
+#ifdef CEPH_DEBUG_MUTEX
     _lockdep_obs(NULL),
+#endif
     crush_location(this)
 {
-  _log = new ceph::logging::Log(&_conf->subsys);
+  if (options.create_log) {
+    _log = options.create_log(&_conf->subsys);
+  } else {
+    _log = new ceph::logging::Log(&_conf->subsys);
+  }
 
   _log_obs = new LogObs(_log);
   _conf.add_observer(_log_obs);
 
   _cct_obs = new CephContextObs(this);
   _conf.add_observer(_cct_obs);
-
+#ifdef CEPH_DEBUG_MUTEX
   _lockdep_obs = new LockdepObs(this);
   _conf.add_observer(_lockdep_obs);
-
+#endif
   _perf_counters_collection = new PerfCountersCollection(this);
  
   _admin_socket = new AdminSocket(this);
@@ -660,31 +746,35 @@ CephContext::CephContext(uint32_t module_type_,
   _plugin_registry = new PluginRegistry(this);
 
   _admin_hook = new CephContextHook(this);
-  _admin_socket->register_command("assert", "assert", _admin_hook, "");
-  _admin_socket->register_command("abort", "abort", _admin_hook, "");
-  _admin_socket->register_command("perfcounters_dump", "perfcounters_dump", _admin_hook, "");
-  _admin_socket->register_command("1", "1", _admin_hook, "");
-  _admin_socket->register_command("perf dump", "perf dump name=logger,type=CephString,req=false name=counter,type=CephString,req=false", _admin_hook, "dump perfcounters value");
-  _admin_socket->register_command("perfcounters_schema", "perfcounters_schema", _admin_hook, "");
-  _admin_socket->register_command("perf histogram dump", "perf histogram dump name=logger,type=CephString,req=false name=counter,type=CephString,req=false", _admin_hook, "dump perf histogram values");
-  _admin_socket->register_command("2", "2", _admin_hook, "");
-  _admin_socket->register_command("perf schema", "perf schema", _admin_hook, "dump perfcounters schema");
-  _admin_socket->register_command("perf histogram schema", "perf histogram schema", _admin_hook, "dump perf histogram schema");
-  _admin_socket->register_command("perf reset", "perf reset name=var,type=CephString", _admin_hook, "perf reset <name>: perf reset all or one perfcounter name");
-  _admin_socket->register_command("config show", "config show", _admin_hook, "dump current config settings");
-  _admin_socket->register_command("config help", "config help name=var,type=CephString,req=false", _admin_hook, "get config setting schema and descriptions");
-  _admin_socket->register_command("config set", "config set name=var,type=CephString name=val,type=CephString,n=N",  _admin_hook, "config set <field> <val> [<val> ...]: set a config variable");
-  _admin_socket->register_command("config unset", "config unset name=var,type=CephString",  _admin_hook, "config unset <field>: unset a config variable");
-  _admin_socket->register_command("config get", "config get name=var,type=CephString", _admin_hook, "config get <field>: get the config value");
-  _admin_socket->register_command("config diff",
+  _admin_socket->register_command("assert", _admin_hook, "");
+  _admin_socket->register_command("abort", _admin_hook, "");
+  _admin_socket->register_command("leak_some_memory", _admin_hook, "");
+  _admin_socket->register_command("perfcounters_dump", _admin_hook, "");
+  _admin_socket->register_command("1", _admin_hook, "");
+  _admin_socket->register_command("perf dump name=logger,type=CephString,req=false name=counter,type=CephString,req=false", _admin_hook, "dump non-labeled counters and their values");
+  _admin_socket->register_command("perfcounters_schema", _admin_hook, "");
+  _admin_socket->register_command("perf histogram dump name=logger,type=CephString,req=false name=counter,type=CephString,req=false", _admin_hook, "dump perf histogram values");
+  _admin_socket->register_command("2", _admin_hook, "");
+  _admin_socket->register_command("perf schema", _admin_hook, "dump non-labeled counters schemas");
+  _admin_socket->register_command("counter dump", _admin_hook, "dump all labeled and non-labeled counters and their values");
+  _admin_socket->register_command("counter schema", _admin_hook, "dump all labeled and non-labeled counters schemas");
+  _admin_socket->register_command("perf histogram schema", _admin_hook, "dump perf histogram schema");
+  _admin_socket->register_command("perf reset name=var,type=CephString", _admin_hook, "perf reset <name>: perf reset all or one perfcounter name");
+  _admin_socket->register_command("config show", _admin_hook, "dump current config settings");
+  _admin_socket->register_command("config help name=var,type=CephString,req=false", _admin_hook, "get config setting schema and descriptions");
+  _admin_socket->register_command("config set name=var,type=CephString name=val,type=CephString,n=N",  _admin_hook, "config set <field> <val> [<val> ...]: set a config variable");
+  _admin_socket->register_command("config unset name=var,type=CephString",  _admin_hook, "config unset <field>: unset a config variable");
+  _admin_socket->register_command("config get name=var,type=CephString", _admin_hook, "config get <field>: get the config value");
+  _admin_socket->register_command(
       "config diff", _admin_hook,
       "dump diff of current config and default config");
-  _admin_socket->register_command("config diff get",
+  _admin_socket->register_command(
       "config diff get name=var,type=CephString", _admin_hook,
       "dump diff get <field>: dump diff of current and default config setting <field>");
-  _admin_socket->register_command("log flush", "log flush", _admin_hook, "flush log entries to log file");
-  _admin_socket->register_command("log dump", "log dump", _admin_hook, "dump recent log entries to log file");
-  _admin_socket->register_command("log reopen", "log reopen", _admin_hook, "reopen log file");
+  _admin_socket->register_command("injectargs name=injected_args,type=CephString,n=N", _admin_hook, "inject configuration arguments into running daemon"),
+  _admin_socket->register_command("log flush", _admin_hook, "flush log entries to log file");
+  _admin_socket->register_command("log dump", _admin_hook, "dump recent log entries to log file");
+  _admin_socket->register_command("log reopen", _admin_hook, "reopen log file");
 
   _crypto_none = CryptoHandler::create(CEPH_CRYPTO_NONE);
   _crypto_aes = CryptoHandler::create(CEPH_CRYPTO_AES);
@@ -725,11 +815,11 @@ CephContext::~CephContext()
   _conf.remove_observer(_cct_obs);
   delete _cct_obs;
   _cct_obs = NULL;
-
+#ifdef CEPH_DEBUG_MUTEX
   _conf.remove_observer(_lockdep_obs);
   delete _lockdep_obs;
   _lockdep_obs = NULL;
-
+#endif
   _log->stop();
   delete _log;
   _log = NULL;
@@ -747,6 +837,8 @@ void CephContext::put() {
   if (--nref == 0) {
     ANNOTATE_HAPPENS_AFTER(&nref);
     ANNOTATE_HAPPENS_BEFORE_FORGET_ALL(&nref);
+    if (g_ceph_context == this)
+      g_ceph_context = nullptr;
     delete this;
   } else {
     ANNOTATE_HAPPENS_BEFORE(&nref);
@@ -756,14 +848,14 @@ void CephContext::put() {
 void CephContext::init_crypto()
 {
   if (_crypto_inited++ == 0) {
-    ceph::crypto::init(this);
+    TOPNSPC::crypto::init();
   }
 }
 
 void CephContext::shutdown_crypto()
 {
   if (--_crypto_inited == 0) {
-    ceph::crypto::shutdown(g_code_env == CODE_ENVIRONMENT_LIBRARY);
+    TOPNSPC::crypto::shutdown(g_code_env == CODE_ENVIRONMENT_LIBRARY);
   }
 }
 
@@ -856,13 +948,13 @@ void CephContext::_enable_perf_counter()
   _mempool_perf_names.reserve(mempool::num_pools * 2);
   _mempool_perf_descriptions.reserve(mempool::num_pools * 2);
   for (unsigned i = 0; i < mempool::num_pools; ++i) {
-    string n = mempool::get_pool_name(mempool::pool_index_t(i));
-    _mempool_perf_names.push_back(n + "_bytes");
+    std::string n = mempool::get_pool_name(mempool::pool_index_t(i));
+    _mempool_perf_names.push_back(n + "_bytes"s);
     _mempool_perf_descriptions.push_back(
-      string("mempool ") + n + " total bytes");
-    _mempool_perf_names.push_back(n + "_items");
+      "mempool "s + n + " total bytes");
+    _mempool_perf_names.push_back(n + "_items"s);
     _mempool_perf_descriptions.push_back(
-      string("mempool ") + n + " total items");
+      "mempool "s + n + " total items"s);
   }
 
   PerfCountersBuilder plb2(this, "mempool", l_mempool_first,
@@ -962,5 +1054,6 @@ void CephContext::set_mon_addrs(const MonMap& mm) {
   }
 
   set_mon_addrs(mon_addrs);
+}
 }
 #endif	// WITH_SEASTAR

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2009-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2009-2019 Solarflare Communications Inc.
  */
 
 #include "efx.h"
@@ -37,7 +37,7 @@ efx_port_init(
 	epp->ep_emop->emo_reconfigure(enp);
 
 	/* Pick up current phy capababilities */
-	efx_port_poll(enp, NULL);
+	(void) efx_port_poll(enp, NULL);
 
 	/*
 	 * Turn on the PHY if available, otherwise reset it, and

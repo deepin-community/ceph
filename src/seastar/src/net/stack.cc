@@ -20,32 +20,49 @@
  */
 
 #include <seastar/net/stack.hh>
-#include <seastar/core/reactor.hh>
+#include <seastar/net/inet_address.hh>
 
 namespace seastar {
 
-net::udp_channel::udp_channel()
+static_assert(std::is_nothrow_default_constructible_v<connected_socket>);
+static_assert(std::is_nothrow_move_constructible_v<connected_socket>);
+
+static_assert(std::is_nothrow_default_constructible_v<socket>);
+static_assert(std::is_nothrow_move_constructible_v<socket>);
+
+static_assert(std::is_nothrow_default_constructible_v<server_socket>);
+static_assert(std::is_nothrow_move_constructible_v<server_socket>);
+
+net::udp_channel::udp_channel() noexcept
 {}
 
-net::udp_channel::udp_channel(std::unique_ptr<udp_channel_impl> impl) : _impl(std::move(impl))
+net::udp_channel::udp_channel(std::unique_ptr<udp_channel_impl> impl) noexcept : _impl(std::move(impl))
 {}
 
 net::udp_channel::~udp_channel()
 {}
 
-net::udp_channel::udp_channel(udp_channel&&) = default;
-net::udp_channel& net::udp_channel::operator=(udp_channel&&) = default;
+net::udp_channel::udp_channel(udp_channel&&) noexcept = default;
+net::udp_channel& net::udp_channel::operator=(udp_channel&&) noexcept = default;
+
+socket_address net::udp_channel::local_address() const {
+    if (_impl) {
+        return _impl->local_address();
+    } else {
+        return {};
+    }
+}
 
 future<net::udp_datagram> net::udp_channel::receive() {
     return _impl->receive();
 }
 
-future<> net::udp_channel::send(ipv4_addr dst, const char* msg) {
-    return _impl->send(std::move(dst), msg);
+future<> net::udp_channel::send(const socket_address& dst, const char* msg) {
+    return _impl->send(dst, msg);
 }
 
-future<> net::udp_channel::send(ipv4_addr dst, packet p) {
-    return _impl->send(std::move(dst), std::move(p));
+future<> net::udp_channel::send(const socket_address& dst, packet p) {
+    return _impl->send(dst, std::move(p));
 }
 
 bool net::udp_channel::is_closed() const {
@@ -65,11 +82,11 @@ void net::udp_channel::close() {
     return _impl->close();
 }
 
-connected_socket::connected_socket()
+connected_socket::connected_socket() noexcept
 {}
 
 connected_socket::connected_socket(
-        std::unique_ptr<net::connected_socket_impl> csi)
+        std::unique_ptr<net::connected_socket_impl> csi) noexcept
         : _csi(std::move(csi)) {
 }
 
@@ -79,13 +96,15 @@ connected_socket& connected_socket::operator=(connected_socket&& cs) noexcept = 
 connected_socket::~connected_socket()
 {}
 
-input_stream<char> connected_socket::input() {
-    return input_stream<char>(_csi->source());
+input_stream<char> connected_socket::input(connected_socket_input_stream_config csisc) {
+    return input_stream<char>(_csi->source(csisc));
 }
 
 output_stream<char> connected_socket::output(size_t buffer_size) {
+    output_stream_options opts;
+    opts.batch_flushes = true;
     // TODO: allow user to determine buffer size etc
-    return output_stream<char>(_csi->sink(), buffer_size, false, true);
+    return output_stream<char>(_csi->sink(), buffer_size, opts);
 }
 
 void connected_socket::set_nodelay(bool nodelay) {
@@ -107,6 +126,16 @@ void connected_socket::set_keepalive_parameters(const net::keepalive_params& p) 
 net::keepalive_params connected_socket::get_keepalive_parameters() const {
     return _csi->get_keepalive_parameters();
 }
+void connected_socket::set_sockopt(int level, int optname, const void* data, size_t len) {
+    _csi->set_sockopt(level, optname, data, len);
+}
+int connected_socket::get_sockopt(int level, int optname, void* data, size_t len) const {
+    return _csi->get_sockopt(level, optname, data, len);
+}
+
+socket_address connected_socket::local_address() const noexcept {
+    return _csi->local_address();
+}
 
 void connected_socket::shutdown_output() {
     _csi->shutdown_output();
@@ -116,11 +145,21 @@ void connected_socket::shutdown_input() {
     _csi->shutdown_input();
 }
 
+future<> connected_socket::wait_input_shutdown() {
+    return _csi->wait_input_shutdown();
+}
+
+data_source
+net::connected_socket_impl::source(connected_socket_input_stream_config csisc) {
+    // Default implementation falls back to non-parameterized data_source
+    return source();
+}
+
 socket::~socket()
 {}
 
 socket::socket(
-        std::unique_ptr<net::socket_impl> si)
+        std::unique_ptr<net::socket_impl> si) noexcept
         : _si(std::move(si)) {
 }
 
@@ -131,14 +170,22 @@ future<connected_socket> socket::connect(socket_address sa, socket_address local
     return _si->connect(sa, local, proto);
 }
 
+void socket::set_reuseaddr(bool reuseaddr) {
+    _si->set_reuseaddr(reuseaddr);
+}
+
+bool socket::get_reuseaddr() const {
+    return _si->get_reuseaddr();
+}
+
 void socket::shutdown() {
     _si->shutdown();
 }
 
-server_socket::server_socket() {
+server_socket::server_socket() noexcept {
 }
 
-server_socket::server_socket(std::unique_ptr<net::server_socket_impl> ssi)
+server_socket::server_socket(std::unique_ptr<net::server_socket_impl> ssi) noexcept
         : _ssi(std::move(ssi)) {
 }
 server_socket::server_socket(server_socket&& ss) noexcept = default;
@@ -147,9 +194,9 @@ server_socket& server_socket::operator=(server_socket&& cs) noexcept = default;
 server_socket::~server_socket() {
 }
 
-future<connected_socket, socket_address> server_socket::accept() {
+future<accept_result> server_socket::accept() {
     if (_aborted) {
-        return make_exception_future<connected_socket, socket_address>(std::system_error(ECONNABORTED, std::system_category()));
+        return make_exception_future<accept_result>(std::system_error(ECONNABORTED, std::system_category()));
     }
     return _ssi->accept();
 }
@@ -159,16 +206,67 @@ void server_socket::abort_accept() {
     _aborted = true;
 }
 
-socket_address::socket_address(ipv4_addr addr)
-    : socket_address(make_ipv4_address(addr))
+socket_address server_socket::local_address() const noexcept {
+    return _ssi->local_address();
+}
+
+network_interface::network_interface(shared_ptr<net::network_interface_impl> impl) noexcept
+    : _impl(std::move(impl))
 {}
 
+network_interface::network_interface(network_interface&&) noexcept = default;
+network_interface& network_interface::operator=(network_interface&&) noexcept = default;
+    
+uint32_t network_interface::index() const {
+    return _impl->index();
+}
 
-bool socket_address::operator==(const socket_address& a) const {
-    // TODO: handle ipv6
-    return std::tie(u.in.sin_family, u.in.sin_port, u.in.sin_addr.s_addr)
-                    == std::tie(a.u.in.sin_family, a.u.in.sin_port,
-                                    a.u.in.sin_addr.s_addr);
+uint32_t network_interface::mtu() const {
+    return _impl->mtu();
+}
+
+const sstring& network_interface::name() const {
+    return _impl->name();
+}
+
+const sstring& network_interface::display_name() const {
+    return _impl->display_name();
+}
+
+const std::vector<net::inet_address>& network_interface::addresses() const {
+    return _impl->addresses();
+}
+
+const std::vector<uint8_t> network_interface::hardware_address() const {
+    return _impl->hardware_address();
+}
+
+bool network_interface::is_loopback() const {
+    return _impl->is_loopback();
+}
+
+bool network_interface::is_virtual() const {
+    return _impl->is_virtual();
+}
+
+bool network_interface::is_up() const {
+    return _impl->is_up();
+}
+
+bool network_interface::supports_ipv6() const {
+    return _impl->supports_ipv6();
+}
+
+
+future<connected_socket>
+network_stack::connect(socket_address sa, socket_address local, transport proto) {
+    return do_with(socket(), [sa, local, proto](::seastar::socket& s) {
+        return s.connect(sa, local, proto);
+    });
+}
+
+std::vector<network_interface> network_stack::network_interfaces() {
+    return {};
 }
 
 }

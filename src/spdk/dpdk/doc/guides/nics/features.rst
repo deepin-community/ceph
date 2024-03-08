@@ -193,10 +193,12 @@ LRO
 Supports Large Receive Offload.
 
 * **[uses]       rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_TCP_LRO``.
+  ``dev_conf.rxmode.max_lro_pkt_size``.
 * **[implements] datapath**: ``LRO functionality``.
 * **[implements] rte_eth_dev_data**: ``lro``.
 * **[provides]   mbuf**: ``mbuf.ol_flags:PKT_RX_LRO``, ``mbuf.tso_segsz``.
 * **[provides]   rte_eth_dev_info**: ``rx_offload_capa,rx_queue_offload_capa:DEV_RX_OFFLOAD_TCP_LRO``.
+* **[provides]   rte_eth_dev_info**: ``max_lro_pkt_size``.
 
 
 .. _nic_features_tso:
@@ -208,7 +210,7 @@ Supports TCP Segmentation Offloading.
 
 * **[uses]       rte_eth_txconf,rte_eth_txmode**: ``offloads:DEV_TX_OFFLOAD_TCP_TSO``.
 * **[uses]       rte_eth_desc_lim**: ``nb_seg_max``, ``nb_mtu_seg_max``.
-* **[uses]       mbuf**: ``mbuf.ol_flags:PKT_TX_TCP_SEG``.
+* **[uses]       mbuf**: ``mbuf.ol_flags:`` ``PKT_TX_TCP_SEG``, ``PKT_TX_IPV4``, ``PKT_TX_IPV6``, ``PKT_TX_IP_CKSUM``.
 * **[uses]       mbuf**: ``mbuf.tso_segsz``, ``mbuf.l2_len``, ``mbuf.l3_len``, ``mbuf.l4_len``.
 * **[implements] datapath**: ``TSO functionality``.
 * **[provides]   rte_eth_dev_info**: ``tx_offload_capa,tx_queue_offload_capa:DEV_TX_OFFLOAD_TCP_TSO,DEV_TX_OFFLOAD_UDP_TSO``.
@@ -274,6 +276,7 @@ Supports RSS hashing on RX.
 
 * **[uses]     user config**: ``dev_conf.rxmode.mq_mode`` = ``ETH_MQ_RX_RSS_FLAG``.
 * **[uses]     user config**: ``dev_conf.rx_adv_conf.rss_conf``.
+* **[uses]     rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_RSS_HASH``.
 * **[provides] rte_eth_dev_info**: ``flow_type_rss_offloads``.
 * **[provides] mbuf**: ``mbuf.ol_flags:PKT_RX_RSS_HASH``, ``mbuf.rss``.
 
@@ -285,7 +288,8 @@ Inner RSS
 
 Supports RX RSS hashing on Inner headers.
 
-* **[users]    rte_flow_action_rss**: ``level``.
+* **[uses]    rte_flow_action_rss**: ``level``.
+* **[uses]    rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_RSS_HASH``.
 * **[provides] mbuf**: ``mbuf.ol_flags:PKT_RX_RSS_HASH``, ``mbuf.rss``.
 
 
@@ -366,84 +370,6 @@ Supports filtering of a VLAN Tag identifier.
 * **[related]    API**: ``rte_eth_dev_vlan_filter()``.
 
 
-.. _nic_features_ethertype_filter:
-
-Ethertype filter
-----------------
-
-Supports filtering on Ethernet type.
-
-* **[implements] eth_dev_ops**: ``filter_ctrl:RTE_ETH_FILTER_ETHERTYPE``.
-* **[related]    API**: ``rte_eth_dev_filter_ctrl()``, ``rte_eth_dev_filter_supported()``.
-
-.. _nic_features_ntuple_filter:
-
-N-tuple filter
---------------
-
-Supports filtering on N-tuple values.
-
-* **[implements] eth_dev_ops**: ``filter_ctrl:RTE_ETH_FILTER_NTUPLE``.
-* **[related]    API**: ``rte_eth_dev_filter_ctrl()``, ``rte_eth_dev_filter_supported()``.
-
-
-.. _nic_features_syn_filter:
-
-SYN filter
-----------
-
-Supports TCP syn filtering.
-
-* **[implements] eth_dev_ops**: ``filter_ctrl:RTE_ETH_FILTER_SYN``.
-* **[related]    API**: ``rte_eth_dev_filter_ctrl()``, ``rte_eth_dev_filter_supported()``.
-
-
-.. _nic_features_tunnel_filter:
-
-Tunnel filter
--------------
-
-Supports tunnel filtering.
-
-* **[implements] eth_dev_ops**: ``filter_ctrl:RTE_ETH_FILTER_TUNNEL``.
-* **[related]    API**: ``rte_eth_dev_filter_ctrl()``, ``rte_eth_dev_filter_supported()``.
-
-
-.. _nic_features_flexible_filter:
-
-Flexible filter
----------------
-
-Supports a flexible (non-tuple or Ethertype) filter.
-
-* **[implements] eth_dev_ops**: ``filter_ctrl:RTE_ETH_FILTER_FLEXIBLE``.
-* **[related]    API**: ``rte_eth_dev_filter_ctrl()``, ``rte_eth_dev_filter_supported()``.
-
-
-.. _nic_features_hash_filter:
-
-Hash filter
------------
-
-Supports Hash filtering.
-
-* **[implements] eth_dev_ops**: ``filter_ctrl:RTE_ETH_FILTER_HASH``.
-* **[related]    API**: ``rte_eth_dev_filter_ctrl()``, ``rte_eth_dev_filter_supported()``.
-
-
-.. _nic_features_flow_director:
-
-Flow director
--------------
-
-Supports Flow Director style filtering to queues.
-
-* **[implements] eth_dev_ops**: ``filter_ctrl:RTE_ETH_FILTER_FDIR``.
-* **[provides]   mbuf**: ``mbuf.ol_flags:`` ``PKT_RX_FDIR``, ``PKT_RX_FDIR_ID``,
-  ``PKT_RX_FDIR_FLX``.
-* **[related]    API**: ``rte_eth_dev_filter_ctrl()``, ``rte_eth_dev_filter_supported()``.
-
-
 .. _nic_features_flow_control:
 
 Flow control
@@ -495,7 +421,9 @@ Supports adding traffic mirroring rules.
 Inline crypto
 -------------
 
-Supports inline crypto processing (eg. inline IPsec). See Security library and PMD documentation for more details.
+Supports inline crypto processing defined by rte_security library to perform crypto
+operations of security protocol while packet is received in NIC. NIC is not aware
+of protocol operations. See Security library and PMD documentation for more details.
 
 * **[uses]       rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_SECURITY``,
 * **[uses]       rte_eth_txconf,rte_eth_txmode**: ``offloads:DEV_TX_OFFLOAD_SECURITY``.
@@ -505,6 +433,29 @@ Supports inline crypto processing (eg. inline IPsec). See Security library and P
   ``tx_offload_capa,tx_queue_offload_capa:DEV_TX_OFFLOAD_SECURITY``.
 * **[provides]   mbuf**: ``mbuf.ol_flags:PKT_RX_SEC_OFFLOAD``,
   ``mbuf.ol_flags:PKT_TX_SEC_OFFLOAD``, ``mbuf.ol_flags:PKT_RX_SEC_OFFLOAD_FAILED``.
+* **[provides]   rte_security_ops, capabilities_get**:  ``action: RTE_SECURITY_ACTION_TYPE_INLINE_CRYPTO``
+
+
+.. _nic_features_inline_protocol_doc:
+
+Inline protocol
+---------------
+
+Supports inline protocol processing defined by rte_security library to perform
+protocol processing for the security protocol (e.g. IPsec, MACSEC) while the
+packet is received at NIC. The NIC is capable of understanding the security
+protocol operations. See security library and PMD documentation for more details.
+
+* **[uses]       rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_SECURITY``,
+* **[uses]       rte_eth_txconf,rte_eth_txmode**: ``offloads:DEV_TX_OFFLOAD_SECURITY``.
+* **[implements] rte_security_ops**: ``session_create``, ``session_update``,
+  ``session_stats_get``, ``session_destroy``, ``set_pkt_metadata``, ``get_userdata``,
+  ``capabilities_get``.
+* **[provides] rte_eth_dev_info**: ``rx_offload_capa,rx_queue_offload_capa:DEV_RX_OFFLOAD_SECURITY``,
+  ``tx_offload_capa,tx_queue_offload_capa:DEV_TX_OFFLOAD_SECURITY``.
+* **[provides]   mbuf**: ``mbuf.ol_flags:PKT_RX_SEC_OFFLOAD``,
+  ``mbuf.ol_flags:PKT_TX_SEC_OFFLOAD``, ``mbuf.ol_flags:PKT_RX_SEC_OFFLOAD_FAILED``.
+* **[provides]   rte_security_ops, capabilities_get**:  ``action: RTE_SECURITY_ACTION_TYPE_INLINE_PROTOCOL``
 
 
 .. _nic_features_crc_offload:
@@ -513,8 +464,9 @@ CRC offload
 -----------
 
 Supports CRC stripping by hardware.
+A PMD assumed to support CRC stripping by default. PMD should advertise if it supports keeping CRC.
 
-* **[uses] rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_CRC_STRIP,DEV_RX_OFFLOAD_KEEP_CRC``.
+* **[uses] rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_KEEP_CRC``.
 
 
 .. _nic_features_vlan_offload:
@@ -526,8 +478,9 @@ Supports VLAN offload to hardware.
 
 * **[uses]       rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_VLAN_STRIP,DEV_RX_OFFLOAD_VLAN_FILTER,DEV_RX_OFFLOAD_VLAN_EXTEND``.
 * **[uses]       rte_eth_txconf,rte_eth_txmode**: ``offloads:DEV_TX_OFFLOAD_VLAN_INSERT``.
+* **[uses]       mbuf**: ``mbuf.ol_flags:PKT_TX_VLAN``, ``mbuf.vlan_tci``.
 * **[implements] eth_dev_ops**: ``vlan_offload_set``.
-* **[provides]   mbuf**: ``mbuf.ol_flags:PKT_RX_VLAN_STRIPPED``, ``mbuf.vlan_tci``.
+* **[provides]   mbuf**: ``mbuf.ol_flags:PKT_RX_VLAN_STRIPPED``, ``mbuf.ol_flags:PKT_RX_VLAN`` ``mbuf.vlan_tci``.
 * **[provides]   rte_eth_dev_info**: ``rx_offload_capa,rx_queue_offload_capa:DEV_RX_OFFLOAD_VLAN_STRIP``,
   ``tx_offload_capa,tx_queue_offload_capa:DEV_TX_OFFLOAD_VLAN_INSERT``.
 * **[related]    API**: ``rte_eth_dev_set_vlan_offload()``,
@@ -543,9 +496,10 @@ Supports QinQ (queue in queue) offload.
 
 * **[uses]     rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_QINQ_STRIP``.
 * **[uses]     rte_eth_txconf,rte_eth_txmode**: ``offloads:DEV_TX_OFFLOAD_QINQ_INSERT``.
-* **[uses]     mbuf**: ``mbuf.ol_flags:PKT_TX_QINQ_PKT``.
-* **[provides] mbuf**: ``mbuf.ol_flags:PKT_RX_QINQ_STRIPPED``, ``mbuf.vlan_tci``,
-   ``mbuf.vlan_tci_outer``.
+* **[uses]     mbuf**: ``mbuf.ol_flags:PKT_TX_QINQ``, ``mbuf.vlan_tci_outer``.
+* **[provides] mbuf**: ``mbuf.ol_flags:PKT_RX_QINQ_STRIPPED``, ``mbuf.ol_flags:PKT_RX_QINQ``,
+  ``mbuf.ol_flags:PKT_RX_VLAN_STRIPPED``, ``mbuf.ol_flags:PKT_RX_VLAN``
+  ``mbuf.vlan_tci``, ``mbuf.vlan_tci_outer``.
 * **[provides] rte_eth_dev_info**: ``rx_offload_capa,rx_queue_offload_capa:DEV_RX_OFFLOAD_QINQ_STRIP``,
   ``tx_offload_capa,tx_queue_offload_capa:DEV_TX_OFFLOAD_QINQ_INSERT``.
 
@@ -561,6 +515,7 @@ Supports L3 checksum offload.
 * **[uses]     rte_eth_txconf,rte_eth_txmode**: ``offloads:DEV_TX_OFFLOAD_IPV4_CKSUM``.
 * **[uses]     mbuf**: ``mbuf.ol_flags:PKT_TX_IP_CKSUM``,
   ``mbuf.ol_flags:PKT_TX_IPV4`` | ``PKT_TX_IPV6``.
+* **[uses]     mbuf**: ``mbuf.l2_len``, ``mbuf.l3_len``.
 * **[provides] mbuf**: ``mbuf.ol_flags:PKT_RX_IP_CKSUM_UNKNOWN`` |
   ``PKT_RX_IP_CKSUM_BAD`` | ``PKT_RX_IP_CKSUM_GOOD`` |
   ``PKT_RX_IP_CKSUM_NONE``.
@@ -575,15 +530,16 @@ L4 checksum offload
 
 Supports L4 checksum offload.
 
-* **[uses]     rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_UDP_CKSUM,DEV_RX_OFFLOAD_TCP_CKSUM``.
+* **[uses]     rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_UDP_CKSUM,DEV_RX_OFFLOAD_TCP_CKSUM,DEV_RX_OFFLOAD_SCTP_CKSUM``.
 * **[uses]     rte_eth_txconf,rte_eth_txmode**: ``offloads:DEV_TX_OFFLOAD_UDP_CKSUM,DEV_TX_OFFLOAD_TCP_CKSUM,DEV_TX_OFFLOAD_SCTP_CKSUM``.
 * **[uses]     mbuf**: ``mbuf.ol_flags:PKT_TX_IPV4`` | ``PKT_TX_IPV6``,
   ``mbuf.ol_flags:PKT_TX_L4_NO_CKSUM`` | ``PKT_TX_TCP_CKSUM`` |
   ``PKT_TX_SCTP_CKSUM`` | ``PKT_TX_UDP_CKSUM``.
+* **[uses]     mbuf**: ``mbuf.l2_len``, ``mbuf.l3_len``.
 * **[provides] mbuf**: ``mbuf.ol_flags:PKT_RX_L4_CKSUM_UNKNOWN`` |
   ``PKT_RX_L4_CKSUM_BAD`` | ``PKT_RX_L4_CKSUM_GOOD`` |
   ``PKT_RX_L4_CKSUM_NONE``.
-* **[provides] rte_eth_dev_info**: ``rx_offload_capa,rx_queue_offload_capa:DEV_RX_OFFLOAD_UDP_CKSUM,DEV_RX_OFFLOAD_TCP_CKSUM``,
+* **[provides] rte_eth_dev_info**: ``rx_offload_capa,rx_queue_offload_capa:DEV_RX_OFFLOAD_UDP_CKSUM,DEV_RX_OFFLOAD_TCP_CKSUM,DEV_RX_OFFLOAD_SCTP_CKSUM``,
   ``tx_offload_capa,tx_queue_offload_capa:DEV_TX_OFFLOAD_UDP_CKSUM,DEV_TX_OFFLOAD_TCP_CKSUM,DEV_TX_OFFLOAD_SCTP_CKSUM``.
 
 .. _nic_features_hw_timestamp:
@@ -597,6 +553,7 @@ Supports Timestamp.
 * **[provides] mbuf**: ``mbuf.ol_flags:PKT_RX_TIMESTAMP``.
 * **[provides] mbuf**: ``mbuf.timestamp``.
 * **[provides] rte_eth_dev_info**: ``rx_offload_capa,rx_queue_offload_capa: DEV_RX_OFFLOAD_TIMESTAMP``.
+* **[related] eth_dev_ops**: ``read_clock``.
 
 .. _nic_features_macsec_offload:
 
@@ -638,6 +595,16 @@ Inner L4 checksum
 
 Supports inner packet L4 checksum.
 
+* **[uses]     rte_eth_rxconf,rte_eth_rxmode**: ``offloads:DEV_RX_OFFLOAD_OUTER_UDP_CKSUM``.
+* **[provides] mbuf**: ``mbuf.ol_flags:PKT_RX_OUTER_L4_CKSUM_UNKNOWN`` |
+  ``PKT_RX_OUTER_L4_CKSUM_BAD`` | ``PKT_RX_OUTER_L4_CKSUM_GOOD`` | ``PKT_RX_OUTER_L4_CKSUM_INVALID``.
+* **[uses]     rte_eth_txconf,rte_eth_txmode**: ``offloads:DEV_TX_OFFLOAD_OUTER_UDP_CKSUM``.
+* **[uses]     mbuf**: ``mbuf.ol_flags:PKT_TX_OUTER_IPV4`` | ``PKT_TX_OUTER_IPV6``.
+  ``mbuf.ol_flags:PKT_TX_OUTER_UDP_CKSUM``.
+* **[uses]     mbuf**: ``mbuf.outer_l2_len``, ``mbuf.outer_l3_len``.
+* **[provides] rte_eth_dev_info**: ``rx_offload_capa,rx_queue_offload_capa:DEV_RX_OFFLOAD_OUTER_UDP_CKSUM``,
+  ``tx_offload_capa,tx_queue_offload_capa:DEV_TX_OFFLOAD_OUTER_UDP_CKSUM``.
+
 
 .. _nic_features_packet_type_parsing:
 
@@ -645,9 +612,12 @@ Packet type parsing
 -------------------
 
 Supports packet type parsing and returns a list of supported types.
+Allows application to set ptypes it is interested in.
 
-* **[implements] eth_dev_ops**: ``dev_supported_ptypes_get``.
-* **[related]    API**: ``rte_eth_dev_get_supported_ptypes()``.
+* **[implements] eth_dev_ops**: ``dev_supported_ptypes_get``,
+* **[related]    API**: ``rte_eth_dev_get_supported_ptypes()``,
+  ``rte_eth_dev_set_ptypes()``, ``dev_ptypes_set``.
+* **[provides]   mbuf**: ``mbuf.packet_type``.
 
 
 .. _nic_features_timesync:
@@ -932,6 +902,16 @@ Supports Tx queue setup after device started.
 
 * **[provides] rte_eth_dev_info**: ``dev_capa:RTE_ETH_DEV_CAPA_RUNTIME_TX_QUEUE_SETUP``.
 * **[related]  API**: ``rte_eth_dev_info_get()``.
+
+.. _nic_features_burst_mode_info:
+
+Burst mode info
+---------------
+
+Supports to get Rx/Tx packet burst mode information.
+
+* **[implements] eth_dev_ops**: ``rx_burst_mode_get``, ``tx_burst_mode_get``.
+* **[related] API**: ``rte_eth_rx_burst_mode_get()``, ``rte_eth_tx_burst_mode_get()``.
 
 .. _nic_features_other:
 

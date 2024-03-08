@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 #include <string.h>
 
@@ -12,6 +12,8 @@
 #include "include/utime.h"
 
 #include "rgw_xml.h"
+
+using namespace std;
 
 XMLObjIter::
 XMLObjIter()

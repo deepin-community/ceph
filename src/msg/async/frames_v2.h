@@ -4,6 +4,7 @@
 #include "include/types.h"
 #include "common/Clock.h"
 #include "crypto_onwire.h"
+#include "compression_onwire.h"
 #include <array>
 #include <iosfwd>
 #include <utility>
@@ -55,15 +56,17 @@ enum class Tag : __u8 {
   MESSAGE,
   KEEPALIVE2,
   KEEPALIVE2_ACK,
-  ACK
+  ACK,
+  COMPRESSION_REQUEST,
+  COMPRESSION_DONE
 };
 
 struct segment_t {
   // TODO: this will be dropped with support for `allocation policies`.
   // We need them because of the rx_buffers zero-copy optimization.
-  static constexpr __le16 PAGE_SIZE_ALIGNMENT{4096};
+  static constexpr __u16 PAGE_SIZE_ALIGNMENT = 4096;
 
-  static constexpr __le16 DEFAULT_ALIGNMENT = sizeof(void *);
+  static constexpr __u16 DEFAULT_ALIGNMENT = sizeof(void *);
 
   ceph_le32 length;
   ceph_le16 alignment;
@@ -101,8 +104,10 @@ struct preamble_block_t {
   // third to #segments - MAX_NUM_SEGMENTS and so on.
   __u8 num_segments;
 
-  std::array<segment_t, MAX_NUM_SEGMENTS> segments;
-  __u8 _reserved[2];
+  segment_t segments[MAX_NUM_SEGMENTS];
+
+  __u8 flags;
+  __u8 _reserved;
 
   // CRC32 for this single preamble block.
   ceph_le32 crc;
@@ -112,7 +117,7 @@ static_assert(std::is_standard_layout<preamble_block_t>::value);
 
 struct epilogue_crc_rev0_block_t {
   __u8 late_flags;  // FRAME_LATE_FLAG_ABORTED
-  std::array<ceph_le32, MAX_NUM_SEGMENTS> crc_values;
+  ceph_le32 crc_values[MAX_NUM_SEGMENTS];
 } __attribute__((packed));
 static_assert(std::is_standard_layout_v<epilogue_crc_rev0_block_t>);
 
@@ -169,6 +174,12 @@ static constexpr uint32_t FRAME_PREAMBLE_WITH_INLINE_SIZE =
 #define FRAME_LATE_STATUS_RESERVED_FALSE  0xe0
 #define FRAME_LATE_STATUS_RESERVED_MASK   0xf0
 
+// For msgr 2.1, FRAME_EARLY_X flags are sent as part of epilogue.
+//
+// This flag indicates whether frame segments have been compressed by 
+// sender, and used in segments' disassemblig phase. 
+#define FRAME_EARLY_DATA_COMPRESSED       0X1
+
 struct FrameError : std::runtime_error {
   using runtime_error::runtime_error;
 };
@@ -176,11 +187,14 @@ struct FrameError : std::runtime_error {
 class FrameAssembler {
 public:
   // crypto must be non-null
-  FrameAssembler(const ceph::crypto::onwire::rxtx_t* crypto, bool is_rev1)
-      : m_crypto(crypto), m_is_rev1(is_rev1) {}
+  FrameAssembler(const ceph::crypto::onwire::rxtx_t* crypto, bool is_rev1, 
+    bool with_data_crc, const ceph::compression::onwire::rxtx_t* compression)
+      : m_crypto(crypto), m_is_rev1(is_rev1), m_with_data_crc(with_data_crc),
+        m_compression(compression) {}
 
   void set_is_rev1(bool is_rev1) {
     m_descs.clear();
+    m_flags = 0;
     m_is_rev1 = is_rev1;
   }
 
@@ -299,36 +313,9 @@ public:
 
   Tag disassemble_preamble(bufferlist& preamble_bl);
 
-  // Like msgr1, and unlike msgr2.0, msgr2.1 allows interpreting the
-  // first segment before reading in the rest of the frame.
-  //
-  // For msgr2.1 (set_is_rev1(true)), you may:
-  //
-  // - read in the first segment
-  // - call disassemble_first_segment()
-  // - use the contents of the first segment, for example to
-  //   look up user-provided buffers based on ceph_msg_header2::tid
-  // - read in the remaining segments, possibly directly into
-  //   user-provided buffers
-  // - read in epilogue
-  // - call disassemble_remaining_segments()
-  //
-  // For msgr2.0 (set_is_rev1(false)), disassemble_first_segment() is
-  // a noop.  To accomodate, disassemble_remaining_segments() always
-  // takes all segments and skips over the first segment in msgr2.1
-  // case.  You must:
-  //
-  // - read in all segments
-  // - read in epilogue
-  // - call disassemble_remaining_segments()
-  //
-  // disassemble_remaining_segments() returns true if the frame is
-  // ready for dispatching, or false if it was aborted by the sender
-  // and must be dropped.
-  void disassemble_first_segment(bufferlist& preamble_bl,
-                                 bufferlist& segment_bl) const;
-  bool disassemble_remaining_segments(bufferlist segment_bls[],
-                                      bufferlist& epilogue_bl) const;
+  bool disassemble_segments(bufferlist& preamble_bl, 
+                            bufferlist segments_bls[], 
+                            bufferlist& epilogue_bl) const;
 
 private:
   struct segment_desc_t {
@@ -345,6 +332,12 @@ private:
     return m_crypto->rx->get_extra_size_at_final();
   }
 
+  bool is_compressed() const { 
+    return m_flags & FRAME_EARLY_DATA_COMPRESSED; 
+  }
+
+  void asm_compress(bufferlist segment_bls[]);
+
   bufferlist asm_crc_rev0(const preamble_block_t& preamble,
                           bufferlist segment_bls[]) const;
   bufferlist asm_secure_rev0(const preamble_block_t& preamble,
@@ -353,6 +346,40 @@ private:
                           bufferlist segment_bls[]) const;
   bufferlist asm_secure_rev1(const preamble_block_t& preamble,
                              bufferlist segment_bls[]) const;
+
+  // Like msgr1, and unlike msgr2.0, msgr2.1 allows interpreting the
+  // first segment before reading in the rest of the frame.
+  //
+  // For msgr2.1 (set_is_rev1(true)), you may:
+  //
+  // - read in the first segment
+  // - call disassemble_first_segment()
+  // - use the contents of the first segment, for example to
+  //   look up user-provided buffers based on ceph_msg_header2::tid
+  // - read in the remaining segments, possibly directly into
+  //   user-provided buffers
+  // - read in epilogue
+  // - call disassemble_remaining_segments()
+  // - call disasm_all_decompress()
+  //
+  // For msgr2.0 (set_is_rev1(false)), disassemble_first_segment() is
+  // a noop.  To accomodate, disassemble_remaining_segments() always
+  // takes all segments and skips over the first segment in msgr2.1
+  // case.  You must:
+  //
+  // - read in all segments
+  // - read in epilogue
+  // - call disassemble_remaining_segments()
+  // - call disasm_all_decompress()
+  //
+  // disassemble_remaining_segments() returns true if the frame is
+  // ready for dispatching, or false if it was aborted by the sender
+  // and must be dropped.
+  void disassemble_first_segment(bufferlist& preamble_bl,
+                                 bufferlist& segment_bl) const;
+  bool disassemble_remaining_segments(bufferlist segment_bls[],
+                                      bufferlist& epilogue_bl) const;
+  void disassemble_decompress(bufferlist segment_bls[]) const;
 
   bool disasm_all_crc_rev0(bufferlist segment_bls[],
                            bufferlist& epilogue_bl) const;
@@ -372,8 +399,11 @@ private:
                                   const FrameAssembler& frame_asm);
 
   boost::container::static_vector<segment_desc_t, MAX_NUM_SEGMENTS> m_descs;
+  __u8 m_flags;
   const ceph::crypto::onwire::rxtx_t* m_crypto;
   bool m_is_rev1;  // msgr2.1?
+  bool m_with_data_crc;
+  const ceph::compression::onwire::rxtx_t* m_compression;
 };
 
 template <class T, uint16_t... SegmentAlignmentVs>
@@ -495,14 +525,14 @@ protected:
 
 struct AuthRequestFrame : public ControlFrame<AuthRequestFrame,
                                               uint32_t, // auth method
-                                              vector<uint32_t>, // preferred modes
+                                              std::vector<uint32_t>, // preferred modes
                                               bufferlist> { // auth payload
   static const Tag tag = Tag::AUTH_REQUEST;
   using ControlFrame::Encode;
   using ControlFrame::Decode;
 
   inline uint32_t &method() { return get_val<0>(); }
-  inline vector<uint32_t> &preferred_modes() { return get_val<1>(); }
+  inline std::vector<uint32_t> &preferred_modes() { return get_val<1>(); }
   inline bufferlist &auth_payload() { return get_val<2>(); }
 
 protected:
@@ -835,6 +865,34 @@ struct MessageFrame : public Frame<MessageFrame,
 
 protected:
   using Frame::Frame;
+};
+
+struct CompressionRequestFrame : public ControlFrame<CompressionRequestFrame,
+                                              bool, // is compress
+                                              std::vector<uint32_t>> { // preferred methods
+  static const Tag tag = Tag::COMPRESSION_REQUEST;
+  using ControlFrame::Encode;
+  using ControlFrame::Decode;
+
+  inline bool &is_compress() { return get_val<0>(); }
+  inline std::vector<uint32_t> &preferred_methods() { return get_val<1>(); }
+
+protected:
+  using ControlFrame::ControlFrame;
+};
+
+struct CompressionDoneFrame : public ControlFrame<CompressionDoneFrame,
+                                           bool, // is compress
+                                           uint32_t> { // method
+  static const Tag tag = Tag::COMPRESSION_DONE;
+  using ControlFrame::Encode;
+  using ControlFrame::Decode;
+
+  inline bool &is_compress() { return get_val<0>(); }
+  inline uint32_t &method() { return get_val<1>(); }
+
+protected:
+  using ControlFrame::ControlFrame;
 };
 
 } // namespace ceph::msgr::v2

@@ -21,7 +21,7 @@
 
 #pragma once
 
-#include <seastar/core/reactor.hh>
+#include <seastar/core/smp.hh>
 #include <seastar/core/deleter.hh>
 #include <seastar/core/queue.hh>
 #include <seastar/core/stream.hh>
@@ -33,6 +33,12 @@
 #include <unordered_map>
 
 namespace seastar {
+
+namespace internal {
+
+class poller;
+
+}
 
 namespace net {
 
@@ -92,13 +98,13 @@ public:
         ethernet_address to;
         packet p;
     };
-    using packet_provider_type = std::function<compat::optional<l3packet> ()>;
+    using packet_provider_type = std::function<std::optional<l3packet> ()>;
 private:
     interface* _netif;
     eth_protocol_num _proto_num;
 public:
     explicit l3_protocol(interface* netif, eth_protocol_num proto_num, packet_provider_type func);
-    subscription<packet, ethernet_address> receive(
+    future<> receive(
             std::function<future<> (packet, ethernet_address)> rx_fn,
             std::function<bool (forward_hash&, packet&, size_t)> forward);
 private:
@@ -114,7 +120,6 @@ class interface {
     };
     std::unordered_map<uint16_t, l3_rx_stream> _proto_map;
     std::shared_ptr<device> _dev;
-    subscription<packet> _rx;
     ethernet_address _hw_address;
     net::hw_features _hw_features;
     std::vector<l3_protocol::packet_provider_type> _pkt_providers;
@@ -122,9 +127,9 @@ private:
     future<> dispatch_packet(packet p);
 public:
     explicit interface(std::shared_ptr<device> dev);
-    ethernet_address hw_address() { return _hw_address; }
+    ethernet_address hw_address() const noexcept { return _hw_address; }
     const net::hw_features& hw_features() const { return _hw_features; }
-    subscription<packet, ethernet_address> register_l3(eth_protocol_num proto_num,
+    future<> register_l3(eth_protocol_num proto_num,
             std::function<future<> (packet p, ethernet_address from)> next,
             std::function<bool (forward_hash&, packet&, size_t)> forward);
     void forward(unsigned cpuid, packet p);
@@ -211,12 +216,12 @@ struct qp_stats {
 };
 
 class qp {
-    using packet_provider_type = std::function<compat::optional<packet> ()>;
+    using packet_provider_type = std::function<std::optional<packet> ()>;
     std::vector<packet_provider_type> _pkt_providers;
-    compat::optional<std::array<uint8_t, 128>> _sw_reta;
+    std::optional<std::array<uint8_t, 128>> _sw_reta;
     circular_buffer<packet> _proxy_packetq;
     stream<packet> _rx_stream;
-    reactor::poller _tx_poller;
+    std::unique_ptr<internal::poller> _tx_poller;
     circular_buffer<packet> _tx_packetq;
 
 protected:
@@ -234,7 +239,8 @@ public:
     virtual uint32_t send(circular_buffer<packet>& p) {
         uint32_t sent = 0;
         while (!p.empty()) {
-            send(std::move(p.front()));
+            // FIXME: future is discarded
+            (void)send(std::move(p.front()));
             p.pop_front();
             sent++;
         }
@@ -264,15 +270,18 @@ public:
     }
     virtual ~device() {};
     qp& queue_for_cpu(unsigned cpu) { return *_queues[cpu]; }
-    qp& local_queue() { return queue_for_cpu(engine().cpu_id()); }
-    void l2receive(packet p) { _queues[engine().cpu_id()]->_rx_stream.produce(std::move(p)); }
-    subscription<packet> receive(std::function<future<> (packet)> next_packet);
+    qp& local_queue() { return queue_for_cpu(this_shard_id()); }
+    void l2receive(packet p) {
+        // FIXME: future is discarded
+        (void)_queues[this_shard_id()]->_rx_stream.produce(std::move(p));
+    }
+    future<> receive(std::function<future<> (packet)> next_packet);
     virtual ethernet_address hw_address() = 0;
     virtual net::hw_features hw_features() = 0;
     virtual rss_key_type rss_key() const { return default_rsskey_40bytes; }
     virtual uint16_t hw_queues_count() { return 1; }
     virtual future<> link_ready() { return make_ready_future<>(); }
-    virtual std::unique_ptr<qp> init_local_queue(boost::program_options::variables_map opts, uint16_t qid) = 0;
+    virtual std::unique_ptr<qp> init_local_queue(const program_options::option_group& opts, uint16_t qid) = 0;
     virtual unsigned hash2qid(uint32_t hash) {
         return hash % hw_queues_count();
     }

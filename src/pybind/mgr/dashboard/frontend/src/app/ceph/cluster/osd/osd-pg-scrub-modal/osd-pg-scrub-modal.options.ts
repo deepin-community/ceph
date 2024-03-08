@@ -23,9 +23,6 @@ export class OsdPgScrubModalOptions {
     'osd_deep_scrub_randomize_ratio',
     'osd_deep_scrub_stride',
     'osd_deep_scrub_update_digest_min_age',
-    'osd_op_queue_mclock_scrub_lim',
-    'osd_op_queue_mclock_scrub_res',
-    'osd_op_queue_mclock_scrub_wgt',
     'osd_requested_scrub_priority',
     'osd_scrub_backoff_ratio',
     'osd_scrub_chunk_max',
@@ -34,6 +31,8 @@ export class OsdPgScrubModalOptions {
     'osd_scrub_interval_randomize_ratio',
     'osd_scrub_invalid_stats',
     'osd_scrub_load_threshold',
-    'osd_scrub_max_preemptions'
+    'osd_scrub_max_preemptions',
+    'osd_shallow_scrub_chunk_max',
+    'osd_shallow_scrub_chunk_min'
   ];
 }

@@ -1,7 +1,7 @@
 import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 
-import { configureTestBed } from '../../../testing/unit-test-helper';
+import { configureTestBed } from '~/testing/unit-test-helper';
 import { AlertmanagerNotification } from '../models/prometheus-alerts';
 import { PrometheusService } from './prometheus.service';
 import { SettingsService } from './settings.service';
@@ -16,8 +16,8 @@ describe('PrometheusService', () => {
   });
 
   beforeEach(() => {
-    service = TestBed.get(PrometheusService);
-    httpTesting = TestBed.get(HttpTestingController);
+    service = TestBed.inject(PrometheusService);
+    httpTesting = TestBed.inject(HttpTestingController);
   });
 
   afterEach(() => {
@@ -128,7 +128,10 @@ describe('PrometheusService', () => {
     it('should get rewrite rules only', () => {
       service.getRules('rewrites').subscribe((rules) => {
         expect(rules).toEqual({
-          groups: [{ name: 'test', rules: [] }, { name: 'recording_rule', rules: [] }]
+          groups: [
+            { name: 'test', rules: [] },
+            { name: 'recording_rule', rules: [] }
+          ]
         });
       });
 
@@ -162,18 +165,21 @@ describe('PrometheusService', () => {
 
   describe('ifAlertmanagerConfigured', () => {
     let x: any;
-    let host;
+    let host: string;
 
     const receiveConfig = () => {
-      const req = httpTesting.expectOne('api/settings/alertmanager-api-host');
+      const req = httpTesting.expectOne('ui-api/prometheus/alertmanager-api-host');
       expect(req.request.method).toBe('GET');
       req.flush({ value: host });
     };
 
     beforeEach(() => {
       x = false;
-      TestBed.get(SettingsService)['settings'] = {};
-      service.ifAlertmanagerConfigured((v) => (x = v), () => (x = []));
+      TestBed.inject(SettingsService)['settings'] = {};
+      service.ifAlertmanagerConfigured(
+        (v) => (x = v),
+        () => (x = [])
+      );
       host = 'http://localhost:9093';
     });
 
@@ -200,18 +206,21 @@ describe('PrometheusService', () => {
 
   describe('ifPrometheusConfigured', () => {
     let x: any;
-    let host;
+    let host: string;
 
     const receiveConfig = () => {
-      const req = httpTesting.expectOne('api/settings/prometheus-api-host');
+      const req = httpTesting.expectOne('ui-api/prometheus/prometheus-api-host');
       expect(req.request.method).toBe('GET');
       req.flush({ value: host });
     };
 
     beforeEach(() => {
       x = false;
-      TestBed.get(SettingsService)['settings'] = {};
-      service.ifPrometheusConfigured((v) => (x = v), () => (x = []));
+      TestBed.inject(SettingsService)['settings'] = {};
+      service.ifPrometheusConfigured(
+        (v) => (x = v),
+        () => (x = [])
+      );
       host = 'http://localhost:9090';
     });
 

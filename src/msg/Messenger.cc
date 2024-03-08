@@ -8,37 +8,37 @@
 
 #include "Messenger.h"
 
-#include "msg/simple/SimpleMessenger.h"
 #include "msg/async/AsyncMessenger.h"
-#ifdef HAVE_XIO
-#include "msg/xio/XioMessenger.h"
-#endif
 
-Messenger *Messenger::create_client_messenger(CephContext *cct, string lname)
+Messenger *Messenger::create_client_messenger(CephContext *cct, std::string lname)
 {
   std::string public_msgr_type = cct->_conf->ms_public_type.empty() ? cct->_conf.get_val<std::string>("ms_type") : cct->_conf->ms_public_type;
-  auto nonce = ceph::util::generate_random_number<uint64_t>();
+  auto nonce = get_random_nonce();
   return Messenger::create(cct, public_msgr_type, entity_name_t::CLIENT(),
-			   std::move(lname), nonce, 0);
+			   std::move(lname), nonce);
 }
 
-Messenger *Messenger::create(CephContext *cct, const string &type,
-			     entity_name_t name, string lname,
-			     uint64_t nonce, uint64_t cflags)
+uint64_t Messenger::get_pid_nonce()
 {
-  int r = -1;
-  if (type == "random") {
-    r = ceph::util::generate_random_number(0, 1);
+  uint64_t nonce = getpid();
+  if (nonce == 1 || getenv("CEPH_USE_RANDOM_NONCE")) {
+    // we're running in a container; use a random number instead!
+    nonce = ceph::util::generate_random_number<uint64_t>();
   }
-  if (r == 0 || type == "simple")
-    return new SimpleMessenger(cct, name, std::move(lname), nonce);
-  else if (r == 1 || type.find("async") != std::string::npos)
+  return nonce;
+}
+
+uint64_t Messenger::get_random_nonce()
+{
+  return ceph::util::generate_random_number<uint64_t>();
+}
+
+Messenger *Messenger::create(CephContext *cct, const std::string &type,
+			     entity_name_t name, std::string lname,
+			     uint64_t nonce)
+{
+  if (type == "random" || type.find("async") != std::string::npos)
     return new AsyncMessenger(cct, name, type, std::move(lname), nonce);
-#ifdef HAVE_XIO
-  else if ((type == "xio") &&
-	   cct->check_experimental_feature_enabled("ms-type-xio"))
-    return new XioMessenger(cct, name, std::move(lname), nonce, cflags);
-#endif
   lderr(cct) << "unrecognized ms_type '" << type << "'" << dendl;
   return nullptr;
 }
@@ -58,9 +58,11 @@ Messenger::Messenger(CephContext *cct_, entity_name_t w)
     socket_priority(-1),
     cct(cct_),
     crcflags(get_default_crc_flags(cct->_conf)),
-    auth_registry(cct)
+    auth_registry(cct),
+    comp_registry(cct)
 {
   auth_registry.refresh_config();
+  comp_registry.refresh_config();
 }
 
 void Messenger::set_endpoint_addr(const entity_addr_t& a,
@@ -102,65 +104,9 @@ int get_default_crc_flags(const ConfigProxy& conf)
   return r;
 }
 
-int Messenger::bindv(const entity_addrvec_t& addrs)
+int Messenger::bindv(const entity_addrvec_t& bind_addrs,
+                     std::optional<entity_addrvec_t> public_addrs)
 {
-  return bind(addrs.legacy_addr());
+  return bind(bind_addrs.legacy_addr(), std::move(public_addrs));
 }
 
-bool Messenger::ms_deliver_verify_authorizer(
-  Connection *con,
-  int peer_type,
-  int protocol,
-  bufferlist& authorizer,
-  bufferlist& authorizer_reply,
-  bool& isvalid,
-  CryptoKey& session_key,
-  std::string *connection_secret,
-  std::unique_ptr<AuthAuthorizerChallenge> *challenge)
-{
-  if (authorizer.length() == 0) {
-    for (auto dis : dispatchers) {
-      if (!dis->require_authorizer) {
-	//ldout(cct,10) << __func__ << " tolerating missing authorizer" << dendl;
-	isvalid = true;
-	return true;
-      }
-    }
-  }
-  AuthAuthorizeHandler *ah = auth_registry.get_handler(peer_type, protocol);
-  if (get_mytype() == CEPH_ENTITY_TYPE_MON &&
-      peer_type != CEPH_ENTITY_TYPE_MON) {
-    // the monitor doesn't do authenticators for msgr1.
-    isvalid = true;
-    return true;
-  }
-  if (!ah) {
-    lderr(cct) << __func__ << " no AuthAuthorizeHandler found for protocol "
-	       << protocol << dendl;
-    isvalid = false;
-    return false;
-  }
-
-  for (auto dis : dispatchers) {
-    KeyStore *ks = dis->ms_get_auth1_authorizer_keystore();
-    if (ks) {
-      isvalid = ah->verify_authorizer(
-	cct,
-	ks,
-	authorizer,
-	0,
-	&authorizer_reply,
-	&con->peer_name,
-	&con->peer_global_id,
-	&con->peer_caps_info,
-	&session_key,
-	connection_secret,
-	challenge);
-      if (isvalid) {
-	return dis->ms_handle_authentication(con)>=0;
-      }
-      return true;
-    }
-  }
-  return false;
-}

@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2015 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -42,7 +42,7 @@
  %define arg5  r9
  %define tmp   r11
  %define return rax
- %define func(x) x:
+ %define func(x) x: endbranch
  %define FUNC_SAVE
  %define FUNC_RESTORE
 
@@ -112,7 +112,7 @@ section .text
 
 
 align 16
-global gf_vect_mul_sse:function
+mk_global gf_vect_mul_sse, function
 func(gf_vect_mul_sse)
 	FUNC_SAVE
 	mov	pos, 0

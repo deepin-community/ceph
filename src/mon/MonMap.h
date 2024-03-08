@@ -20,6 +20,7 @@
 #endif
 
 #include "common/config_fwd.h"
+#include "common/ceph_releases.h"
 
 #include "include/err.h"
 #include "include/types.h"
@@ -27,9 +28,10 @@
 #include "mon/mon_types.h"
 #include "msg/Message.h"
 
+class health_check_map_t;
 
 #ifdef WITH_SEASTAR
-namespace ceph::common {
+namespace crimson::common {
   class ConfigProxy;
 }
 #endif
@@ -44,7 +46,7 @@ struct mon_info_t {
    *
    * i.e., 'foo' in 'mon.foo'
    */
-  string name;
+  std::string name;
   /**
    * monitor's public address(es)
    *
@@ -56,30 +58,37 @@ struct mon_info_t {
    * the priority of the mon, the lower value the more preferred
    */
   uint16_t priority{0};
+  uint16_t weight{0};
+
+  /**
+   * The location of the monitor, in CRUSH hierarchy terms
+   */
+  std::map<std::string,std::string> crush_loc;
 
   // <REMOVE ME>
-  mon_info_t(const string& n, const entity_addr_t& p_addr, uint16_t p)
+  mon_info_t(const std::string& n, const entity_addr_t& p_addr, uint16_t p)
     : name(n), public_addrs(p_addr), priority(p)
   {}
   // </REMOVE ME>
 
-  mon_info_t(const string& n, const entity_addrvec_t& p_addrs, uint16_t p)
-    : name(n), public_addrs(p_addrs), priority(p)
+  mon_info_t(const std::string& n, const entity_addrvec_t& p_addrs,
+             uint16_t p, uint16_t w)
+    : name(n), public_addrs(p_addrs), priority(p), weight(w)
   {}
-  mon_info_t(const string &n, const entity_addrvec_t& p_addrs)
+  mon_info_t(const std::string &n, const entity_addrvec_t& p_addrs)
     : name(n), public_addrs(p_addrs)
   { }
 
   mon_info_t() { }
 
 
-  void encode(bufferlist& bl, uint64_t features) const;
-  void decode(bufferlist::const_iterator& p);
-  void print(ostream& out) const;
+  void encode(ceph::buffer::list& bl, uint64_t features) const;
+  void decode(ceph::buffer::list::const_iterator& p);
+  void print(std::ostream& out) const;
 };
 WRITE_CLASS_ENCODER_FEATURES(mon_info_t)
 
-inline ostream& operator<<(ostream& out, const mon_info_t& mon) {
+inline std::ostream& operator<<(std::ostream& out, const mon_info_t& mon) {
   mon.print(out);
   return out;
 }
@@ -91,10 +100,14 @@ class MonMap {
   utime_t last_changed;
   utime_t created;
 
-  map<string, mon_info_t> mon_info;
-  map<entity_addr_t, string> addr_mons;
+  std::map<std::string, mon_info_t> mon_info;
+  std::map<entity_addr_t, std::string> addr_mons;
 
-  vector<string> ranks;
+  std::vector<std::string> ranks;
+  /* ranks which were removed when this map took effect.
+     There should only be one at a time, but leave support
+     for arbitrary numbers just to be safe. */
+  std::set<unsigned> removed_ranks;
 
   /**
    * Persistent Features are all those features that once set on a
@@ -132,12 +145,25 @@ class MonMap {
   }
 
   // upgrade gate
-  uint8_t min_mon_release = 0;
+  ceph_release_t min_mon_release{ceph_release_t::unknown};
 
-  void _add_ambiguous_addr(const string& name,
-			   entity_addr_t addr,
-			   int priority,
-			   bool for_mkfs=false);
+  void _add_ambiguous_addr(const std::string& name,
+                           entity_addr_t addr,
+                           int priority,
+                           int weight,
+                           bool for_mkfs);
+
+  enum election_strategy {
+			  // Keep in sync with ElectionLogic.h!
+    CLASSIC = 1, // the original rank-based one
+    DISALLOW = 2, // disallow a set from being leader
+    CONNECTIVITY = 3 // includes DISALLOW, extends to prefer stronger connections
+  };
+  election_strategy strategy = CLASSIC;
+  std::set<std::string> disallowed_leaders; // can't be leader under CONNECTIVITY/DISALLOW
+  bool stretch_mode_enabled = false;
+  std::string tiebreaker_mon;
+  std::set<std::string> stretch_marked_down_mons; // can't be leader until fully recovered
 
 public:
   void calc_legacy_ranks();
@@ -176,7 +202,7 @@ public:
    *
    * @param ls list to populate with the monitors' addresses
    */
-  void list_addrs(list<entity_addr_t>& ls) const {
+  void list_addrs(std::list<entity_addr_t>& ls) const {
     for (auto& i : mon_info) {
       for (auto& j : i.second.public_addrs.v) {
 	ls.push_back(j);
@@ -211,9 +237,9 @@ public:
    * @param name Monitor name (i.e., 'foo' in 'mon.foo')
    * @param addr Monitor's public address
    */
-  void add(const string &name, const entity_addrvec_t &addrv,
-	   int priority=0) {
-    add(mon_info_t(name, addrv, priority));
+  void add(const std::string &name, const entity_addrvec_t &addrv,
+	   uint16_t priority=0, uint16_t weight=0) {
+    add(mon_info_t(name, addrv, priority, weight));
   }
 
   /**
@@ -221,10 +247,16 @@ public:
    *
    * @param name Monitor name (i.e., 'foo' in 'mon.foo')
    */
-  void remove(const string &name) {
+  void remove(const std::string &name) {
+    // this must match what we do in ConnectionTracker::notify_rank_removed
     ceph_assert(mon_info.count(name));
+    int rank = get_rank(name);
     mon_info.erase(name);
+    disallowed_leaders.erase(name);
     ceph_assert(mon_info.count(name) == 0);
+    if (rank >= 0 ) {
+      removed_ranks.insert(rank);
+    }
     if (get_required_features().contains_all(
 	  ceph::features::mon::FEATURE_NAUTILUS)) {
       ranks.erase(std::find(ranks.begin(), ranks.end(), name));
@@ -241,7 +273,7 @@ public:
    * @param oldname monitor's current name (i.e., 'foo' in 'mon.foo')
    * @param newname monitor's new name (i.e., 'bar' in 'mon.bar')
    */
-  void rename(string oldname, string newname) {
+  void rename(std::string oldname, std::string newname) {
     ceph_assert(contains(oldname));
     ceph_assert(!contains(newname));
     mon_info[newname] = mon_info[oldname];
@@ -257,7 +289,7 @@ public:
     calc_addr_mons();
   }
 
-  int set_rank(const string& name, int rank) {
+  int set_rank(const std::string& name, int rank) {
     int oldrank = get_rank(name);
     if (oldrank < 0) {
       return -ENOENT;
@@ -272,7 +304,7 @@ public:
     return 0;
   }
 
-  bool contains(const string& name) const {
+  bool contains(const std::string& name) const {
     return mon_info.count(name);
   }
 
@@ -285,7 +317,7 @@ public:
    * @returns true if monmap contains a monitor with address @p;
    *          false otherwise.
    */
-  bool contains(const entity_addr_t &a, string *name=nullptr) const {
+  bool contains(const entity_addr_t &a, std::string *name=nullptr) const {
     for (auto& i : mon_info) {
       for (auto& j : i.second.public_addrs.v) {
 	if (j == a) {
@@ -298,7 +330,7 @@ public:
     }
     return false;
   }
-  bool contains(const entity_addrvec_t &av, string *name=nullptr) const {
+  bool contains(const entity_addrvec_t &av, std::string *name=nullptr) const {
     for (auto& i : mon_info) {
       for (auto& j : i.second.public_addrs.v) {
 	for (auto& k : av.v) {
@@ -314,27 +346,27 @@ public:
     return false;
   }
 
-  string get_name(unsigned n) const {
+  std::string get_name(unsigned n) const {
     ceph_assert(n < ranks.size());
     return ranks[n];
   }
-  string get_name(const entity_addr_t& a) const {
-    map<entity_addr_t,string>::const_iterator p = addr_mons.find(a);
+  std::string get_name(const entity_addr_t& a) const {
+    std::map<entity_addr_t, std::string>::const_iterator p = addr_mons.find(a);
     if (p == addr_mons.end())
-      return string();
+      return std::string();
     else
       return p->second;
   }
-  string get_name(const entity_addrvec_t& av) const {
+  std::string get_name(const entity_addrvec_t& av) const {
     for (auto& i : av.v) {
-      map<entity_addr_t,string>::const_iterator p = addr_mons.find(i);
+      std::map<entity_addr_t, std::string>::const_iterator p = addr_mons.find(i);
       if (p != addr_mons.end())
 	return p->second;
     }
-    return string();
+    return std::string();
   }
 
-  int get_rank(const string& n) const {
+  int get_rank(const std::string& n) const {
     if (auto found = std::find(ranks.begin(), ranks.end(), n);
 	found != ranks.end()) {
       return std::distance(ranks.begin(), found);
@@ -343,47 +375,62 @@ public:
     }
   }
   int get_rank(const entity_addr_t& a) const {
-    string n = get_name(a);
+    std::string n = get_name(a);
     if (!n.empty()) {
       return get_rank(n);
     }
     return -1;
   }
   int get_rank(const entity_addrvec_t& av) const {
-    string n = get_name(av);
+    std::string n = get_name(av);
     if (!n.empty()) {
       return get_rank(n);
     }
     return -1;
   }
-  bool get_addr_name(const entity_addr_t& a, string& name) {
+  bool get_addr_name(const entity_addr_t& a, std::string& name) {
     if (addr_mons.count(a) == 0)
       return false;
     name = addr_mons[a];
     return true;
   }
 
-  const entity_addrvec_t& get_addrs(const string& n) const {
+  const entity_addrvec_t& get_addrs(const std::string& n) const {
     ceph_assert(mon_info.count(n));
-    map<string,mon_info_t>::const_iterator p = mon_info.find(n);
+    std::map<std::string,mon_info_t>::const_iterator p = mon_info.find(n);
     return p->second.public_addrs;
   }
   const entity_addrvec_t& get_addrs(unsigned m) const {
     ceph_assert(m < ranks.size());
     return get_addrs(ranks[m]);
   }
-  void set_addrvec(const string& n, const entity_addrvec_t& a) {
+  void set_addrvec(const std::string& n, const entity_addrvec_t& a) {
     ceph_assert(mon_info.count(n));
     mon_info[n].public_addrs = a;
     calc_addr_mons();
   }
+  uint16_t get_priority(const std::string& n) const {
+    auto it = mon_info.find(n);
+    ceph_assert(it != mon_info.end());
+    return it->second.priority;
+  }
+  uint16_t get_weight(const std::string& n) const {
+    auto it = mon_info.find(n);
+    ceph_assert(it != mon_info.end());
+    return it->second.weight;
+  }
+  void set_weight(const std::string& n, uint16_t v) {
+    auto it = mon_info.find(n);
+    ceph_assert(it != mon_info.end());
+    it->second.weight = v;
+  }
 
-  void encode(bufferlist& blist, uint64_t con_features) const;
-  void decode(bufferlist& blist) {
+  void encode(ceph::buffer::list& blist, uint64_t con_features) const;
+  void decode(ceph::buffer::list& blist) {
     auto p = std::cbegin(blist);
     decode(p);
   }
-  void decode(bufferlist::const_iterator& p);
+  void decode(ceph::buffer::list::const_iterator& p);
 
   void generate_fsid() {
     fsid.generate_random();
@@ -404,12 +451,12 @@ public:
    *   3 config [mon.*] sections, and 'mon addr' fields in those sections
    *
    * @param cct context (and associated config)
-   * @param errout ostream to send error messages too
+   * @param errout std::ostream to send error messages too
    */
 #ifdef WITH_SEASTAR
-  seastar::future<> build_initial(const ceph::common::ConfigProxy& conf, bool for_mkfs);
+  seastar::future<> build_initial(const crimson::common::ConfigProxy& conf, bool for_mkfs);
 #else
-  int build_initial(CephContext *cct, bool for_mkfs, ostream& errout);
+  int build_initial(CephContext *cct, bool for_mkfs, std::ostream& errout);
 #endif
   /**
    * filter monmap given a set of initial members.
@@ -425,17 +472,19 @@ public:
    * @param removed optional pointer to set to insert removed mon addrs to
    */
   void set_initial_members(CephContext *cct,
-			   list<std::string>& initial_members,
-			   string my_name,
+			   std::list<std::string>& initial_members,
+			   std::string my_name,
 			   const entity_addrvec_t& my_addrs,
-			   set<entity_addrvec_t> *removed);
+			   std::set<entity_addrvec_t> *removed);
 
-  void print(ostream& out) const;
-  void print_summary(ostream& out) const;
+  void print(std::ostream& out) const;
+  void print_summary(std::ostream& out) const;
   void dump(ceph::Formatter *f) const;
   void dump_summary(ceph::Formatter *f) const;
 
-  static void generate_test_instances(list<MonMap*>& o);
+  void check_health(health_check_map_t *checks) const;
+
+  static void generate_test_instances(std::list<MonMap*>& o);
 protected:
   /**
    * build a monmap from a list of entity_addrvec_t's
@@ -477,9 +526,11 @@ protected:
   seastar::future<> read_monmap(const std::string& monmap);
   /// try to build monmap with different settings, like
   /// mon_host, mon* sections, and mon_dns_srv_name
-  seastar::future<> build_monmap(const ceph::common::ConfigProxy& conf, bool for_mkfs);
+  seastar::future<> build_monmap(const crimson::common::ConfigProxy& conf, bool for_mkfs);
   /// initialize monmap by resolving given service name
   seastar::future<> init_with_dns_srv(bool for_mkfs, const std::string& name);
+  /// initialize monmap with `mon_host` or `mon_host_override`
+  bool maybe_init_with_mon_host(const std::string& mon_host, bool for_mkfs);
 #else
   /// read from encoded monmap file
   int init_with_monmap(const std::string& monmap, std::ostream& errout);
@@ -489,7 +540,7 @@ protected:
 };
 WRITE_CLASS_ENCODER_FEATURES(MonMap)
 
-inline ostream& operator<<(ostream &out, const MonMap &m) {
+inline std::ostream& operator<<(std::ostream &out, const MonMap &m) {
   m.print_summary(out);
   return out;
 }

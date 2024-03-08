@@ -1,11 +1,9 @@
-
-
 import json
 import logging
 import os
 from textwrap import dedent
-import time
-from teuthology.orchestra.run import CommandFailedError
+from typing import Optional
+from teuthology.exceptions import CommandFailedError
 from tasks.cephfs.fuse_mount import FuseMount
 from tasks.cephfs.cephfs_test_case import CephFSTestCase
 
@@ -20,12 +18,11 @@ class FullnessTestCase(CephFSTestCase):
     data_only = False
 
     # Subclasses define how many bytes should be written to achieve fullness
-    pool_capacity = None
+    pool_capacity: Optional[int] = None
     fill_mb = None
 
-    # Subclasses define what fullness means to them
     def is_full(self):
-        raise NotImplementedError()
+        return self.fs.is_full()
 
     def setUp(self):
         CephFSTestCase.setUp(self)
@@ -124,14 +121,14 @@ class FullnessTestCase(CephFSTestCase):
         # how soon the cluster recognises its own fullness
         self.mount_a.write_n_mb("large_file_a", self.fill_mb // 2)
         try:
-            self.mount_a.write_n_mb("large_file_b", self.fill_mb // 2)
+            self.mount_a.write_n_mb("large_file_b", (self.fill_mb * 1.1) // 2)
         except CommandFailedError:
             log.info("Writing file B failed (full status happened already)")
             assert self.is_full()
         else:
             log.info("Writing file B succeeded (full status will happen soon)")
             self.wait_until_true(lambda: self.is_full(),
-                                 timeout=osd_mon_report_interval * 5)
+                                 timeout=osd_mon_report_interval * 120)
 
         # Attempting to write more data should give me ENOSPC
         with self.assertRaises(CommandFailedError) as ar:
@@ -166,7 +163,7 @@ class FullnessTestCase(CephFSTestCase):
         # * The MDS to purge the stray folder and execute object deletions
         #  * The OSDs to inform the mon that they are no longer full
         self.wait_until_true(lambda: not self.is_full(),
-                             timeout=osd_mon_report_interval * 5)
+                             timeout=osd_mon_report_interval * 120)
 
         # Wait for the MDS to see the latest OSD map so that it will reliably
         # be applying the free space policy
@@ -212,9 +209,13 @@ class FullnessTestCase(CephFSTestCase):
             log.warning("This test may run rather slowly unless you decrease"
                      "osd_mon_report_interval (5 is a good setting)!")
 
+        # set the object_size to 1MB to make the objects destributed more evenly
+        # among the OSDs to fix Tracker#45434
+        file_layout = "stripe_unit=1048576 stripe_count=1 object_size=1048576"
         self.mount_a.run_python(template.format(
             fill_mb=self.fill_mb,
             file_path=file_path,
+            file_layout=file_layout,
             full_wait=full_wait,
             is_fuse=isinstance(self.mount_a, FuseMount)
         ))
@@ -232,6 +233,7 @@ class FullnessTestCase(CephFSTestCase):
             print("writing some data through which we expect to succeed")
             bytes = 0
             f = os.open("{file_path}", os.O_WRONLY | os.O_CREAT)
+            os.setxattr("{file_path}", 'ceph.file.layout', b'{file_layout}')
             bytes += os.write(f, b'a' * 512 * 1024)
             os.fsync(f)
             print("fsync'ed data successfully, will now attempt to fill fs")
@@ -303,6 +305,7 @@ class FullnessTestCase(CephFSTestCase):
             print("writing some data through which we expect to succeed")
             bytes = 0
             f = os.open("{file_path}", os.O_WRONLY | os.O_CREAT)
+            os.setxattr("{file_path}", 'ceph.file.layout', b'{file_layout}')
             bytes += os.write(f, b'a' * 4096)
             os.fsync(f)
             print("fsync'ed data successfully, will now attempt to fill fs")
@@ -318,8 +321,13 @@ class FullnessTestCase(CephFSTestCase):
                     bytes += os.write(f, b'x' * 1024 * 1024)
                     print("wrote bytes via buffered write, moving on to fsync")
                 except OSError as e:
-                    print("Unexpected error %s from write() instead of fsync()" % e)
-                    raise
+                    if {is_fuse}:
+                        print("Unexpected error %s from write() instead of fsync()" % e)
+                        raise
+                    else:
+                        print("Reached fullness after %.2f MB" % (bytes / (1024.0 * 1024.0)))
+                        full = True
+                        break
 
                 try:
                     os.fsync(f)
@@ -357,8 +365,8 @@ class TestQuotaFull(FullnessTestCase):
     """
     Test per-pool fullness, which indicates quota limits exceeded
     """
-    pool_capacity = 1024 * 1024 * 32   # arbitrary low-ish limit
-    fill_mb = pool_capacity // (1024 * 1024)
+    pool_capacity = 1024 * 1024 * 32  # arbitrary low-ish limit
+    fill_mb = pool_capacity // (1024 * 1024)  # type: ignore
 
     # We are only testing quota handling on the data pool, not the metadata
     # pool.
@@ -370,9 +378,6 @@ class TestQuotaFull(FullnessTestCase):
         pool_name = self.fs.get_data_pool_name()
         self.fs.mon_manager.raw_cluster_cmd("osd", "pool", "set-quota", pool_name,
                                             "max_bytes", "{0}".format(self.pool_capacity))
-
-    def is_full(self):
-        return self.fs.is_full()
 
 
 class TestClusterFull(FullnessTestCase):
@@ -386,13 +391,8 @@ class TestClusterFull(FullnessTestCase):
         super(TestClusterFull, self).setUp()
 
         if self.pool_capacity is None:
-            max_avail = self.fs.get_pool_df(self._data_pool_name())['max_avail']
-            full_ratio = float(self.fs.get_config("mon_osd_full_ratio", service_type="mon"))
-            TestClusterFull.pool_capacity = int(max_avail * full_ratio)
+            TestClusterFull.pool_capacity = self.fs.get_pool_df(self._data_pool_name())['max_avail']
             TestClusterFull.fill_mb = (self.pool_capacity // (1024 * 1024))
-
-    def is_full(self):
-        return self.fs.is_full()
 
 # Hide the parent class so that unittest.loader doesn't try to run it.
 del globals()['FullnessTestCase']

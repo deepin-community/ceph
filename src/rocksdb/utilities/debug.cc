@@ -7,23 +7,80 @@
 
 #include "rocksdb/utilities/debug.h"
 
-#include "db/db_impl.h"
+#include "db/db_impl/db_impl.h"
+#include "rocksdb/utilities/options_type.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
+
+static std::unordered_map<std::string, ValueType> value_type_string_map = {
+    {"TypeDeletion", ValueType::kTypeDeletion},
+    {"TypeValue", ValueType::kTypeValue},
+    {"TypeMerge", ValueType::kTypeMerge},
+    {"TypeLogData", ValueType::kTypeLogData},
+    {"TypeColumnFamilyDeletion", ValueType::kTypeColumnFamilyDeletion},
+    {"TypeColumnFamilyValue", ValueType::kTypeColumnFamilyValue},
+    {"TypeColumnFamilyMerge", ValueType::kTypeColumnFamilyMerge},
+    {"TypeSingleDeletion", ValueType::kTypeSingleDeletion},
+    {"TypeColumnFamilySingleDeletion",
+     ValueType::kTypeColumnFamilySingleDeletion},
+    {"TypeBeginPrepareXID", ValueType::kTypeBeginPrepareXID},
+    {"TypeEndPrepareXID", ValueType::kTypeEndPrepareXID},
+    {"TypeCommitXID", ValueType::kTypeCommitXID},
+    {"TypeRollbackXID", ValueType::kTypeRollbackXID},
+    {"TypeNoop", ValueType::kTypeNoop},
+    {"TypeColumnFamilyRangeDeletion",
+     ValueType::kTypeColumnFamilyRangeDeletion},
+    {"TypeRangeDeletion", ValueType::kTypeRangeDeletion},
+    {"TypeColumnFamilyBlobIndex", ValueType::kTypeColumnFamilyBlobIndex},
+    {"TypeBlobIndex", ValueType::kTypeBlobIndex},
+    {"TypeBeginPersistedPrepareXID", ValueType::kTypeBeginPersistedPrepareXID},
+    {"TypeBeginUnprepareXID", ValueType::kTypeBeginUnprepareXID},
+    {"TypeDeletionWithTimestamp", ValueType::kTypeDeletionWithTimestamp},
+    {"TypeCommitXIDAndTimestamp", ValueType::kTypeCommitXIDAndTimestamp},
+    {"TypeWideColumnEntity", ValueType::kTypeWideColumnEntity},
+    {"TypeColumnFamilyWideColumnEntity",
+     ValueType::kTypeColumnFamilyWideColumnEntity}};
+
+std::string KeyVersion::GetTypeName() const {
+  std::string type_name;
+  if (SerializeEnum<ValueType>(value_type_string_map,
+                               static_cast<ValueType>(type), &type_name)) {
+    return type_name;
+  } else {
+    return "Invalid";
+  }
+}
 
 Status GetAllKeyVersions(DB* db, Slice begin_key, Slice end_key,
                          size_t max_num_ikeys,
                          std::vector<KeyVersion>* key_versions) {
-  assert(key_versions != nullptr);
+  if (nullptr == db) {
+    return Status::InvalidArgument("db cannot be null.");
+  }
+  return GetAllKeyVersions(db, db->DefaultColumnFamily(), begin_key, end_key,
+                           max_num_ikeys, key_versions);
+}
+
+Status GetAllKeyVersions(DB* db, ColumnFamilyHandle* cfh, Slice begin_key,
+                         Slice end_key, size_t max_num_ikeys,
+                         std::vector<KeyVersion>* key_versions) {
+  if (nullptr == db) {
+    return Status::InvalidArgument("db cannot be null.");
+  }
+  if (nullptr == cfh) {
+    return Status::InvalidArgument("Column family handle cannot be null.");
+  }
+  if (nullptr == key_versions) {
+    return Status::InvalidArgument("key_versions cannot be null.");
+  }
   key_versions->clear();
 
   DBImpl* idb = static_cast<DBImpl*>(db->GetRootDB());
-  auto icmp = InternalKeyComparator(idb->GetOptions().comparator);
-  ReadRangeDelAggregator range_del_agg(&icmp,
-                                       kMaxSequenceNumber /* upper_bound */);
+  auto icmp = InternalKeyComparator(idb->GetOptions(cfh).comparator);
+  ReadOptions read_options;
   Arena arena;
   ScopedArenaIterator iter(
-      idb->NewInternalIterator(&arena, &range_del_agg, kMaxSequenceNumber));
+      idb->NewInternalIterator(read_options, &arena, kMaxSequenceNumber, cfh));
 
   if (!begin_key.empty()) {
     InternalKey ikey;
@@ -36,9 +93,10 @@ Status GetAllKeyVersions(DB* db, Slice begin_key, Slice end_key,
   size_t num_keys = 0;
   for (; iter->Valid(); iter->Next()) {
     ParsedInternalKey ikey;
-    if (!ParseInternalKey(iter->key(), &ikey)) {
-      return Status::Corruption("Internal Key [" + iter->key().ToString() +
-                                "] parse error!");
+    Status pik_status =
+        ParseInternalKey(iter->key(), &ikey, true /* log_err_key */);  // TODO
+    if (!pik_status.ok()) {
+      return pik_status;
     }
 
     if (!end_key.empty() &&
@@ -57,6 +115,6 @@ Status GetAllKeyVersions(DB* db, Slice begin_key, Slice end_key,
   return Status::OK();
 }
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
 
 #endif  // ROCKSDB_LITE

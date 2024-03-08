@@ -42,6 +42,9 @@
 #include <seastar/net/udp.hh>
 #include <seastar/core/metrics_registration.hh>
 
+#include "ipv4_address.hh"
+#include "ipv6_address.hh"
+
 namespace seastar {
 
 namespace net {
@@ -49,80 +52,9 @@ namespace net {
 class ipv4;
 template <ip_protocol_num ProtoNum>
 class ipv4_l4;
-struct ipv4_address;
 
 template <typename InetTraits>
 class tcp;
-
-struct ipv4_address {
-    ipv4_address() : ip(0) {}
-    explicit ipv4_address(uint32_t ip) : ip(ip) {}
-    explicit ipv4_address(const std::string& addr) {
-        boost::system::error_code ec;
-        auto ipv4 = boost::asio::ip::address_v4::from_string(addr, ec);
-        if (ec) {
-            throw std::runtime_error(format("Wrong format for IPv4 address {}. Please ensure it's in dotted-decimal format",
-                                            addr));
-        }
-        ip = static_cast<uint32_t>(std::move(ipv4).to_ulong());
-    }
-    ipv4_address(ipv4_addr addr) {
-        ip = addr.ip;
-    }
-
-    packed<uint32_t> ip;
-
-    template <typename Adjuster>
-    auto adjust_endianness(Adjuster a) { return a(ip); }
-
-    friend bool operator==(ipv4_address x, ipv4_address y) {
-        return x.ip == y.ip;
-    }
-    friend bool operator!=(ipv4_address x, ipv4_address y) {
-        return x.ip != y.ip;
-    }
-
-    static ipv4_address read(const char* p) {
-        ipv4_address ia;
-        ia.ip = read_be<uint32_t>(p);
-        return ia;
-    }
-    static ipv4_address consume(const char*& p) {
-        auto ia = read(p);
-        p += 4;
-        return ia;
-    }
-    void write(char* p) const {
-        write_be<uint32_t>(p, ip);
-    }
-    void produce(char*& p) const {
-        produce_be<uint32_t>(p, ip);
-    }
-    static constexpr size_t size() {
-        return 4;
-    }
-} __attribute__((packed));
-
-static inline bool is_unspecified(ipv4_address addr) { return addr.ip == 0; }
-
-std::ostream& operator<<(std::ostream& os, ipv4_address a);
-
-}
-
-}
-
-namespace std {
-
-template <>
-struct hash<seastar::net::ipv4_address> {
-    size_t operator()(seastar::net::ipv4_address a) const { return a.ip; }
-};
-
-}
-
-namespace seastar {
-
-namespace net {
 
 struct ipv4_traits {
     using address_type = ipv4_address;
@@ -133,7 +65,7 @@ struct ipv4_traits {
         ethernet_address e_dst;
         ip_protocol_num proto_num;
     };
-    using packet_provider_type = std::function<compat::optional<l4packet> ()>;
+    using packet_provider_type = std::function<std::optional<l4packet> ()>;
     static void tcp_pseudo_header_checksum(checksummer& csum, ipv4_address src, ipv4_address dst, uint16_t len) {
         csum.sum_many(src.ip.raw, dst.ip.raw, uint8_t(0), uint8_t(ip_protocol_num::tcp), len);
     }
@@ -151,6 +83,9 @@ public:
     ipv4_l4(ipv4& inet) : _inet(inet) {}
     void register_packet_provider(ipv4_traits::packet_provider_type func);
     future<ethernet_address> get_l2_dst_address(ipv4_address to);
+    const ipv4& inet() const {
+        return _inet;
+    }
 };
 
 class ip_protocol {
@@ -221,7 +156,7 @@ public:
     using inet_type = ipv4_l4<ip_protocol_num::icmp>;
     explicit icmp(inet_type& inet) : _inet(inet) {
         _inet.register_packet_provider([this] {
-            compat::optional<ipv4_traits::l4packet> l4p;
+            std::optional<ipv4_traits::l4packet> l4p;
             if (!_packetq.empty()) {
                 l4p = std::move(_packetq.front());
                 _packetq.pop_front();
@@ -286,6 +221,10 @@ public:
     void send(uint16_t src_port, ipv4_addr dst, packet &&p);
     bool forward(forward_hash& out_hash_data, packet& p, size_t off) override;
     void set_queue_size(int size) { _queue_size = size; }
+
+    const ipv4& inet() const {
+        return _inet;
+    }
 };
 
 struct ip_hdr;
@@ -341,7 +280,6 @@ private:
     ipv4_address _gw_address;
     ipv4_address _netmask;
     l3_protocol _l3;
-    subscription<packet, ethernet_address> _rx_packets;
     ipv4_tcp _tcp;
     ipv4_icmp _icmp;
     ipv4_udp _udp;
@@ -372,7 +310,7 @@ private:
 private:
     future<> handle_received_packet(packet p, ethernet_address from);
     bool forward(forward_hash& out_hash_data, packet& p, size_t off);
-    compat::optional<l3_protocol::l3packet> get_packet();
+    std::optional<l3_protocol::l3packet> get_packet();
     bool in_my_netmask(ipv4_address a) const;
     void frag_limit_mem();
     void frag_timeout();
@@ -388,7 +326,7 @@ private:
 public:
     explicit ipv4(interface* netif);
     void set_host_address(ipv4_address ip);
-    ipv4_address host_address();
+    ipv4_address host_address() const;
     void set_gw_address(ipv4_address ip);
     ipv4_address gw_address() const;
     void set_netmask_address(ipv4_address ip);

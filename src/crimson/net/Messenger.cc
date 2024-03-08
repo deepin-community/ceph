@@ -4,18 +4,16 @@
 #include "Messenger.h"
 #include "SocketMessenger.h"
 
-namespace ceph::net {
+namespace crimson::net {
 
-seastar::future<Messenger*>
+MessengerRef
 Messenger::create(const entity_name_t& name,
                   const std::string& lname,
-                  const uint64_t nonce,
-                  const int master_sid)
+                  uint64_t nonce,
+                  bool dispatch_only_on_this_shard)
 {
-  return create_sharded<SocketMessenger>(name, lname, nonce, master_sid)
-    .then([](Messenger *msgr) {
-      return msgr;
-    });
+  return seastar::make_shared<SocketMessenger>(
+      name, lname, nonce, dispatch_only_on_this_shard);
 }
 
-} // namespace ceph::net
+} // namespace crimson::net

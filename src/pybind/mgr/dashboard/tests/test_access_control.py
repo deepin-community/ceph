@@ -1,21 +1,21 @@
 # -*- coding: utf-8 -*-
 # pylint: disable=dangerous-default-value,too-many-public-methods
-from __future__ import absolute_import
 
 import errno
 import json
 import tempfile
 import time
 import unittest
+from datetime import datetime, timedelta
 
 from mgr_module import ERROR_MSG_EMPTY_INPUT_FILE
 
-from . import CmdException, CLICommandTestMixin
 from .. import mgr
-from ..security import Scope, Permission
-from ..services.access_control import load_access_control_db, \
-                                      password_hash, AccessControlDB, \
-                                      SYSTEM_ROLES
+from ..security import Permission, Scope
+from ..services.access_control import SYSTEM_ROLES, AccessControlDB, \
+    PasswordPolicy, load_access_control_db, password_hash
+from ..settings import Settings
+from ..tests import CLICommandTestMixin, CmdException
 
 
 class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
@@ -72,7 +72,8 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
         self.assertNotIn(rolename, db['roles'])
 
     def validate_persistent_user(self, username, roles, password=None,
-                                 name=None, email=None, lastUpdate=None):
+                                 name=None, email=None, last_update=None,
+                                 enabled=True, pwdExpirationDate=None):
         db = self.load_persistent_db()
         self.assertIn('users', db)
         self.assertIn(username, db['users'])
@@ -84,8 +85,11 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
             self.assertEqual(db['users'][username]['name'], name)
         if email:
             self.assertEqual(db['users'][username]['email'], email)
-        if lastUpdate:
-            self.assertEqual(db['users'][username]['lastUpdate'], lastUpdate)
+        if last_update:
+            self.assertEqual(db['users'][username]['lastUpdate'], last_update)
+        if pwdExpirationDate:
+            self.assertEqual(db['users'][username]['pwdExpirationDate'], pwdExpirationDate)
+        self.assertEqual(db['users'][username]['enabled'], enabled)
 
     def validate_persistent_no_user(self, username):
         db = self.load_persistent_db()
@@ -150,7 +154,10 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
     def test_show_system_role(self):
         role = self.exec_cmd('ac-role-show', rolename="read-only")
         self.assertEqual(role['name'], 'read-only')
-        self.assertEqual(role['description'], 'Read-Only')
+        self.assertEqual(
+            role['description'],
+            'allows read permission for all security scope except dashboard settings and config-opt'
+        )
 
     def test_delete_system_role(self):
         with self.assertRaises(CmdException) as ctx:
@@ -272,26 +279,40 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
         self.assertEqual(str(ctx.exception),
                          "Cannot update system role 'read-only'")
 
-    def test_create_user(self, username='admin', rolename=None):
+    def test_create_user(self, username='admin', rolename=None, enabled=True,
+                         pwdExpirationDate=None):
         user = self.exec_cmd('ac-user-create', username=username,
                              rolename=rolename, inbuf='admin',
                              name='{} User'.format(username),
-                             email='{}@user.com'.format(username))
+                             email='{}@user.com'.format(username),
+                             enabled=enabled, force_password=True,
+                             pwd_expiration_date=pwdExpirationDate)
 
         pass_hash = password_hash('admin', user['password'])
         self.assertDictEqual(user, {
             'username': username,
             'password': pass_hash,
+            'pwdExpirationDate': pwdExpirationDate,
+            'pwdUpdateRequired': False,
             'lastUpdate': user['lastUpdate'],
             'name': '{} User'.format(username),
             'email': '{}@user.com'.format(username),
-            'roles': [rolename] if rolename else []
+            'roles': [rolename] if rolename else [],
+            'enabled': enabled
         })
         self.validate_persistent_user(username, [rolename] if rolename else [],
                                       pass_hash, '{} User'.format(username),
                                       '{}@user.com'.format(username),
-                                      user['lastUpdate'])
+                                      user['lastUpdate'], enabled)
         return user
+
+    def test_create_disabled_user(self):
+        self.test_create_user(enabled=False)
+
+    def test_create_user_pwd_expiration_date(self):
+        expiration_date = datetime.utcnow() + timedelta(days=10)
+        expiration_date = int(time.mktime(expiration_date.timetuple()))
+        self.test_create_user(pwdExpirationDate=expiration_date)
 
     def test_create_user_with_role(self):
         self.test_add_role_scope_perms()
@@ -310,12 +331,9 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
 
     def test_create_duplicate_user(self):
         self.test_create_user()
-
-        with self.assertRaises(CmdException) as ctx:
-            self.exec_cmd('ac-user-create', username='admin', inbuf='admin')
-
-        self.assertEqual(ctx.exception.retcode, -errno.EEXIST)
-        self.assertEqual(str(ctx.exception), "User 'admin' already exists")
+        ret = self.exec_cmd('ac-user-create', username='admin', inbuf='admin',
+                            force_password=True)
+        self.assertEqual(ret, "User 'admin' already exists")
 
     def test_create_users_with_dne_role(self):
         # one time call to setup our persistent db
@@ -325,7 +343,8 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
         try:
             self.exec_cmd('ac-user-create', username='foo',
                           rolename='dne_role', inbuf='foopass',
-                          name='foo User', email='foo@user.com')
+                          name='foo User', email='foo@user.com',
+                          force_password=True)
         except CmdException as e:
             self.assertEqual(e.retcode, -errno.ENOENT)
 
@@ -345,7 +364,8 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
         self.test_create_role()
         self.exec_cmd('ac-user-create', username='bar',
                       rolename='test_role', inbuf='barpass',
-                      name='bar User', email='bar@user.com')
+                      name='bar User', email='bar@user.com',
+                      force_password=True)
 
         # validate db:
         #   user 'foo' should not exist
@@ -372,7 +392,7 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
             uroles.sort()
             user = self.exec_cmd('ac-user-add-roles', username=username,
                                  roles=[role])
-            self.assertDictContainsSubset({'roles': uroles}, user)
+            self.assertLessEqual(uroles, user['roles'])
         self.validate_persistent_user(username, uroles)
         self.assertGreaterEqual(user['lastUpdate'], user_orig['lastUpdate'])
 
@@ -380,8 +400,8 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
         user_orig = self.test_create_user()
         user = self.exec_cmd('ac-user-add-roles', username="admin",
                              roles=['pool-manager', 'block-manager'])
-        self.assertDictContainsSubset(
-            {'roles': ['block-manager', 'pool-manager']}, user)
+        self.assertLessEqual(['block-manager', 'pool-manager'],
+                             user['roles'])
         self.validate_persistent_user('admin', ['block-manager',
                                                 'pool-manager'])
         self.assertGreaterEqual(user['lastUpdate'], user_orig['lastUpdate'])
@@ -408,14 +428,13 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
         user_orig = self.test_create_user()
         user = self.exec_cmd('ac-user-add-roles', username="admin",
                              roles=['pool-manager'])
-        self.assertDictContainsSubset(
-            {'roles': ['pool-manager']}, user)
+        self.assertLessEqual(['pool-manager'], user['roles'])
         self.validate_persistent_user('admin', ['pool-manager'])
         self.assertGreaterEqual(user['lastUpdate'], user_orig['lastUpdate'])
         user2 = self.exec_cmd('ac-user-set-roles', username="admin",
                               roles=['rgw-manager', 'block-manager'])
-        self.assertDictContainsSubset(
-            {'roles': ['block-manager', 'rgw-manager']}, user2)
+        self.assertLessEqual(['block-manager', 'rgw-manager'],
+                             user2['roles'])
         self.validate_persistent_user('admin', ['block-manager',
                                                 'rgw-manager'])
         self.assertGreaterEqual(user2['lastUpdate'], user['lastUpdate'])
@@ -442,8 +461,7 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
         self.test_add_user_roles()
         user = self.exec_cmd('ac-user-del-roles', username="admin",
                              roles=['pool-manager'])
-        self.assertDictContainsSubset(
-            {'roles': ['block-manager']}, user)
+        self.assertLessEqual(['block-manager'], user['roles'])
         self.validate_persistent_user('admin', ['block-manager'])
 
     def test_del_user_roles_not_existent_user(self):
@@ -483,9 +501,12 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
             'username': 'admin',
             'lastUpdate': user['lastUpdate'],
             'password': pass_hash,
+            'pwdExpirationDate': None,
+            'pwdUpdateRequired': False,
             'name': 'admin User',
             'email': 'admin@user.com',
-            'roles': ['block-manager', 'pool-manager']
+            'roles': ['block-manager', 'pool-manager'],
+            'enabled': True
         })
 
     def test_show_nonexistent_user(self):
@@ -523,10 +544,13 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
         self.assertDictEqual(user, {
             'username': 'admin',
             'password': pass_hash,
+            'pwdExpirationDate': None,
+            'pwdUpdateRequired': False,
             'name': 'Admin Name',
             'email': 'admin@admin.com',
             'lastUpdate': user['lastUpdate'],
-            'roles': []
+            'roles': [],
+            'enabled': True
         })
         self.validate_persistent_user('admin', [], pass_hash, 'Admin Name',
                                       'admin@admin.com')
@@ -543,15 +567,18 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
     def test_set_user_password(self):
         user_orig = self.test_create_user()
         user = self.exec_cmd('ac-user-set-password', username='admin',
-                             inbuf='newpass')
+                             inbuf='newpass', force_password=True)
         pass_hash = password_hash('newpass', user['password'])
         self.assertDictEqual(user, {
             'username': 'admin',
             'password': pass_hash,
+            'pwdExpirationDate': None,
+            'pwdUpdateRequired': False,
             'name': 'admin User',
             'email': 'admin@user.com',
             'lastUpdate': user['lastUpdate'],
-            'roles': []
+            'roles': [],
+            'enabled': True
         })
         self.validate_persistent_user('admin', [], pass_hash, 'admin User',
                                       'admin@user.com')
@@ -569,31 +596,58 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
             pass_hash = password_hash(password, user['password'])
             self.assertEqual(user['password'], pass_hash)
 
-    def test_unicode_password(self):
-        self.test_create_user()
-        password = '章鱼不是密码'
-        with tempfile.TemporaryFile(mode='w+') as pwd_file:
-            pwd_file.write(password)
-            pwd_file.seek(0)
-            user = self.exec_cmd('ac-user-set-password', username='admin',
-                                 inbuf=pwd_file.read(), force_password=True)
-            pass_hash = password_hash(password, user['password'])
-            self.assertEqual(user['password'], pass_hash)
-
     def test_set_user_password_nonexistent_user(self):
         with self.assertRaises(CmdException) as ctx:
             self.exec_cmd('ac-user-set-password', username='admin',
-                          inbuf='newpass')
+                          inbuf='newpass', force_password=True)
 
         self.assertEqual(ctx.exception.retcode, -errno.ENOENT)
         self.assertEqual(str(ctx.exception), "User 'admin' does not exist")
 
     def test_set_user_password_empty(self):
         with self.assertRaises(CmdException) as ctx:
-            self.exec_cmd('ac-user-set-password', username='admin', inbuf='\n')
+            self.exec_cmd('ac-user-set-password', username='admin', inbuf='\n',
+                          force_password=True)
 
         self.assertEqual(ctx.exception.retcode, -errno.EINVAL)
-        self.assertEqual(str(ctx.exception), ERROR_MSG_EMPTY_INPUT_FILE)
+        self.assertIn(ERROR_MSG_EMPTY_INPUT_FILE, str(ctx.exception))
+
+    def test_set_user_password_hash(self):
+        user_orig = self.test_create_user()
+        user = self.exec_cmd('ac-user-set-password-hash', username='admin',
+                             inbuf='$2b$12$Pt3Vq/rDt2y9glTPSV.VFegiLkQeIpddtkhoFetNApYmIJOY8gau2')
+        pass_hash = password_hash('newpass', user['password'])
+        self.assertDictEqual(user, {
+            'username': 'admin',
+            'password': pass_hash,
+            'pwdExpirationDate': None,
+            'pwdUpdateRequired': False,
+            'name': 'admin User',
+            'email': 'admin@user.com',
+            'lastUpdate': user['lastUpdate'],
+            'roles': [],
+            'enabled': True
+        })
+        self.validate_persistent_user('admin', [], pass_hash, 'admin User',
+                                      'admin@user.com')
+        self.assertGreaterEqual(user['lastUpdate'], user_orig['lastUpdate'])
+
+    def test_set_user_password_hash_nonexistent_user(self):
+        with self.assertRaises(CmdException) as ctx:
+            self.exec_cmd('ac-user-set-password-hash', username='admin',
+                          inbuf='$2b$12$Pt3Vq/rDt2y9glTPSV.VFegiLkQeIpddtkhoFetNApYmIJOY8gau2')
+
+        self.assertEqual(ctx.exception.retcode, -errno.ENOENT)
+        self.assertEqual(str(ctx.exception), "User 'admin' does not exist")
+
+    def test_set_user_password_hash_broken_hash(self):
+        self.test_create_user()
+        with self.assertRaises(CmdException) as ctx:
+            self.exec_cmd('ac-user-set-password-hash', username='admin',
+                          inbuf='1')
+
+        self.assertEqual(ctx.exception.retcode, -errno.EINVAL)
+        self.assertEqual(str(ctx.exception), 'Invalid password hash')
 
     def test_set_login_credentials(self):
         self.exec_cmd('set-login-credentials', username='admin',
@@ -603,10 +657,13 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
         self.assertDictEqual(user, {
             'username': 'admin',
             'password': pass_hash,
+            'pwdExpirationDate': None,
+            'pwdUpdateRequired': False,
             'name': None,
             'email': None,
             'lastUpdate': user['lastUpdate'],
-            'roles': ['administrator']
+            'roles': ['administrator'],
+            'enabled': True,
         })
         self.validate_persistent_user('admin', ['administrator'], pass_hash,
                                       None, None)
@@ -620,10 +677,13 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
         self.assertDictEqual(user, {
             'username': 'admin',
             'password': pass_hash,
+            'pwdExpirationDate': None,
+            'pwdUpdateRequired': False,
             'name': 'admin User',
             'email': 'admin@user.com',
             'lastUpdate': user['lastUpdate'],
-            'roles': ['read-only']
+            'roles': ['read-only'],
+            'enabled': True
         })
         self.validate_persistent_user('admin', ['read-only'], pass_hash,
                                       'admin User', 'admin@user.com')
@@ -673,23 +733,138 @@ class AccessControlTest(unittest.TestCase, CLICommandTestMixin):
             'lastUpdate': user['lastUpdate'],
             'password':
                 "$2b$12$sd0Az7mm3FaJl8kN3b/xwOuztaN0sWUwC1SJqjM4wcDw/s5cmGbLK",
+            'pwdExpirationDate': None,
+            'pwdUpdateRequired': False,
             'name': 'admin User',
             'email': 'admin@user.com',
-            'roles': ['block-manager', 'test_role']
+            'roles': ['block-manager', 'test_role'],
+            'enabled': True
         })
 
-    def test_update_from_previous_version_v1(self):
-        self.CONFIG_KEY_DICT['username'] = 'admin'
-        self.CONFIG_KEY_DICT['password'] = \
-            '$2b$12$sd0Az7mm3FaJl8kN3b/xwOuztaN0sWUwC1SJqjM4wcDw/s5cmGbLK'
+    def test_load_v2(self):
+        self.CONFIG_KEY_DICT['accessdb_v2'] = '''
+            {{
+                "users": {{
+                    "admin": {{
+                        "username": "admin",
+                        "password":
+                "$2b$12$sd0Az7mm3FaJl8kN3b/xwOuztaN0sWUwC1SJqjM4wcDw/s5cmGbLK",
+                        "pwdExpirationDate": null,
+                        "pwdUpdateRequired": false,
+                        "roles": ["block-manager", "test_role"],
+                        "name": "admin User",
+                        "email": "admin@user.com",
+                        "lastUpdate": {},
+                        "enabled": true
+                    }}
+                }},
+                "roles": {{
+                    "test_role": {{
+                        "name": "test_role",
+                        "description": "Test Role",
+                        "scopes_permissions": {{
+                            "{}": ["{}", "{}"],
+                            "{}": ["{}"]
+                        }}
+                    }}
+                }},
+                "version": 2
+            }}
+        '''.format(int(round(time.time())), Scope.ISCSI, Permission.READ,
+                   Permission.UPDATE, Scope.POOL, Permission.CREATE)
+
         load_access_control_db()
+        role = self.exec_cmd('ac-role-show', rolename="test_role")
+        self.assertDictEqual(role, {
+            'name': 'test_role',
+            'description': "Test Role",
+            'scopes_permissions': {
+                Scope.ISCSI: [Permission.READ, Permission.UPDATE],
+                Scope.POOL: [Permission.CREATE]
+            }
+        })
         user = self.exec_cmd('ac-user-show', username="admin")
         self.assertDictEqual(user, {
             'username': 'admin',
             'lastUpdate': user['lastUpdate'],
             'password':
                 "$2b$12$sd0Az7mm3FaJl8kN3b/xwOuztaN0sWUwC1SJqjM4wcDw/s5cmGbLK",
-            'name': None,
-            'email': None,
-            'roles': ['administrator']
+            'pwdExpirationDate': None,
+            'pwdUpdateRequired': False,
+            'name': 'admin User',
+            'email': 'admin@user.com',
+            'roles': ['block-manager', 'test_role'],
+            'enabled': True
         })
+
+    def test_password_policy_pw_length(self):
+        Settings.PWD_POLICY_CHECK_LENGTH_ENABLED = True
+        Settings.PWD_POLICY_MIN_LENGTH = 3
+        pw_policy = PasswordPolicy('foo')
+        self.assertTrue(pw_policy.check_password_length())
+
+    def test_password_policy_pw_length_fail(self):
+        Settings.PWD_POLICY_CHECK_LENGTH_ENABLED = True
+        pw_policy = PasswordPolicy('bar')
+        self.assertFalse(pw_policy.check_password_length())
+
+    def test_password_policy_credits_too_weak(self):
+        Settings.PWD_POLICY_CHECK_COMPLEXITY_ENABLED = True
+        pw_policy = PasswordPolicy('foo')
+        pw_credits = pw_policy.check_password_complexity()
+        self.assertEqual(pw_credits, 3)
+
+    def test_password_policy_credits_weak(self):
+        Settings.PWD_POLICY_CHECK_COMPLEXITY_ENABLED = True
+        pw_policy = PasswordPolicy('mypassword1')
+        pw_credits = pw_policy.check_password_complexity()
+        self.assertEqual(pw_credits, 11)
+
+    def test_password_policy_credits_ok(self):
+        Settings.PWD_POLICY_CHECK_COMPLEXITY_ENABLED = True
+        pw_policy = PasswordPolicy('mypassword1!@')
+        pw_credits = pw_policy.check_password_complexity()
+        self.assertEqual(pw_credits, 17)
+
+    def test_password_policy_credits_strong(self):
+        Settings.PWD_POLICY_CHECK_COMPLEXITY_ENABLED = True
+        pw_policy = PasswordPolicy('testpassword0047!@')
+        pw_credits = pw_policy.check_password_complexity()
+        self.assertEqual(pw_credits, 22)
+
+    def test_password_policy_credits_very_strong(self):
+        Settings.PWD_POLICY_CHECK_COMPLEXITY_ENABLED = True
+        pw_policy = PasswordPolicy('testpassword#!$!@$')
+        pw_credits = pw_policy.check_password_complexity()
+        self.assertEqual(pw_credits, 30)
+
+    def test_password_policy_forbidden_words(self):
+        Settings.PWD_POLICY_CHECK_EXCLUSION_LIST_ENABLED = True
+        pw_policy = PasswordPolicy('!@$testdashboard#!$')
+        self.assertTrue(pw_policy.check_if_contains_forbidden_words())
+
+    def test_password_policy_forbidden_words_custom(self):
+        Settings.PWD_POLICY_CHECK_EXCLUSION_LIST_ENABLED = True
+        Settings.PWD_POLICY_EXCLUSION_LIST = 'foo,bar'
+        pw_policy = PasswordPolicy('foo123bar')
+        self.assertTrue(pw_policy.check_if_contains_forbidden_words())
+
+    def test_password_policy_sequential_chars(self):
+        Settings.PWD_POLICY_CHECK_SEQUENTIAL_CHARS_ENABLED = True
+        pw_policy = PasswordPolicy('!@$test123#!$')
+        self.assertTrue(pw_policy.check_if_sequential_characters())
+
+    def test_password_policy_repetitive_chars(self):
+        Settings.PWD_POLICY_CHECK_REPETITIVE_CHARS_ENABLED = True
+        pw_policy = PasswordPolicy('!@$testfooo#!$')
+        self.assertTrue(pw_policy.check_if_repetitive_characters())
+
+    def test_password_policy_contain_username(self):
+        Settings.PWD_POLICY_CHECK_USERNAME_ENABLED = True
+        pw_policy = PasswordPolicy('%admin135)', 'admin')
+        self.assertTrue(pw_policy.check_if_contains_username())
+
+    def test_password_policy_is_old_pwd(self):
+        Settings.PWD_POLICY_CHECK_OLDPWD_ENABLED = True
+        pw_policy = PasswordPolicy('foo', old_password='foo')
+        self.assertTrue(pw_policy.check_is_old_password())

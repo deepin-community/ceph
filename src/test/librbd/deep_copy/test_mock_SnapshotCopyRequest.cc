@@ -3,6 +3,7 @@
 
 #include "test/librbd/test_mock_fixture.h"
 #include "include/rbd/librbd.hpp"
+#include "librbd/AsioEngine.h"
 #include "librbd/ImageCtx.h"
 #include "librbd/ImageState.h"
 #include "librbd/Operations.h"
@@ -106,8 +107,9 @@ public:
 
   librbd::ImageCtx *m_src_image_ctx;
   librbd::ImageCtx *m_dst_image_ctx;
-  ThreadPool *m_thread_pool;
-  ContextWQ *m_work_queue;
+
+  std::shared_ptr<librbd::AsioEngine> m_asio_engine;
+  asio::ContextWQ *m_work_queue;
 
   librbd::SnapSeqs m_snap_seqs;
 
@@ -121,8 +123,9 @@ public:
     ASSERT_EQ(0, create_image_pp(rbd, m_ioctx, dst_image_name, m_image_size));
     ASSERT_EQ(0, open_image(dst_image_name, &m_dst_image_ctx));
 
-    librbd::ImageCtx::get_thread_pool_instance(m_src_image_ctx->cct,
-                                               &m_thread_pool, &m_work_queue);
+    m_asio_engine = std::make_shared<librbd::AsioEngine>(
+      m_src_image_ctx->md_ctx);
+    m_work_queue = m_asio_engine->get_work_queue();
   }
 
   void prepare_exclusive_lock(librbd::MockImageCtx &mock_image_ctx,
@@ -148,8 +151,7 @@ public:
     if ((m_src_image_ctx->features & RBD_FEATURE_EXCLUSIVE_LOCK) == 0) {
       return;
     }
-    EXPECT_CALL(mock_exclusive_lock, start_op(_)).WillOnce(
-      ReturnNew<FunctionContext>([](int) {}));
+    EXPECT_CALL(mock_exclusive_lock, start_op(_)).WillOnce(Return(new LambdaContext([](int){})));
   }
 
   void expect_get_snap_namespace(librbd::MockTestImageCtx &mock_image_ctx,
@@ -242,14 +244,15 @@ public:
   int create_snap(librbd::ImageCtx *image_ctx,
                   const cls::rbd::SnapshotNamespace& snap_ns,
                   const std::string &snap_name, bool protect) {
-    int r = image_ctx->operations->snap_create(snap_ns, snap_name.c_str());
+    NoOpProgressContext prog_ctx;
+    int r = image_ctx->operations->snap_create(snap_ns, snap_name.c_str(), 0,
+                                               prog_ctx);
     if (r < 0) {
       return r;
     }
 
     if (protect) {
-      EXPECT_TRUE(boost::get<cls::rbd::UserSnapshotNamespace>(&snap_ns) !=
-                    nullptr);
+      EXPECT_TRUE(std::holds_alternative<cls::rbd::UserSnapshotNamespace>(snap_ns));
       r = image_ctx->operations->snap_protect(snap_ns, snap_name.c_str());
       if (r < 0) {
         return r;
@@ -860,7 +863,9 @@ TEST_F(TestMockDeepCopySnapshotCopyRequest, StartEndLimit) {
   ASSERT_EQ(0, create_snap(m_src_image_ctx, "snap1", false));
   ASSERT_EQ(0, create_snap(m_src_image_ctx, "snap2", false));
   ASSERT_EQ(0, create_snap(m_src_image_ctx,
-                           {cls::rbd::TrashSnapshotNamespace{}},
+                           {cls::rbd::MirrorSnapshotNamespace{
+                              cls::rbd::MIRROR_SNAPSHOT_STATE_PRIMARY,
+                              {"peer uuid1"}, "", CEPH_NOSNAP}},
                            "snap3", false));
   auto src_snap_id1 = m_src_image_ctx->snaps[2];
   auto src_snap_id2 = m_src_image_ctx->snaps[1];

@@ -9,9 +9,10 @@
 #include <assert.h>
 #endif  // ROCKSDB_LITE
 
+#include "port/lang.h"
 #include "utilities/transactions/write_prepared_txn_db.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 #ifdef ROCKSDB_LITE
 WritePreparedSnapshotChecker::WritePreparedSnapshotChecker(
@@ -44,6 +45,9 @@ SnapshotCheckerResult WritePreparedSnapshotChecker::CheckInSnapshot(
 }
 
 #endif  // ROCKSDB_LITE
-DisableGCSnapshotChecker DisableGCSnapshotChecker::instance_;
 
-}  // namespace rocksdb
+DisableGCSnapshotChecker* DisableGCSnapshotChecker::Instance() {
+  STATIC_AVOID_DESTRUCTION(DisableGCSnapshotChecker, instance);
+  return &instance;
+}
+}  // namespace ROCKSDB_NAMESPACE

@@ -1,24 +1,23 @@
 # -*- coding: utf-8 -*-
-from __future__ import absolute_import
 
 import errno
 import unittest
 
 from mgr_module import ERROR_MSG_EMPTY_INPUT_FILE
 
-from . import KVStoreMockMixin, ControllerTestCase
 from .. import settings
 from ..controllers.settings import Settings as SettingsController
 from ..settings import Settings, handle_option_command
+from ..tests import ControllerTestCase, KVStoreMockMixin
 
 
 class SettingsTest(unittest.TestCase, KVStoreMockMixin):
     @classmethod
     def setUpClass(cls):
+        setattr(settings.Options, 'GRAFANA_API_HOST', settings.Setting('localhost', [str]))
+        setattr(settings.Options, 'GRAFANA_API_PORT', settings.Setting(3000, [int]))
+        setattr(settings.Options, 'GRAFANA_ENABLED', settings.Setting(False, [bool]))
         # pylint: disable=protected-access
-        settings.Options.GRAFANA_API_HOST = ('localhost', str)
-        settings.Options.GRAFANA_API_PORT = (3000, int)
-        settings.Options.GRAFANA_ENABLED = (False, bool)
         settings._OPTIONS_COMMAND_MAP = settings._options_command_map()
 
     def setUp(self):
@@ -64,20 +63,20 @@ class SettingsTest(unittest.TestCase, KVStoreMockMixin):
 
     def test_set_secret_empty(self):
         r, out, err = handle_option_command(
-            {'prefix': 'dashboard set-rgw-api-secret-key'},
+            {'prefix': 'dashboard set-grafana-api-password'},
             None
         )
         self.assertEqual(r, -errno.EINVAL)
         self.assertEqual(out, '')
-        self.assertEqual(err, ERROR_MSG_EMPTY_INPUT_FILE)
+        self.assertIn(ERROR_MSG_EMPTY_INPUT_FILE, err)
 
     def test_set_secret(self):
         r, out, err = handle_option_command(
-            {'prefix': 'dashboard set-rgw-api-secret-key'},
+            {'prefix': 'dashboard set-grafana-api-password'},
             'my-secret'
         )
         self.assertEqual(r, 0)
-        self.assertEqual(out, 'Option RGW_API_SECRET_KEY updated')
+        self.assertEqual(out, 'Option GRAFANA_API_PASSWORD updated')
         self.assertEqual(err, '')
 
     def test_reset_cmd(self):
@@ -130,23 +129,40 @@ class SettingsTest(unittest.TestCase, KVStoreMockMixin):
 class SettingsControllerTest(ControllerTestCase, KVStoreMockMixin):
     @classmethod
     def setup_server(cls):
-        # pylint: disable=protected-access
-
-        SettingsController._cp_config['tools.authenticate.on'] = False
         cls.setup_controllers([SettingsController])
 
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        setattr(settings.Options, 'GRAFANA_API_HOST', settings.Setting('localhost', [str]))
+        setattr(settings.Options, 'GRAFANA_ENABLED', settings.Setting(False, [bool]))
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+
     def setUp(self):
+        super().setUp()
         self.mock_kv_store()
 
     def test_settings_list(self):
         self._get('/api/settings')
-        data = self.jsonBody()
+        data = self.json_body()
         self.assertTrue(len(data) > 0)
         self.assertStatus(200)
         self.assertIn('default', data[0].keys())
         self.assertIn('type', data[0].keys())
         self.assertIn('name', data[0].keys())
         self.assertIn('value', data[0].keys())
+
+    def test_settings_list_filtered(self):
+        self._get('/api/settings?names=GRAFANA_ENABLED,PWD_POLICY_ENABLED')
+        self.assertStatus(200)
+        data = self.json_body()
+        self.assertTrue(len(data) == 2)
+        names = [option['name'] for option in data]
+        self.assertIn('GRAFANA_ENABLED', names)
+        self.assertIn('PWD_POLICY_ENABLED', names)
 
     def test_rgw_daemon_get(self):
         self._get('/api/settings/grafana-api-username')
@@ -159,7 +175,7 @@ class SettingsControllerTest(ControllerTestCase, KVStoreMockMixin):
         })
 
     def test_set(self):
-        self._put('/api/settings/GRAFANA_API_USERNAME', {'value': 'foo'},)
+        self._put('/api/settings/GRAFANA_API_USERNAME', {'value': 'foo'})
         self.assertStatus(200)
 
         self._get('/api/settings/GRAFANA_API_USERNAME')
@@ -168,7 +184,7 @@ class SettingsControllerTest(ControllerTestCase, KVStoreMockMixin):
         self.assertInJsonBody('type')
         self.assertInJsonBody('name')
         self.assertInJsonBody('value')
-        self.assertEqual(self.jsonBody()['value'], 'foo')
+        self.assertEqual(self.json_body()['value'], 'foo')
 
     def test_bulk_set(self):
         self._put('/api/settings', {
@@ -179,13 +195,13 @@ class SettingsControllerTest(ControllerTestCase, KVStoreMockMixin):
 
         self._get('/api/settings/grafana-api-username')
         self.assertStatus(200)
-        body = self.jsonBody()
+        body = self.json_body()
         self.assertEqual(body['value'], 'foo')
 
         self._get('/api/settings/grafana-api-username')
         self.assertStatus(200)
-        self.assertEqual(self.jsonBody()['value'], 'foo')
+        self.assertEqual(self.json_body()['value'], 'foo')
 
         self._get('/api/settings/grafana-api-host')
         self.assertStatus(200)
-        self.assertEqual(self.jsonBody()['value'], 'somehost')
+        self.assertEqual(self.json_body()['value'], 'somehost')

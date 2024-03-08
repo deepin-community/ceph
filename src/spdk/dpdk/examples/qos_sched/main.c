@@ -29,7 +29,7 @@ uint32_t qavg_ntimes = APP_QAVG_NTIMES;
 
 /* main processing loop */
 static int
-app_main_loop(__attribute__((unused))void *dummy)
+app_main_loop(__rte_unused void *dummy)
 {
 	uint32_t lcore_id;
 	uint32_t i, mode;
@@ -55,6 +55,7 @@ app_main_loop(__attribute__((unused))void *dummy)
 			flow->rx_thread.rx_port = flow->rx_port;
 			flow->rx_thread.rx_ring =  flow->rx_ring;
 			flow->rx_thread.rx_queue = flow->rx_queue;
+			flow->rx_thread.sched_port = flow->sched_port;
 
 			rx_confs[rx_idx++] = &flow->rx_thread;
 

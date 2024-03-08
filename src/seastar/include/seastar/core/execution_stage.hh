@@ -28,15 +28,16 @@
 #include <seastar/core/metrics.hh>
 #include <seastar/core/scheduling.hh>
 #include <seastar/util/reference_wrapper.hh>
-#include <seastar/util/gcc6-concepts.hh>
+#include <seastar/util/concepts.hh>
 #include <seastar/util/noncopyable_function.hh>
 #include <seastar/util/tuple_utils.hh>
-#include <seastar/util/defer.hh>
 #include <seastar/util/std-compat.hh>
 #include <fmt/format.h>
+#include <fmt/ostream.h>
 #include <vector>
 #include <boost/range/irange.hpp>
 #include <boost/range/adaptor/transformed.hpp>
+#include <boost/container/static_vector.hpp>
 
 namespace seastar {
 
@@ -204,13 +205,14 @@ public:
 /// \tparam Args  argument pack containing arguments to the function object, needs
 ///                   to have move constructor that doesn't throw
 template<typename ReturnType, typename... Args>
-GCC6_CONCEPT(requires std::is_nothrow_move_constructible<std::tuple<Args...>>::value)
+SEASTAR_CONCEPT(requires std::is_nothrow_move_constructible<std::tuple<Args...>>::value)
 class concrete_execution_stage final : public execution_stage {
     using args_tuple = std::tuple<Args...>;
     static_assert(std::is_nothrow_move_constructible<args_tuple>::value,
                   "Function arguments need to be nothrow move constructible");
 
     static constexpr size_t flush_threshold = 128;
+    static constexpr size_t max_queue_length = 1024;
 
     using return_type = futurize_t<ReturnType>;
     using promise_type = typename return_type::promise_type;
@@ -239,8 +241,10 @@ private:
     virtual void do_flush() noexcept override {
         while (!_queue.empty()) {
             auto& wi = _queue.front();
-            futurize<ReturnType>::apply(_function, unwrap(std::move(wi._in))).forward_to(std::move(wi._ready));
+            auto wi_in = std::move(wi._in);
+            auto wi_ready = std::move(wi._ready);
             _queue.pop_front();
+            futurize<ReturnType>::apply(_function, unwrap(std::move(wi_in))).forward_to(std::move(wi_ready));
             _stats.function_calls_executed++;
 
             if (need_preempt()) {
@@ -283,6 +287,9 @@ public:
     /// \param args arguments passed to the stage's function
     /// \return future containing the result of the call to the stage's function
     return_type operator()(typename internal::wrap_for_es<Args>::type... args) {
+        if (_queue.size() >= max_queue_length) {
+            do_flush();
+        }
         _queue.emplace_back(std::move(args)...);
         _empty = false;
         _stats.function_calls_enqueued++;
@@ -292,6 +299,15 @@ public:
     }
 };
 
+/// \brief Base class for execution stages with support for automatic \ref scheduling_group inheritance
+class inheriting_execution_stage {
+public:
+    struct per_scheduling_group_stats {
+        scheduling_group sg;
+        execution_stage::stats stats;
+    };
+    using stats = boost::container::static_vector<per_scheduling_group_stats, max_scheduling_groups()>;
+};
 
 /// \brief Concrete execution stage class, with support for automatic \ref scheduling_group inheritance
 ///
@@ -302,8 +318,8 @@ public:
 /// \tparam Args  argument pack containing arguments to the function object, needs
 ///                   to have move constructor that doesn't throw
 template<typename ReturnType, typename... Args>
-GCC6_CONCEPT(requires std::is_nothrow_move_constructible<std::tuple<Args...>>::value)
-class inheriting_concrete_execution_stage final {
+SEASTAR_CONCEPT(requires std::is_nothrow_move_constructible<std::tuple<Args...>>::value)
+class inheriting_concrete_execution_stage final : public inheriting_execution_stage {
     using return_type = futurize_t<ReturnType>;
     using args_tuple = std::tuple<Args...>;
     using per_group_stage_type = concrete_execution_stage<ReturnType, Args...>;
@@ -313,7 +329,7 @@ class inheriting_concrete_execution_stage final {
 
     sstring _name;
     noncopyable_function<ReturnType (Args...)> _function;
-    std::vector<compat::optional<per_group_stage_type>> _stage_for_group{max_scheduling_groups()};
+    std::vector<std::optional<per_group_stage_type>> _stage_for_group{max_scheduling_groups()};
 private:
     per_group_stage_type make_stage_for_group(scheduling_group sg) {
         // We can't use std::ref(function), because reference_wrapper decays to noncopyable_function& and
@@ -363,6 +379,24 @@ public:
             slot.emplace(make_stage_for_group(sg));
         }
         return (*slot)(std::move(args)...);
+    }
+
+    /// Returns summary of individual execution stage usage statistics
+    ///
+    /// \returns a vector of the stats of the individual per-scheduling group
+    ///     executation stages. Each element in the vector is a pair composed of
+    ///     the scheduling group and the stats for the respective execution
+    ///     stage. Scheduling groups that have had no respective calls enqueued
+    ///     yet are omitted.
+    inheriting_execution_stage::stats get_stats() const noexcept {
+        inheriting_execution_stage::stats summary;
+        for (unsigned sg_id = 0; sg_id != _stage_for_group.size(); ++sg_id) {
+            auto sg = internal::scheduling_group_from_index(sg_id);
+            if (_stage_for_group[sg_id]) {
+                summary.push_back({sg, _stage_for_group[sg_id]->get_stats()});
+            }
+        }
+        return summary;
     }
 };
 

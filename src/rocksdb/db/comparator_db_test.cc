@@ -9,19 +9,18 @@
 #include "memtable/stl_wrappers.h"
 #include "rocksdb/db.h"
 #include "rocksdb/env.h"
+#include "test_util/testharness.h"
+#include "test_util/testutil.h"
 #include "util/hash.h"
 #include "util/kv_map.h"
+#include "util/random.h"
 #include "util/string_util.h"
-#include "util/testharness.h"
-#include "util/testutil.h"
 #include "utilities/merge_operators.h"
 
-using std::unique_ptr;
-
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 namespace {
 
-static const Comparator* comparator;
+static const Comparator* kTestComparator = nullptr;
 
 class KVIter : public Iterator {
  public:
@@ -74,7 +73,7 @@ void AssertItersEqual(Iterator* iter1, Iterator* iter2) {
 void DoRandomIteraratorTest(DB* db, std::vector<std::string> source_strings,
                             Random* rnd, int num_writes, int num_iter_ops,
                             int num_trigger_flush) {
-  stl_wrappers::KVMap map((stl_wrappers::LessOfComparator(comparator)));
+  stl_wrappers::KVMap map((stl_wrappers::LessOfComparator(kTestComparator)));
 
   for (int i = 0; i < num_writes; i++) {
     if (num_trigger_flush > 0 && i != 0 && i % num_trigger_flush == 0) {
@@ -249,7 +248,7 @@ class TwoStrComparator : public Comparator {
 
   void FindShortSuccessor(std::string* /*key*/) const override {}
 };
-}  // namespace
+}  // anonymous namespace
 
 class ComparatorDBTest
     : public testing::Test,
@@ -263,19 +262,19 @@ class ComparatorDBTest
 
  public:
   ComparatorDBTest() : env_(Env::Default()), db_(nullptr) {
-    comparator = BytewiseComparator();
+    kTestComparator = BytewiseComparator();
     dbname_ = test::PerThreadDBPath("comparator_db_test");
     BlockBasedTableOptions toptions;
     toptions.format_version = GetParam();
     last_options_.table_factory.reset(
-        rocksdb::NewBlockBasedTableFactory(toptions));
+        ROCKSDB_NAMESPACE::NewBlockBasedTableFactory(toptions));
     EXPECT_OK(DestroyDB(dbname_, last_options_));
   }
 
   ~ComparatorDBTest() override {
     delete db_;
     EXPECT_OK(DestroyDB(dbname_, last_options_));
-    comparator = BytewiseComparator();
+    kTestComparator = BytewiseComparator();
   }
 
   DB* GetDB() { return db_; }
@@ -286,7 +285,7 @@ class ComparatorDBTest
     } else {
       comparator_guard.reset();
     }
-    comparator = cmp;
+    kTestComparator = cmp;
     last_options_.comparator = cmp;
   }
 
@@ -317,7 +316,7 @@ class ComparatorDBTest
 INSTANTIATE_TEST_CASE_P(FormatDef, ComparatorDBTest,
                         testing::Values(test::kDefaultFormatVersion));
 INSTANTIATE_TEST_CASE_P(FormatLatest, ComparatorDBTest,
-                        testing::Values(test::kLatestFormatVersion));
+                        testing::Values(kLatestFormatVersion));
 
 TEST_P(ComparatorDBTest, Bytewise) {
   for (int rand_seed = 301; rand_seed < 306; rand_seed++) {
@@ -334,7 +333,7 @@ TEST_P(ComparatorDBTest, SimpleSuffixReverseComparator) {
 
   for (int rnd_seed = 301; rnd_seed < 316; rnd_seed++) {
     Options* opt = GetOptions();
-    opt->comparator = comparator;
+    opt->comparator = kTestComparator;
     DestroyAndReopen();
     Random rnd(rnd_seed);
 
@@ -342,12 +341,12 @@ TEST_P(ComparatorDBTest, SimpleSuffixReverseComparator) {
     std::vector<std::string> source_prefixes;
     // Randomly generate 5 prefixes
     for (int i = 0; i < 5; i++) {
-      source_prefixes.push_back(test::RandomHumanReadableString(&rnd, 8));
+      source_prefixes.push_back(rnd.HumanReadableString(8));
     }
     for (int j = 0; j < 20; j++) {
       int prefix_index = rnd.Uniform(static_cast<int>(source_prefixes.size()));
       std::string key = source_prefixes[prefix_index] +
-                        test::RandomHumanReadableString(&rnd, rnd.Uniform(8));
+                        rnd.HumanReadableString(rnd.Uniform(8));
       source_strings.push_back(key);
     }
 
@@ -360,7 +359,7 @@ TEST_P(ComparatorDBTest, Uint64Comparator) {
 
   for (int rnd_seed = 301; rnd_seed < 316; rnd_seed++) {
     Options* opt = GetOptions();
-    opt->comparator = comparator;
+    opt->comparator = kTestComparator;
     DestroyAndReopen();
     Random rnd(rnd_seed);
     Random64 rnd64(rnd_seed);
@@ -384,7 +383,7 @@ TEST_P(ComparatorDBTest, DoubleComparator) {
 
   for (int rnd_seed = 301; rnd_seed < 316; rnd_seed++) {
     Options* opt = GetOptions();
-    opt->comparator = comparator;
+    opt->comparator = kTestComparator;
     DestroyAndReopen();
     Random rnd(rnd_seed);
 
@@ -397,7 +396,7 @@ TEST_P(ComparatorDBTest, DoubleComparator) {
       for (uint32_t j = 0; j < divide_order; j++) {
         to_divide *= 10.0;
       }
-      source_strings.push_back(ToString(r / to_divide));
+      source_strings.push_back(std::to_string(r / to_divide));
     }
 
     DoRandomIteraratorTest(GetDB(), source_strings, &rnd, 200, 1000, 66);
@@ -409,7 +408,7 @@ TEST_P(ComparatorDBTest, HashComparator) {
 
   for (int rnd_seed = 301; rnd_seed < 316; rnd_seed++) {
     Options* opt = GetOptions();
-    opt->comparator = comparator;
+    opt->comparator = kTestComparator;
     DestroyAndReopen();
     Random rnd(rnd_seed);
 
@@ -428,7 +427,7 @@ TEST_P(ComparatorDBTest, TwoStrComparator) {
 
   for (int rnd_seed = 301; rnd_seed < 316; rnd_seed++) {
     Options* opt = GetOptions();
-    opt->comparator = comparator;
+    opt->comparator = kTestComparator;
     DestroyAndReopen();
     Random rnd(rnd_seed);
 
@@ -449,67 +448,85 @@ TEST_P(ComparatorDBTest, TwoStrComparator) {
   }
 }
 
+namespace {
+void VerifyNotSuccessor(const Slice& s, const Slice& t) {
+  auto bc = BytewiseComparator();
+  auto rbc = ReverseBytewiseComparator();
+  ASSERT_FALSE(bc->IsSameLengthImmediateSuccessor(s, t));
+  ASSERT_FALSE(rbc->IsSameLengthImmediateSuccessor(s, t));
+  ASSERT_FALSE(bc->IsSameLengthImmediateSuccessor(t, s));
+  ASSERT_FALSE(rbc->IsSameLengthImmediateSuccessor(t, s));
+}
+
+void VerifySuccessor(const Slice& s, const Slice& t) {
+  auto bc = BytewiseComparator();
+  auto rbc = ReverseBytewiseComparator();
+  ASSERT_TRUE(bc->IsSameLengthImmediateSuccessor(s, t));
+  ASSERT_FALSE(rbc->IsSameLengthImmediateSuccessor(s, t));
+  ASSERT_FALSE(bc->IsSameLengthImmediateSuccessor(t, s));
+  // Should be true but that increases exposure to a design bug in
+  // auto_prefix_mode, so currently set to FALSE
+  ASSERT_FALSE(rbc->IsSameLengthImmediateSuccessor(t, s));
+}
+
+}  // anonymous namespace
+
 TEST_P(ComparatorDBTest, IsSameLengthImmediateSuccessor) {
   {
     // different length
     Slice s("abcxy");
     Slice t("abcxyz");
-    ASSERT_FALSE(BytewiseComparator()->IsSameLengthImmediateSuccessor(s, t));
+    VerifyNotSuccessor(s, t);
   }
   {
     Slice s("abcxyz");
     Slice t("abcxy");
-    ASSERT_FALSE(BytewiseComparator()->IsSameLengthImmediateSuccessor(s, t));
+    VerifyNotSuccessor(s, t);
   }
   {
     // not last byte different
     Slice s("abc1xyz");
     Slice t("abc2xyz");
-    ASSERT_FALSE(BytewiseComparator()->IsSameLengthImmediateSuccessor(s, t));
+    VerifyNotSuccessor(s, t);
   }
   {
     // same string
     Slice s("abcxyz");
     Slice t("abcxyz");
-    ASSERT_FALSE(BytewiseComparator()->IsSameLengthImmediateSuccessor(s, t));
+    VerifyNotSuccessor(s, t);
   }
   {
     Slice s("abcxy");
     Slice t("abcxz");
-    ASSERT_TRUE(BytewiseComparator()->IsSameLengthImmediateSuccessor(s, t));
-  }
-  {
-    Slice s("abcxz");
-    Slice t("abcxy");
-    ASSERT_FALSE(BytewiseComparator()->IsSameLengthImmediateSuccessor(s, t));
+    VerifySuccessor(s, t);
   }
   {
     const char s_array[] = "\x50\x8a\xac";
     const char t_array[] = "\x50\x8a\xad";
     Slice s(s_array);
     Slice t(t_array);
-    ASSERT_TRUE(BytewiseComparator()->IsSameLengthImmediateSuccessor(s, t));
+    VerifySuccessor(s, t);
   }
   {
     const char s_array[] = "\x50\x8a\xff";
     const char t_array[] = "\x50\x8b\x00";
     Slice s(s_array, 3);
     Slice t(t_array, 3);
-    ASSERT_TRUE(BytewiseComparator()->IsSameLengthImmediateSuccessor(s, t));
+    VerifySuccessor(s, t);
   }
   {
     const char s_array[] = "\x50\x8a\xff\xff";
     const char t_array[] = "\x50\x8b\x00\x00";
     Slice s(s_array, 4);
     Slice t(t_array, 4);
-    ASSERT_TRUE(BytewiseComparator()->IsSameLengthImmediateSuccessor(s, t));
+    VerifySuccessor(s, t);
   }
   {
     const char s_array[] = "\x50\x8a\xff\xff";
     const char t_array[] = "\x50\x8b\x00\x01";
     Slice s(s_array, 4);
     Slice t(t_array, 4);
-    ASSERT_FALSE(BytewiseComparator()->IsSameLengthImmediateSuccessor(s, t));
+    VerifyNotSuccessor(s, t);
   }
 }
 
@@ -652,9 +669,10 @@ TEST_P(ComparatorDBTest, SeparatorSuccessorRandomizeTest) {
   }
 }
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {
+  ROCKSDB_NAMESPACE::port::InstallStackTraceHandler();
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

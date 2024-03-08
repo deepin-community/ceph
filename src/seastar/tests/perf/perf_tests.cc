@@ -19,7 +19,7 @@
  * Copyright (C) 2018 ScyllaDB Ltd.
  */
 
-#include "perf_tests.hh"
+#include <seastar/testing/perf_tests.hh>
 
 #include <fstream>
 #include <regex>
@@ -32,7 +32,21 @@
 
 #include <seastar/core/app-template.hh>
 #include <seastar/core/thread.hh>
+#include <seastar/core/sharded.hh>
 #include <seastar/json/formatter.hh>
+#include <seastar/util/later.hh>
+#include <seastar/testing/random.hh>
+#include <seastar/core/memory.hh>
+#include <seastar/core/reactor.hh>
+
+#include <signal.h>
+
+#if FMT_VERSION >= 90000
+namespace perf_tests::internal {
+    struct duration;
+}
+template <> struct fmt::formatter<perf_tests::internal::duration> : fmt::ostream_formatter {};
+#endif
 
 namespace perf_tests {
 namespace internal {
@@ -101,6 +115,22 @@ private:
 
 }
 
+uint64_t perf_stats::perf_mallocs() {
+    return memory::stats().mallocs();
+}
+
+uint64_t perf_stats::perf_tasks_processed() {
+    return engine().get_sched_stats().tasks_processed;
+}
+
+perf_stats perf_stats::snapshot(linux_perf_event* instructions_retired_counter) {
+    return perf_stats(
+        perf_mallocs(),
+        perf_tasks_processed(),
+        instructions_retired_counter ? instructions_retired_counter->read() : 0
+    );
+}
+
 time_measurement measure_time;
 
 struct config;
@@ -118,21 +148,25 @@ struct config {
     std::chrono::nanoseconds single_run_duration;
     unsigned number_of_runs;
     std::vector<std::unique_ptr<result_printer>> printers;
+    unsigned random_seed = 0;
 };
 
 struct result {
-    sstring test_name;
+    sstring test_name = "";
 
-    uint64_t total_iterations;
-    unsigned runs;
+    uint64_t total_iterations = 0;
+    unsigned runs = 0;
 
-    double median;
-    double mad;
-    double min;
-    double max;
+    double median = 0.;
+    double mad = 0.;
+    double min = 0.;
+    double max = 0.;
+
+    double allocs = 0.;
+    double tasks = 0.;
+    double inst = 0.;
 };
 
-namespace {
 
 struct duration {
     double value;
@@ -155,22 +189,24 @@ static inline std::ostream& operator<<(std::ostream& os, duration d)
     return os;
 }
 
-}
-
-static constexpr auto format_string = "{:<40} {:>11} {:>11} {:>11} {:>11} {:>11}\n";
+static constexpr auto header_format_string = "{:<40} {:>11} {:>11} {:>11} {:>11} {:>11} {:>11} {:>11} {:>11}\n";
+static constexpr auto        format_string = "{:<40} {:>11} {:>11} {:>11} {:>11} {:>11} {:>11.3f} {:>11.3f} {:>11.1f}\n";
 
 struct stdout_printer final : result_printer {
   virtual void print_configuration(const config& c) override {
-    fmt::print("{:<25} {}\n{:<25} {}\n{:<25} {}\n\n",
+    fmt::print("{:<25} {}\n{:<25} {}\n{:<25} {}\n{:<25} {}\n{:<25} {}\n\n",
                "single run iterations:", c.single_run_iterations,
                "single run duration:", duration { double(c.single_run_duration.count()) },
-               "number of runs:", c.number_of_runs);
-    fmt::print(format_string, "test", "iterations", "median", "mad", "min", "max");
+               "number of runs:", c.number_of_runs,
+               "number of cores:", smp::count,
+               "random seed:", c.random_seed);
+    fmt::print(header_format_string, "test", "iterations", "median", "mad", "min", "max", "allocs", "tasks", "inst");
   }
 
   virtual void print_result(const result& r) override {
     fmt::print(format_string, r.test_name, r.total_iterations / r.runs, duration { r.median },
-               duration { r.mad }, duration { r.min }, duration { r.max });
+               duration { r.mad }, duration { r.min }, duration { r.max },
+               r.allocs, r.tasks, r.inst);
   }
 };
 
@@ -197,6 +233,9 @@ public:
         result["mad"] = r.mad;
         result["min"] = r.min;
         result["max"] = r.max;
+        result["allocs"] = r.allocs;
+        result["tasks"] = r.tasks;
+        result["inst"] = r.inst;
     }
 };
 
@@ -214,7 +253,7 @@ void performance_test::do_run(const config& conf)
     // dry run, estimate the number of iterations
     if (conf.single_run_duration.count()) {
         // switch out of seastar thread
-        later().then([&] {
+        yield().then([&] {
             tmr.arm(conf.single_run_duration);
             return do_single_run().finally([&] {
                 tmr.cancel();
@@ -223,22 +262,28 @@ void performance_test::do_run(const config& conf)
         }).get();
     }
 
+    result r{};
+
     auto results = std::vector<double>(conf.number_of_runs);
     uint64_t total_iterations = 0;
     for (auto i = 0u; i < conf.number_of_runs; i++) {
         // switch out of seastar thread
-        later().then([&] {
+        yield().then([&] {
             _single_run_iterations = 0;
-            return do_single_run().then([&] (clock_type::duration dt) {
+            return do_single_run().then([&] (run_result rr) {
+                clock_type::duration dt = rr.duration;
                 double ns = std::chrono::duration_cast<std::chrono::nanoseconds>(dt).count();
                 results[i] = ns / _single_run_iterations;
 
                 total_iterations += _single_run_iterations;
+
+                r.allocs += double(rr.stats.allocations) / _single_run_iterations;
+                r.tasks += double(rr.stats.tasks_executed) / _single_run_iterations;
+                r.inst += double(rr.stats.instructions_retired) / _single_run_iterations;
             });
         }).get();
     }
 
-    result r{};
     r.test_name = name();
     r.total_iterations = total_iterations;
     r.runs = conf.number_of_runs;
@@ -256,6 +301,10 @@ void performance_test::do_run(const config& conf)
 
     r.min = results[0];
     r.max = results[results.size() - 1];
+
+    r.allocs /= conf.number_of_runs;
+    r.tasks /= conf.number_of_runs;
+    r.inst /= conf.number_of_runs;
 
     for (auto& rp : conf.printers) {
         rp->print_result(r);
@@ -318,6 +367,8 @@ int main(int ac, char** av)
             "duration of a single run in seconds")
         ("runs,r", bpo::value<size_t>()->default_value(5), "number of runs")
         ("test,t", bpo::value<std::vector<std::string>>(), "tests to execute")
+        ("random-seed,S", bpo::value<unsigned>()->default_value(0),
+            "random number generator seed")
         ("no-stdout", "do not print to stdout")
         ("json-output", bpo::value<std::string>(), "output json file")
         ("list", "list available tests")
@@ -332,6 +383,7 @@ int main(int ac, char** av)
             auto dur = std::chrono::duration<double>(app.configuration()["duration"].as<double>());
             conf.single_run_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(dur);
             conf.number_of_runs = app.configuration()["runs"].as<size_t>();
+            conf.random_seed = app.configuration()["random-seed"].as<unsigned>();
 
             std::vector<std::string> tests_to_run;
             if (app.configuration().count("test")) {
@@ -355,6 +407,14 @@ int main(int ac, char** av)
                     app.configuration()["json-output"].as<std::string>()
                 ));
             }
+
+            if (!conf.random_seed) {
+                conf.random_seed = std::random_device()();
+            }
+            smp::invoke_on_all([seed = conf.random_seed] {
+                auto local_seed = seed + this_shard_id();
+                testing::local_random_engine.seed(local_seed);
+            }).get();
 
             run_all(tests_to_run, conf);
         });

@@ -7,29 +7,31 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 //
-// Endian-neutral encoding:
+// Encoding independent of machine byte order:
 // * Fixed-length numbers are encoded with least-significant byte first
+//   (little endian, native order on Intel and others)
 // * In addition we support variable length "varint" encoding
 // * Strings are encoded prefixed by their length in varint format
+//
+// Some related functions are provided in coding_lean.h
 
 #pragma once
 #include <algorithm>
-#include <stdint.h>
-#include <string.h>
 #include <string>
 
-#include "rocksdb/write_batch.h"
 #include "port/port.h"
+#include "rocksdb/slice.h"
+#include "util/coding_lean.h"
 
 // Some processors does not allow unaligned access to memory
 #if defined(__sparc)
-  #define PLATFORM_UNALIGNED_ACCESS_NOT_ALLOWED
+#define PLATFORM_UNALIGNED_ACCESS_NOT_ALLOWED
 #endif
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 // The maximum length of a varint in bytes for 64-bit.
-const unsigned int kMaxVarint64Length = 10;
+const uint32_t kMaxVarint64Length = 10;
 
 // Standard Put... routines append to a string
 extern void PutFixed16(std::string* dst, uint16_t value);
@@ -50,6 +52,8 @@ extern void PutVarint32Varint32Varint64(std::string* dst, uint32_t value1,
 extern void PutLengthPrefixedSlice(std::string* dst, const Slice& value);
 extern void PutLengthPrefixedSliceParts(std::string* dst,
                                         const SliceParts& slice_parts);
+extern void PutLengthPrefixedSlicePartsWithPadding(
+    std::string* dst, const SliceParts& slice_parts, size_t pad_sz);
 
 // Standard Get... routines parse a value from the beginning of a Slice
 // and advance the slice past the parsed value.
@@ -58,6 +62,7 @@ extern bool GetFixed32(Slice* input, uint32_t* value);
 extern bool GetFixed16(Slice* input, uint16_t* value);
 extern bool GetVarint32(Slice* input, uint32_t* value);
 extern bool GetVarint64(Slice* input, uint64_t* value);
+extern bool GetVarsignedint64(Slice* input, int64_t* value);
 extern bool GetLengthPrefixedSlice(Slice* input, Slice* result);
 // This function assumes data is well-formed.
 extern Slice GetLengthPrefixedSlice(const char* data);
@@ -77,8 +82,10 @@ inline int64_t zigzagToI64(uint64_t n) {
 // in *v and return a pointer just past the parsed value, or return
 // nullptr on error.  These routines only look at bytes in the range
 // [p..limit-1]
-extern const char* GetVarint32Ptr(const char* p,const char* limit, uint32_t* v);
-extern const char* GetVarint64Ptr(const char* p,const char* limit, uint64_t* v);
+extern const char* GetVarint32Ptr(const char* p, const char* limit,
+                                  uint32_t* v);
+extern const char* GetVarint64Ptr(const char* p, const char* limit,
+                                  uint64_t* v);
 inline const char* GetVarsignedint64Ptr(const char* p, const char* limit,
                                         int64_t* value) {
   uint64_t u = 0;
@@ -91,65 +98,15 @@ inline const char* GetVarsignedint64Ptr(const char* p, const char* limit,
 extern int VarintLength(uint64_t v);
 
 // Lower-level versions of Put... that write directly into a character buffer
-// REQUIRES: dst has enough space for the value being written
-extern void EncodeFixed16(char* dst, uint16_t value);
-extern void EncodeFixed32(char* dst, uint32_t value);
-extern void EncodeFixed64(char* dst, uint64_t value);
-
-// Lower-level versions of Put... that write directly into a character buffer
 // and return a pointer just past the last byte written.
 // REQUIRES: dst has enough space for the value being written
 extern char* EncodeVarint32(char* dst, uint32_t value);
 extern char* EncodeVarint64(char* dst, uint64_t value);
 
-// Lower-level versions of Get... that read directly from a character buffer
-// without any bounds checking.
-
-inline uint16_t DecodeFixed16(const char* ptr) {
-  if (port::kLittleEndian) {
-    // Load the raw bytes
-    uint16_t result;
-    memcpy(&result, ptr, sizeof(result));  // gcc optimizes this to a plain load
-    return result;
-  } else {
-    return ((static_cast<uint16_t>(static_cast<unsigned char>(ptr[0]))) |
-            (static_cast<uint16_t>(static_cast<unsigned char>(ptr[1])) << 8));
-  }
-}
-
-inline uint32_t DecodeFixed32(const char* ptr) {
-  if (port::kLittleEndian) {
-    // Load the raw bytes
-    uint32_t result;
-    memcpy(&result, ptr, sizeof(result));  // gcc optimizes this to a plain load
-    return result;
-  } else {
-    return ((static_cast<uint32_t>(static_cast<unsigned char>(ptr[0])))
-        | (static_cast<uint32_t>(static_cast<unsigned char>(ptr[1])) << 8)
-        | (static_cast<uint32_t>(static_cast<unsigned char>(ptr[2])) << 16)
-        | (static_cast<uint32_t>(static_cast<unsigned char>(ptr[3])) << 24));
-  }
-}
-
-inline uint64_t DecodeFixed64(const char* ptr) {
-  if (port::kLittleEndian) {
-    // Load the raw bytes
-    uint64_t result;
-    memcpy(&result, ptr, sizeof(result));  // gcc optimizes this to a plain load
-    return result;
-  } else {
-    uint64_t lo = DecodeFixed32(ptr);
-    uint64_t hi = DecodeFixed32(ptr + 4);
-    return (hi << 32) | lo;
-  }
-}
-
 // Internal routine for use by fallback path of GetVarint32Ptr
-extern const char* GetVarint32PtrFallback(const char* p,
-                                          const char* limit,
+extern const char* GetVarint32PtrFallback(const char* p, const char* limit,
                                           uint32_t* value);
-inline const char* GetVarint32Ptr(const char* p,
-                                  const char* limit,
+inline const char* GetVarint32Ptr(const char* p, const char* limit,
                                   uint32_t* value) {
   if (p < limit) {
     uint32_t result = *(reinterpret_cast<const unsigned char*>(p));
@@ -159,42 +116,6 @@ inline const char* GetVarint32Ptr(const char* p,
     }
   }
   return GetVarint32PtrFallback(p, limit, value);
-}
-
-// -- Implementation of the functions declared above
-inline void EncodeFixed16(char* buf, uint16_t value) {
-  if (port::kLittleEndian) {
-    memcpy(buf, &value, sizeof(value));
-  } else {
-    buf[0] = value & 0xff;
-    buf[1] = (value >> 8) & 0xff;
-  }
-}
-
-inline void EncodeFixed32(char* buf, uint32_t value) {
-  if (port::kLittleEndian) {
-    memcpy(buf, &value, sizeof(value));
-  } else {
-    buf[0] = value & 0xff;
-    buf[1] = (value >> 8) & 0xff;
-    buf[2] = (value >> 16) & 0xff;
-    buf[3] = (value >> 24) & 0xff;
-  }
-}
-
-inline void EncodeFixed64(char* buf, uint64_t value) {
-  if (port::kLittleEndian) {
-    memcpy(buf, &value, sizeof(value));
-  } else {
-    buf[0] = value & 0xff;
-    buf[1] = (value >> 8) & 0xff;
-    buf[2] = (value >> 16) & 0xff;
-    buf[3] = (value >> 24) & 0xff;
-    buf[4] = (value >> 32) & 0xff;
-    buf[5] = (value >> 40) & 0xff;
-    buf[6] = (value >> 48) & 0xff;
-    buf[7] = (value >> 56) & 0xff;
-  }
 }
 
 // Pull the last 8 bits and cast it to a character
@@ -212,7 +133,7 @@ inline void PutFixed16(std::string* dst, uint16_t value) {
 inline void PutFixed32(std::string* dst, uint32_t value) {
   if (port::kLittleEndian) {
     dst->append(const_cast<const char*>(reinterpret_cast<char*>(&value)),
-      sizeof(value));
+                sizeof(value));
   } else {
     char buf[sizeof(value)];
     EncodeFixed32(buf, value);
@@ -223,7 +144,7 @@ inline void PutFixed32(std::string* dst, uint32_t value) {
 inline void PutFixed64(std::string* dst, uint64_t value) {
   if (port::kLittleEndian) {
     dst->append(const_cast<const char*>(reinterpret_cast<char*>(&value)),
-      sizeof(value));
+                sizeof(value));
   } else {
     char buf[sizeof(value)];
     EncodeFixed64(buf, value);
@@ -305,9 +226,8 @@ inline void PutLengthPrefixedSlice(std::string* dst, const Slice& value) {
   dst->append(value.data(), value.size());
 }
 
-inline void PutLengthPrefixedSliceParts(std::string* dst,
+inline void PutLengthPrefixedSliceParts(std::string* dst, size_t total_bytes,
                                         const SliceParts& slice_parts) {
-  size_t total_bytes = 0;
   for (int i = 0; i < slice_parts.num_parts; ++i) {
     total_bytes += slice_parts.parts[i].size();
   }
@@ -315,6 +235,17 @@ inline void PutLengthPrefixedSliceParts(std::string* dst,
   for (int i = 0; i < slice_parts.num_parts; ++i) {
     dst->append(slice_parts.parts[i].data(), slice_parts.parts[i].size());
   }
+}
+
+inline void PutLengthPrefixedSliceParts(std::string* dst,
+                                        const SliceParts& slice_parts) {
+  PutLengthPrefixedSliceParts(dst, /*total_bytes=*/0, slice_parts);
+}
+
+inline void PutLengthPrefixedSlicePartsWithPadding(
+    std::string* dst, const SliceParts& slice_parts, size_t pad_sz) {
+  PutLengthPrefixedSliceParts(dst, /*total_bytes=*/pad_sz, slice_parts);
+  dst->append(pad_sz, '\0');
 }
 
 inline int VarintLength(uint64_t v) {
@@ -377,15 +308,16 @@ inline bool GetVarint64(Slice* input, uint64_t* value) {
   }
 }
 
-// Provide an interface for platform independent endianness transformation
-inline uint64_t EndianTransform(uint64_t input, size_t size) {
-  char* pos = reinterpret_cast<char*>(&input);
-  uint64_t ret_val = 0;
-  for (size_t i = 0; i < size; ++i) {
-    ret_val |= (static_cast<uint64_t>(static_cast<unsigned char>(pos[i]))
-                << ((size - i - 1) << 3));
+inline bool GetVarsignedint64(Slice* input, int64_t* value) {
+  const char* p = input->data();
+  const char* limit = p + input->size();
+  const char* q = GetVarsignedint64Ptr(p, limit, value);
+  if (q == nullptr) {
+    return false;
+  } else {
+    *input = Slice(q, static_cast<size_t>(limit - q));
+    return true;
   }
-  return ret_val;
 }
 
 inline bool GetLengthPrefixedSlice(Slice* input, Slice* result) {
@@ -418,7 +350,7 @@ inline Slice GetSliceUntil(Slice* slice, char delimiter) {
   return ret;
 }
 
-template<class T>
+template <class T>
 #ifdef ROCKSDB_UBSAN_RUN
 #if defined(__clang__)
 __attribute__((__no_sanitize__("alignment")))
@@ -426,16 +358,17 @@ __attribute__((__no_sanitize__("alignment")))
 __attribute__((__no_sanitize_undefined__))
 #endif
 #endif
-inline void PutUnaligned(T *memory, const T &value) {
+inline void
+PutUnaligned(T* memory, const T& value) {
 #if defined(PLATFORM_UNALIGNED_ACCESS_NOT_ALLOWED)
-  char *nonAlignedMemory = reinterpret_cast<char*>(memory);
+  char* nonAlignedMemory = reinterpret_cast<char*>(memory);
   memcpy(nonAlignedMemory, reinterpret_cast<const char*>(&value), sizeof(T));
 #else
   *memory = value;
 #endif
 }
 
-template<class T>
+template <class T>
 #ifdef ROCKSDB_UBSAN_RUN
 #if defined(__clang__)
 __attribute__((__no_sanitize__("alignment")))
@@ -443,13 +376,14 @@ __attribute__((__no_sanitize__("alignment")))
 __attribute__((__no_sanitize_undefined__))
 #endif
 #endif
-inline void GetUnaligned(const T *memory, T *value) {
+inline void
+GetUnaligned(const T* memory, T* value) {
 #if defined(PLATFORM_UNALIGNED_ACCESS_NOT_ALLOWED)
-  char *nonAlignedMemory = reinterpret_cast<char*>(value);
+  char* nonAlignedMemory = reinterpret_cast<char*>(value);
   memcpy(nonAlignedMemory, reinterpret_cast<const char*>(memory), sizeof(T));
 #else
   *value = *memory;
 #endif
 }
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

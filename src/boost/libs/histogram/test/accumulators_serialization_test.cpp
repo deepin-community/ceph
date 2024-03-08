@@ -4,18 +4,19 @@
 // (See accompanying file LICENSE_1_0.txt
 // or copy at http://www.boost.org/LICENSE_1_0.txt)
 
-#include <boost/assert.hpp>
 #include <boost/core/lightweight_test.hpp>
 #include <boost/histogram/accumulators.hpp>
 #include <boost/histogram/serialization.hpp>
 #include <boost/histogram/weight.hpp>
+#include <cassert>
 #include "throw_exception.hpp"
 #include "utility_serialization.hpp"
 
 using namespace boost::histogram;
 
 int main(int argc, char** argv) {
-  BOOST_ASSERT(argc == 2);
+  (void)argc;
+  assert(argc == 2);
 
   // mean v0
   {
@@ -77,8 +78,8 @@ int main(int argc, char** argv) {
     const auto filename =
         join(argv[1], "accumulators_serialization_test_weighted_sum.xml");
     accumulators::weighted_sum<> a;
-    a += 1;
-    a += 10;
+    a += weight(1);
+    a += weight(10);
     print_xml(filename, a);
 
     accumulators::weighted_sum<> b;

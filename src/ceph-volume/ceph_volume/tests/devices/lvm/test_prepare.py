@@ -62,47 +62,8 @@ class TestPrepare(object):
         with pytest.raises(SystemExit):
             lvm.prepare.Prepare(argv=['--help']).main()
         stdout, stderr = capsys.readouterr()
-        assert 'Use the filestore objectstore' in stdout
         assert 'Use the bluestore objectstore' in stdout
         assert 'A physical device or logical' in stdout
-
-    def test_excludes_filestore_bluestore_flags(self, capsys, device_info):
-        device_info()
-        with pytest.raises(SystemExit):
-            lvm.prepare.Prepare(argv=['--data', '/dev/sdfoo', '--filestore', '--bluestore']).main()
-        stdout, stderr = capsys.readouterr()
-        expected = 'Cannot use --filestore (filestore) with --bluestore (bluestore)'
-        assert expected in stderr
-
-    def test_excludes_other_filestore_bluestore_flags(self, capsys, device_info):
-        device_info()
-        with pytest.raises(SystemExit):
-            lvm.prepare.Prepare(argv=[
-                '--bluestore', '--data', '/dev/sdfoo',
-                '--journal', '/dev/sf14',
-            ]).main()
-        stdout, stderr = capsys.readouterr()
-        expected = 'Cannot use --bluestore (bluestore) with --journal (filestore)'
-        assert expected in stderr
-
-    def test_excludes_block_and_journal_flags(self, capsys, device_info):
-        device_info()
-        with pytest.raises(SystemExit):
-            lvm.prepare.Prepare(argv=[
-                '--bluestore', '--data', '/dev/sdfoo', '--block.db', 'vg/ceph1',
-                '--journal', '/dev/sf14',
-            ]).main()
-        stdout, stderr = capsys.readouterr()
-        expected = 'Cannot use --block.db (bluestore) with --journal (filestore)'
-        assert expected in stderr
-
-    def test_journal_is_required_with_filestore(self, is_root, monkeypatch, device_info):
-        monkeypatch.setattr("os.path.exists", lambda path: True)
-        device_info()
-        with pytest.raises(SystemExit) as error:
-            lvm.prepare.Prepare(argv=['--filestore', '--data', '/dev/sdfoo']).main()
-        expected = '--journal is required when using --filestore'
-        assert expected in str(error.value)
 
     @patch('ceph_volume.devices.lvm.prepare.api.is_ceph_device')
     def test_safe_prepare_osd_already_created(self, m_is_ceph_device):
@@ -121,10 +82,10 @@ class TestPrepare(object):
         assert result == ('', '', {'ceph.type': 'data'})
 
     @patch('ceph_volume.api.lvm.Volume.set_tags')
-    @patch('ceph_volume.devices.lvm.prepare.api.get_first_lv')
-    def test_setup_device_lv_passed(self, m_get_first_lv, m_set_tags):
+    @patch('ceph_volume.devices.lvm.prepare.api.get_single_lv')
+    def test_setup_device_lv_passed(self, m_get_single_lv, m_set_tags):
         fake_volume = api.Volume(lv_name='lv_foo', lv_path='/fake-path', vg_name='vg_foo', lv_tags='', lv_uuid='fake-uuid')
-        m_get_first_lv.return_value = fake_volume
+        m_get_single_lv.return_value = fake_volume
         result = lvm.prepare.Prepare([]).setup_device(device_type='data', device_name='vg_foo/lv_foo', tags={'ceph.type': 'data'}, size=0, slots=None)
 
         assert result == ('/fake-path', 'fake-uuid', {'ceph.type': 'data',
@@ -147,9 +108,9 @@ class TestPrepare(object):
                                                     'ceph.data_device': '/fake-path'})
 
     @patch('ceph_volume.devices.lvm.prepare.Prepare.get_ptuuid')
-    @patch('ceph_volume.devices.lvm.prepare.api.get_first_lv')
-    def test_setup_device_partition_passed(self, m_get_first_lv, m_get_ptuuid):
-        m_get_first_lv.side_effect = ValueError()
+    @patch('ceph_volume.devices.lvm.prepare.api.get_single_lv')
+    def test_setup_device_partition_passed(self, m_get_single_lv, m_get_ptuuid):
+        m_get_single_lv.side_effect = ValueError()
         m_get_ptuuid.return_value = 'fake-uuid'
         result = lvm.prepare.Prepare([]).setup_device(device_type='data', device_name='/dev/sdx', tags={'ceph.type': 'data'}, size=0, slots=None)
 
@@ -157,6 +118,10 @@ class TestPrepare(object):
                                                     'ceph.vdo': '0',
                                                     'ceph.data_uuid': 'fake-uuid',
                                                     'ceph.data_device': '/dev/sdx'})
+
+    def test_invalid_osd_id_passed(self):
+        with pytest.raises(SystemExit):
+            lvm.prepare.Prepare(argv=['--osd-id', 'foo']).main()
 
 
 class TestActivate(object):

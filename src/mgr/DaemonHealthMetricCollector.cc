@@ -1,41 +1,21 @@
-#include <boost/format.hpp>
+#include <fmt/format.h>
 
 #include "include/health.h"
 #include "include/types.h"
 #include "DaemonHealthMetricCollector.h"
 
-
-
-ostream& operator<<(ostream& os,
-                    const DaemonHealthMetricCollector::DaemonKey& daemon) {
-  return os << daemon.first << "." << daemon.second;
-}
-
-// define operator<<(ostream&, const vector<DaemonKey>&) after
-// ostream& operator<<(ostream&, const DaemonKey&), so that C++'s
-// ADL can use the former instead of using the generic one:
-// operator<<(ostream&, const std::pair<A,B>&)
-ostream& operator<<(
-   ostream& os,
-   const vector<DaemonHealthMetricCollector::DaemonKey>& daemons)
-{
-  os << "[";
-  for (auto d = daemons.begin(); d != daemons.end(); ++d) {
-    if (d != daemons.begin()) os << ",";
-    os << *d;
-  }
-  os << "]";
-  return os;
-}
-
 namespace {
+
+using std::unique_ptr;
+using std::vector;
+using std::ostringstream;
 
 class SlowOps final : public DaemonHealthMetricCollector {
   bool _is_relevant(daemon_metric type) const override {
     return type == daemon_metric::SLOW_OPS;
   }
   health_check_t& _get_check(health_check_map_t& cm) const override {
-    return cm.get_or_add("SLOW_OPS", HEALTH_WARN, "");
+    return cm.get_or_add("SLOW_OPS", HEALTH_WARN, "", 1);
   }
   bool _update(const DaemonKey& daemon,
                const DaemonHealthMetric& metric) override {
@@ -54,7 +34,6 @@ class SlowOps final : public DaemonHealthMetricCollector {
     if (daemons.empty()) {
       return;
     }
-    static const char* fmt = "%1% slow ops, oldest one blocked for %2% sec, %3%";
     // Note this message format is used in mgr/prometheus, so any change in format
     // requires a corresponding change in the mgr/prometheus module.
     ostringstream ss;
@@ -68,7 +47,9 @@ class SlowOps final : public DaemonHealthMetricCollector {
     } else {
       ss << daemons.front() << " has slow ops";
     }
-    check.summary = boost::str(boost::format(fmt) % value.n1 % value.n2 % ss.str());
+    check.summary =
+        fmt::format("{} slow ops, oldest one blocked for {} sec, {}",
+                    value.n1, value.n2, ss.str());
     // No detail
   }
   vector<DaemonKey> daemons;
@@ -80,7 +61,7 @@ class PendingPGs final : public DaemonHealthMetricCollector {
     return type == daemon_metric::PENDING_CREATING_PGS;
   }
   health_check_t& _get_check(health_check_map_t& cm) const override {
-    return cm.get_or_add("PENDING_CREATING_PGS", HEALTH_WARN, "");
+    return cm.get_or_add("PENDING_CREATING_PGS", HEALTH_WARN, "", 1);
   }
   bool _update(const DaemonKey& osd,
                const DaemonHealthMetric& metric) override {
@@ -96,8 +77,7 @@ class PendingPGs final : public DaemonHealthMetricCollector {
     if (osds.empty()) {
       return;
     }
-    static const char* fmt = "%1% PGs pending on creation";
-    check.summary = boost::str(boost::format(fmt) % value.n);
+    check.summary = fmt::format("{} PGs pending on creation", value.n);
     ostringstream ss;
     if (osds.size() > 1) {
       ss << "osds " << osds << " have pending PGs.";
@@ -116,10 +96,10 @@ DaemonHealthMetricCollector::create(daemon_metric m)
 {
   switch (m) {
   case daemon_metric::SLOW_OPS:
-    return unique_ptr<DaemonHealthMetricCollector>{new SlowOps};
+    return std::make_unique<SlowOps>();
   case daemon_metric::PENDING_CREATING_PGS:
-    return unique_ptr<DaemonHealthMetricCollector>{new PendingPGs};
+    return std::make_unique<PendingPGs>();
   default:
-    return unique_ptr<DaemonHealthMetricCollector>{};
+    return {};
   }
 }

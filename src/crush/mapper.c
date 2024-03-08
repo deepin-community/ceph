@@ -31,28 +31,6 @@
  * Implement the core CRUSH mapping algorithm.
  */
 
-/**
- * crush_find_rule - find a crush_rule id for a given ruleset, type, and size.
- * @map: the crush_map
- * @ruleset: the storage ruleset id (user defined)
- * @type: storage ruleset type (user defined)
- * @size: output set size
- */
-int crush_find_rule(const struct crush_map *map, int ruleset, int type, int size)
-{
-	__u32 i;
-
-	for (i = 0; i < map->max_rules; i++) {
-		if (map->rules[i] &&
-		    map->rules[i]->mask.ruleset == ruleset &&
-		    map->rules[i]->mask.type == type &&
-		    map->rules[i]->mask.min_size <= size &&
-		    map->rules[i]->mask.max_size >= size)
-			return i;
-	}
-	return -1;
-}
-
 /*
  * bucket choose methods
  *
@@ -792,11 +770,11 @@ static void crush_choose_indep(const struct crush_map *map,
 							out2, rep,
 							recurse_tries, 0,
 							0, NULL, r, choose_args);
-						if (out2[rep] == CRUSH_ITEM_NONE) {
+						if (out2 && out2[rep] == CRUSH_ITEM_NONE) {
 							/* placed nothing; no leaf */
 							break;
 						}
-					} else {
+					} else if (out2) {
 						/* we already have a leaf! */
 						out2[rep] = item;
 					}

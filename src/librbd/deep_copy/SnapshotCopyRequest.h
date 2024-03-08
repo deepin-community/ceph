@@ -18,6 +18,9 @@
 class Context;
 
 namespace librbd {
+
+namespace asio { struct ContextWQ; }
+
 namespace deep_copy {
 
 template <typename ImageCtxT = librbd::ImageCtx>
@@ -28,7 +31,7 @@ public:
                                      librados::snap_t src_snap_id_start,
                                      librados::snap_t src_snap_id_end,
                                      librados::snap_t dst_snap_id_start,
-                                     bool flatten, ContextWQ *work_queue,
+                                     bool flatten, asio::ContextWQ *work_queue,
                                      SnapSeqs *snap_seqs, Context *on_finish) {
     return new SnapshotCopyRequest(src_image_ctx, dst_image_ctx,
                                    src_snap_id_start, src_snap_id_end,
@@ -40,8 +43,8 @@ public:
                       librados::snap_t src_snap_id_start,
                       librados::snap_t src_snap_id_end,
                       librados::snap_t dst_snap_id_start,
-                      bool flatten, ContextWQ *work_queue, SnapSeqs *snap_seqs,
-                      Context *on_finish);
+                      bool flatten, asio::ContextWQ *work_queue,
+                      SnapSeqs *snap_seqs, Context *on_finish);
 
   void send();
   void cancel();
@@ -92,7 +95,7 @@ private:
   librados::snap_t m_src_snap_id_end;
   librados::snap_t m_dst_snap_id_start;
   bool m_flatten;
-  ContextWQ *m_work_queue;
+  asio::ContextWQ *m_work_queue;
   SnapSeqs *m_snap_seqs_result;
   SnapSeqs m_snap_seqs;
   Context *m_on_finish;
@@ -107,7 +110,7 @@ private:
 
   cls::rbd::ParentImageSpec m_dst_parent_spec;
 
-  Mutex m_lock;
+  ceph::mutex m_lock;
   bool m_canceled = false;
 
   void send_snap_unprotect();
@@ -135,7 +138,7 @@ private:
   int validate_parent(ImageCtxT *image_ctx, cls::rbd::ParentImageSpec *spec);
 
   Context *start_lock_op(int* r);
-  Context *start_lock_op(RWLock &owner_locki, int* r);
+  Context *start_lock_op(ceph::shared_mutex &owner_locki, int* r);
 
   void finish(int r);
 };

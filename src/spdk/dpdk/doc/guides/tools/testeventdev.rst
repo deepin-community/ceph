@@ -70,6 +70,8 @@ The following are the application command-line options:
          order_atq
          perf_queue
          perf_atq
+         pipeline_atq
+         pipeline_queue
 
 * ``--socket_id <n>``
 
@@ -127,31 +129,48 @@ The following are the application command-line options:
 
         Use event timer adapter as producer.
 
- * ``--prod_type_timerdev_burst``
+* ``--prod_type_timerdev_burst``
 
-        Use burst mode event timer adapter as producer.
+       Use burst mode event timer adapter as producer.
 
- * ``--timer_tick_nsec``
+* ``--timer_tick_nsec``
 
-        Used to dictate number of nano seconds between bucket traversal of the
-        event timer adapter. Refer `rte_event_timer_adapter_conf`.
+       Used to dictate number of nano seconds between bucket traversal of the
+       event timer adapter. Refer `rte_event_timer_adapter_conf`.
 
- * ``--max_tmo_nsec``
+* ``--max_tmo_nsec``
 
-        Used to configure event timer adapter max arm timeout in nano seconds.
+       Used to configure event timer adapter max arm timeout in nano seconds.
 
- * ``--expiry_nsec``
+* ``--expiry_nsec``
 
-        Dictate the number of nano seconds after which the event timer expires.
+       Dictate the number of nano seconds after which the event timer expires.
 
- * ``--nb_timers``
+* ``--nb_timers``
 
-        Number of event timers each producer core will generate.
+       Number of event timers each producer core will generate.
 
- * ``--nb_timer_adptrs``
+* ``--nb_timer_adptrs``
 
-        Number of event timer adapters to be used. Each adapter is used in
-        round robin manner by the producer cores.
+       Number of event timer adapters to be used. Each adapter is used in
+       round robin manner by the producer cores.
+
+* ``--deq_tmo_nsec``
+
+       Global dequeue timeout for all the event ports if the provided dequeue
+       timeout is out of the supported range of event device it will be
+       adjusted to the highest/lowest supported dequeue timeout supported.
+
+* ``--mbuf_sz``
+
+       Set packet mbuf size. Can be used to configure Jumbo Frames. Only
+       applicable for `pipeline_atq` and `pipeline_queue` tests.
+
+* ``--max_pkt_sz``
+
+       Set max packet mbuf size. Can be used configure Rx/Tx scatter gather.
+       Only applicable for `pipeline_atq` and `pipeline_queue` tests.
+
 
 Eventdev Tests
 --------------
@@ -223,6 +242,7 @@ Supported application command line options are following::
    --nb_flows
    --nb_pkts
    --worker_deq_depth
+   --deq_tmo_nsec
 
 Example
 ^^^^^^^
@@ -285,6 +305,7 @@ Supported application command line options are following::
    --nb_flows
    --nb_pkts
    --worker_deq_depth
+   --deq_tmo_nsec
 
 Example
 ^^^^^^^
@@ -384,6 +405,7 @@ Supported application command line options are following::
         --expiry_nsec
         --nb_timers
         --nb_timer_adptrs
+        --deq_tmo_nsec
 
 Example
 ^^^^^^^
@@ -483,6 +505,7 @@ Supported application command line options are following::
         --expiry_nsec
         --nb_timers
         --nb_timer_adptrs
+        --deq_tmo_nsec
 
 Example
 ^^^^^^^
@@ -521,8 +544,9 @@ This is a pipeline test case that aims at testing the following:
    +===+==============+================+=========================================+
    | 1 | nb_queues    | (nb_producers  | Queues will be configured based on the  |
    |   |              | * nb_stages) + | user requested sched type list(--stlist)|
-   |   |              | x              | Here value of x is 1 in generic pipeline|
-   |   |              |                | and nb_producers in lockfree pipeline   |
+   |   |              | nb_producers   | At the last stage of the schedule list  |
+   |   |              |                | the event is enqueued onto per port     |
+   |   |              |                | unique queue which is then Transmitted. |
    +---+--------------+----------------+-----------------------------------------+
    | 2 | nb_producers | >= 1           | Producers will be configured based on   |
    |   |              |                | the number of detected ethernet devices.|
@@ -533,17 +557,19 @@ This is a pipeline test case that aims at testing the following:
    |   |              |                | argument                                |
    +---+--------------+----------------+-----------------------------------------+
    | 4 | nb_ports     | nb_workers +   | Workers use port 0 to port n.           |
-   |   |              | nb_producers   | Producers use port n+1 to port n+m,     |
-   |   |              |                | depending on the Rx adapter capability. |
+   |   |              | (nb_produces * | Producers use port n+1 to port n+m,     |
+   |   |              | 2)             | depending on the Rx adapter capability. |
+   |   |              |                | Consumers use port n+m+1 to port n+o    |
+   |   |              |                | depending on the Tx adapter capability. |
    +---+--------------+----------------+-----------------------------------------+
 
 .. _figure_eventdev_pipeline_queue_test_generic:
 
 .. figure:: img/eventdev_pipeline_queue_test_generic.*
 
-.. _figure_eventdev_pipeline_queue_test_lockfree:
+.. _figure_eventdev_pipeline_queue_test_internal_port:
 
-.. figure:: img/eventdev_pipeline_queue_test_lockfree.*
+.. figure:: img/eventdev_pipeline_queue_test_internal_port.*
 
    pipeline queue test operation.
 
@@ -568,10 +594,11 @@ the last stage in the pipeline if the event type is ``atomic`` it is enqueued
 onto ethdev Tx queue else to maintain ordering the event type is set to
 ``atomic`` and enqueued onto the last stage queue.
 
-If the ethernet has ``DEV_TX_OFFLOAD_MT_LOCKFREE`` capability then the worker
-cores transmit the packets directly. Else the worker cores enqueue the packet
-onto the ``SINGLE_LINK_QUEUE`` that is managed by a Tx service. The Tx service
-dequeues the packet and transmits it.
+If the ethdev and eventdev pair have ``RTE_EVENT_ETH_TX_ADAPTER_CAP_INTERNAL_PORT``
+capability then the worker cores enqueue the packets to the eventdev directly
+using ``rte_event_eth_tx_adapter_enqueue`` else the worker cores enqueue the
+packet onto the ``SINGLE_LINK_QUEUE`` that is managed by the Tx adapter.
+The Tx adapter dequeues the packet and transmits it.
 
 On packet Tx, application increments the number events processed and print
 periodically in one second to get the number of events processed in one
@@ -592,6 +619,7 @@ Supported application command line options are following::
         --stlist
         --worker_deq_depth
         --prod_type_ethdev
+        --deq_tmo_nsec
 
 
 .. Note::
@@ -628,8 +656,9 @@ This is a pipeline test case that aims at testing the following with
    +===+==============+================+=========================================+
    | 1 | nb_queues    | nb_producers + | Queues will be configured based on the  |
    |   |              | x              | user requested sched type list(--stlist)|
-   |   |              |                | where x = 1 in generic pipeline and 0   |
-   |   |              |                | in lockfree pipeline                    |
+   |   |              |                | where x = nb_producers in generic       |
+   |   |              |                | pipeline and 0 if all the ethdev        |
+   |   |              |                | being used have Internal port capability|
    +---+--------------+----------------+-----------------------------------------+
    | 2 | nb_producers | >= 1           | Producers will be configured based on   |
    |   |              |                | the number of detected ethernet devices.|
@@ -640,17 +669,22 @@ This is a pipeline test case that aims at testing the following with
    |   |              |                | argument                                |
    +---+--------------+----------------+-----------------------------------------+
    | 4 | nb_ports     | nb_workers +   | Workers use port 0 to port n.           |
-   |   |              | nb_producers   | Producers use port n+1 to port n+m,     |
-   |   |              |                | depending on the Rx adapter capability. |
+   |   |              | nb_producers + | Producers use port n+1 to port n+m,     |
+   |   |              | x              | depending on the Rx adapter capability. |
+   |   |              |                | x = nb_producers in generic pipeline and|
+   |   |              |                | 0 if all the ethdev being used have     |
+   |   |              |                | Internal port capability.               |
+   |   |              |                | Consumers may use port n+m+1 to port n+o|
+   |   |              |                | depending on the Tx adapter capability. |
    +---+--------------+----------------+-----------------------------------------+
 
 .. _figure_eventdev_pipeline_atq_test_generic:
 
 .. figure:: img/eventdev_pipeline_atq_test_generic.*
 
-.. _figure_eventdev_pipeline_atq_test_lockfree:
+.. _figure_eventdev_pipeline_atq_test_internal_port:
 
-.. figure:: img/eventdev_pipeline_atq_test_lockfree.*
+.. figure:: img/eventdev_pipeline_atq_test_internal_port.*
 
    pipeline atq test operation.
 
@@ -677,6 +711,7 @@ Supported application command line options are following::
         --stlist
         --worker_deq_depth
         --prod_type_ethdev
+        --deq_tmo_nsec
 
 
 .. Note::

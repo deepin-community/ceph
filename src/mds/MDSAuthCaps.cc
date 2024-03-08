@@ -15,14 +15,14 @@
 #include <string_view>
 
 #include <errno.h>
-#include <fcntl.h>
 
 #include <boost/spirit/include/qi.hpp>
-#include <boost/spirit/include/phoenix_operator.hpp>
-#include <boost/spirit/include/phoenix.hpp>
+#include <boost/phoenix/operator.hpp>
+#include <boost/phoenix.hpp>
 
 #include "common/debug.h"
 #include "MDSAuthCaps.h"
+#include "mdstypes.h"
 #include "include/ipaddr.h"
 
 #define dout_subsys ceph_subsys_mds
@@ -32,6 +32,7 @@
 
 using std::ostream;
 using std::string;
+using std::vector;
 namespace qi = boost::spirit::qi;
 namespace ascii = boost::spirit::ascii;
 namespace phoenix = boost::phoenix;
@@ -41,6 +42,8 @@ struct MDSCapParser : qi::grammar<Iterator, MDSAuthCaps()>
 {
   MDSCapParser() : MDSCapParser::base_type(mdscaps)
   {
+    using qi::attr;
+    using qi::bool_;
     using qi::char_;
     using qi::int_;
     using qi::uint_;
@@ -60,28 +63,47 @@ struct MDSCapParser : qi::grammar<Iterator, MDSAuthCaps()>
       lexeme[lit("'") >> *(char_ - '\'') >> '\''];
     unquoted_path %= +char_("a-zA-Z0-9_./-");
     network_str %= +char_("/.:a-fA-F0-9][");
+    fs_name_str %= +char_("a-zA-Z0-9_.-");
 
     // match := [path=<path>] [uid=<uid> [gids=<gid>[,<gid>...]]
+    // TODO: allow fsname, and root_squash to be specified with uid, and gidlist
     path %= (spaces >> lit("path") >> lit('=') >> (quoted_path | unquoted_path));
     uid %= (spaces >> lit("uid") >> lit('=') >> uint_);
     uintlist %= (uint_ % lit(','));
     gidlist %= -(spaces >> lit("gids") >> lit('=') >> uintlist);
+    fs_name %= -(spaces >> lit("fsname") >> lit('=') >> fs_name_str);
+    root_squash %= (spaces >> lit("root_squash") >> attr(true));
     match = -(
+             (fs_name >> path >> root_squash)[_val = phoenix::construct<MDSCapMatch>(_2, _1, _3)] |
 	     (uid >> gidlist)[_val = phoenix::construct<MDSCapMatch>(_1, _2)] |
 	     (path >> uid >> gidlist)[_val = phoenix::construct<MDSCapMatch>(_1, _2, _3)] |
-             (path)[_val = phoenix::construct<MDSCapMatch>(_1)]);
+             (fs_name >> path)[_val = phoenix::construct<MDSCapMatch>(_2, _1)] |
+             (fs_name >> root_squash)[_val = phoenix::construct<MDSCapMatch>(std::string(), _1, _2)] |
+             (path >> root_squash)[_val = phoenix::construct<MDSCapMatch>(_1, std::string(), _2)] |
+             (path)[_val = phoenix::construct<MDSCapMatch>(_1)] |
+             (root_squash)[_val = phoenix::construct<MDSCapMatch>(std::string(), std::string(), _1)] |
+             (fs_name)[_val = phoenix::construct<MDSCapMatch>(std::string(),
+							      _1)]);
 
-    // capspec = * | r[w][p][s]
+    // capspec = * | r[w][f][p][s]
     capspec = spaces >> (
         lit("*")[_val = MDSCapSpec(MDSCapSpec::ALL)]
         |
         lit("all")[_val = MDSCapSpec(MDSCapSpec::ALL)]
         |
+        (lit("rwfps"))[_val = MDSCapSpec(MDSCapSpec::RWFPS)]
+        |
         (lit("rwps"))[_val = MDSCapSpec(MDSCapSpec::RWPS)]
+        |
+        (lit("rwfp"))[_val = MDSCapSpec(MDSCapSpec::RWFP)]
+        |
+        (lit("rwfs"))[_val = MDSCapSpec(MDSCapSpec::RWFS)]
         |
         (lit("rwp"))[_val = MDSCapSpec(MDSCapSpec::RWP)]
         |
         (lit("rws"))[_val = MDSCapSpec(MDSCapSpec::RWS)]
+        |
+        (lit("rwf"))[_val = MDSCapSpec(MDSCapSpec::RWF)]
         |
         (lit("rw"))[_val = MDSCapSpec(MDSCapSpec::RW)]
         |
@@ -96,8 +118,9 @@ struct MDSCapParser : qi::grammar<Iterator, MDSAuthCaps()>
   }
   qi::rule<Iterator> spaces;
   qi::rule<Iterator, string()> quoted_path, unquoted_path, network_str;
+  qi::rule<Iterator, string()> fs_name_str, fs_name, path;
+  qi::rule<Iterator, bool()> root_squash;
   qi::rule<Iterator, MDSCapSpec()> capspec;
-  qi::rule<Iterator, string()> path;
   qi::rule<Iterator, uint32_t()> uid;
   qi::rule<Iterator, std::vector<uint32_t>() > uintlist;
   qi::rule<Iterator, std::vector<uint32_t>() > gidlist;
@@ -204,37 +227,38 @@ bool MDSAuthCaps::is_capable(std::string_view inode_path,
 			     uid_t new_uid, gid_t new_gid,
 			     const entity_addr_t& addr) const
 {
-  if (cct)
-    ldout(cct, 10) << __func__ << " inode(path /" << inode_path
-		   << " owner " << inode_uid << ":" << inode_gid
-		   << " mode 0" << std::oct << inode_mode << std::dec
-		   << ") by caller " << caller_uid << ":" << caller_gid
+  ldout(g_ceph_context, 10) << __func__ << " inode(path /" << inode_path
+		 << " owner " << inode_uid << ":" << inode_gid
+		 << " mode 0" << std::oct << inode_mode << std::dec
+		 << ") by caller " << caller_uid << ":" << caller_gid
 // << "[" << caller_gid_list << "]";
-		   << " mask " << mask
-		   << " new " << new_uid << ":" << new_gid
-		   << " cap: " << *this << dendl;
+		 << " mask " << mask
+		 << " new " << new_uid << ":" << new_gid
+		 << " cap: " << *this << dendl;
 
-  for (std::vector<MDSCapGrant>::const_iterator i = grants.begin();
-       i != grants.end();
-       ++i) {
-    if (i->network.size() &&
-	(!i->network_valid ||
-	 !network_contains(i->network_parsed,
-			   i->network_prefix,
+  for (const auto& grant : grants) {
+    if (grant.network.size() &&
+	(!grant.network_valid ||
+	 !network_contains(grant.network_parsed,
+			   grant.network_prefix,
 			   addr))) {
       continue;
     }
 
-    if (i->match.match(inode_path, caller_uid, caller_gid, caller_gid_list) &&
-	i->spec.allows(mask & (MAY_READ|MAY_EXECUTE), mask & MAY_WRITE)) {
+    if (grant.match.match(inode_path, caller_uid, caller_gid, caller_gid_list) &&
+	grant.spec.allows(mask & (MAY_READ|MAY_EXECUTE), mask & MAY_WRITE)) {
+      if (grant.match.root_squash && ((caller_uid == 0) || (caller_gid == 0)) &&
+          (mask & MAY_WRITE)) {
+	    continue;
+      }
       // we have a match; narrow down GIDs to those specifically allowed here
       vector<uint64_t> gids;
-      if (std::find(i->match.gids.begin(), i->match.gids.end(), caller_gid) !=
-	  i->match.gids.end()) {
+      if (std::find(grant.match.gids.begin(), grant.match.gids.end(), caller_gid) !=
+	  grant.match.gids.end()) {
 	gids.push_back(caller_gid);
       }
       if (caller_gid_list) {
-	std::set_intersection(i->match.gids.begin(), i->match.gids.end(),
+	std::set_intersection(grant.match.gids.begin(), grant.match.gids.end(),
 			      caller_gid_list->begin(), caller_gid_list->end(),
 			      std::back_inserter(gids));
 	std::sort(gids.begin(), gids.end());
@@ -243,19 +267,25 @@ bool MDSAuthCaps::is_capable(std::string_view inode_path,
 
       // Spec is non-allowing if caller asked for set pool but spec forbids it
       if (mask & MAY_SET_VXATTR) {
-        if (!i->spec.allow_set_vxattr()) {
+        if (!grant.spec.allow_set_vxattr()) {
           continue;
         }
       }
 
       if (mask & MAY_SNAPSHOT) {
-        if (!i->spec.allow_snapshot()) {
+        if (!grant.spec.allow_snapshot()) {
+          continue;
+        }
+      }
+
+      if (mask & MAY_FULL) {
+        if (!grant.spec.allow_full()) {
           continue;
         }
       }
 
       // check unix permissions?
-      if (i->match.uid == MDSCapMatch::MDS_AUTH_UID_ANY) {
+      if (grant.match.uid == MDSCapMatch::MDS_AUTH_UID_ANY) {
         return true;
       }
 
@@ -308,7 +338,7 @@ void MDSAuthCaps::set_allow_all()
 				 {}));
 }
 
-bool MDSAuthCaps::parse(CephContext *c, std::string_view str, ostream *err)
+bool MDSAuthCaps::parse(std::string_view str, ostream *err)
 {
   // Special case for legacy caps
   if (str == "allow") {
@@ -323,7 +353,6 @@ bool MDSAuthCaps::parse(CephContext *c, std::string_view str, ostream *err)
   MDSCapParser<decltype(iter)> g;
 
   bool r = qi::phrase_parse(iter, end, g, ascii::space, *this);
-  cct = c;  // set after parser self-assignment
   if (r && iter == end) {
     for (auto& grant : grants) {
       std::sort(grant.match.gids.begin(), grant.match.gids.end());
@@ -345,8 +374,8 @@ bool MDSAuthCaps::parse(CephContext *c, std::string_view str, ostream *err)
 
 bool MDSAuthCaps::allow_all() const
 {
-  for (std::vector<MDSCapGrant>::const_iterator i = grants.begin(); i != grants.end(); ++i) {
-    if (i->match.is_match_all() && i->spec.allow_all()) {
+  for (const auto& grant : grants) {
+    if (grant.match.is_match_all() && grant.spec.allow_all()) {
       return true;
     }
   }
@@ -357,22 +386,25 @@ bool MDSAuthCaps::allow_all() const
 
 ostream &operator<<(ostream &out, const MDSCapMatch &match)
 {
+  if (!match.fs_name.empty()) {
+    out << " fsname=" << match.fs_name;
+  }
   if (match.path.length()) {
-    out << "path=\"/" << match.path << "\"";
-    if (match.uid != MDSCapMatch::MDS_AUTH_UID_ANY) {
-      out << " ";
-    }
+    out << " path=\"/" << match.path << "\"";
+  }
+  if (match.root_squash) {
+    out << " root_squash";
   }
   if (match.uid != MDSCapMatch::MDS_AUTH_UID_ANY) {
-    out << "uid=" << match.uid;
+    out << " uid=" << match.uid;
     if (!match.gids.empty()) {
       out << " gids=";
-      for (std::vector<gid_t>::const_iterator p = match.gids.begin();
-	   p != match.gids.end();
-	   ++p) {
-	if (p != match.gids.begin())
+      bool first = true;
+      for (const auto& gid : match.gids) {
+	if (!first)
 	  out << ',';
-	out << *p;
+	out << gid;
+        first = false;
       }
     }
   }
@@ -392,6 +424,9 @@ ostream &operator<<(ostream &out, const MDSCapSpec &spec)
     if (spec.allow_write()) {
       out << "w";
     }
+    if (spec.allow_full()) {
+      out << "f";
+    }
     if (spec.allow_set_vxattr()) {
       out << "p";
     }
@@ -408,9 +443,7 @@ ostream &operator<<(ostream &out, const MDSCapGrant &grant)
 {
   out << "allow ";
   out << grant.spec;
-  if (!grant.match.is_match_all()) {
-    out << " " << grant.match;
-  }
+  out << grant.match;
   if (grant.network.size()) {
     out << " network " << grant.network;
   }

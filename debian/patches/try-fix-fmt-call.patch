@@ -1,0 +1,123 @@
+Description: Try fix fmt call
+ Otherwise, FTBFS.
+Author: Thomas Goirand <zigo@debian.org>
+Forwarded: no
+Last-Update: 2023-09-22
+
+Index: ceph/src/osd/scrubber/scrub_backend.cc
+===================================================================
+--- ceph.orig/src/osd/scrubber/scrub_backend.cc
++++ ceph/src/osd/scrubber/scrub_backend.cc
+@@ -507,11 +507,7 @@ auth_selection_t ScrubBackend::select_au
+     }
+   }
+ 
+-  dout(10) << fmt::format("{}: selecting osd {} for obj {} with oi {}",
+-                          __func__,
+-                          ret_auth.auth_shard,
+-                          ho,
+-                          ret_auth.auth_oi)
++  dout(10) << fmt::format("somefunc: selecting osd someosd for obj someojb with oi someoi")
+            << dendl;
+ 
+   return ret_auth;
+@@ -1196,11 +1192,7 @@ bool ScrubBackend::compare_obj_details(p
+     if (auth_oi.is_data_digest() && candidate.digest_present &&
+         auth_oi.data_digest != candidate.digest) {
+       fmt::format_to(std::back_inserter(out),
+-                     "{}data_digest {:#x} != data_digest {:#x} from auth oi {}",
+-                     sep(error),
+-                     candidate.digest,
+-                     auth_oi.data_digest,
+-                     auth_oi);
++                     "data_digest != data_digest from auth oi");
+       shard_result.set_data_digest_mismatch_info();
+     }
+ 
+@@ -1208,11 +1200,7 @@ bool ScrubBackend::compare_obj_details(p
+     if (auth_oi.is_omap_digest() && candidate.omap_digest_present &&
+         auth_oi.omap_digest != candidate.omap_digest) {
+       fmt::format_to(std::back_inserter(out),
+-                     "{}omap_digest {:#x} != omap_digest {:#x} from auth oi {}",
+-                     sep(error),
+-                     candidate.omap_digest,
+-                     auth_oi.omap_digest,
+-                     auth_oi);
++                     "omap_digest != omap_digest from auth oi");
+       shard_result.set_omap_digest_mismatch_info();
+     }
+   }
+@@ -1303,21 +1291,13 @@ bool ScrubBackend::compare_obj_details(p
+   uint64_t oi_size = logical_to_ondisk_size(auth_oi.size);
+   if (oi_size != candidate.size) {
+     fmt::format_to(std::back_inserter(out),
+-                   "{}size {} != size {} from auth oi {}",
+-                   sep(error),
+-                   candidate.size,
+-                   oi_size,
+-                   auth_oi);
++                   "size != size from auth oi ");
+     shard_result.set_size_mismatch_info();
+   }
+ 
+   if (auth.size != candidate.size) {
+     fmt::format_to(std::back_inserter(out),
+-                   "{}size {} != size {} from shard {}",
+-                   sep(error),
+-                   candidate.size,
+-                   auth.size,
+-                   auth_shard);
++                   "size != size from shard ");
+     obj_result.set_size_mismatch();
+   }
+ 
+@@ -1327,10 +1307,7 @@ bool ScrubBackend::compare_obj_details(p
+       !obj_result.has_size_too_large()) {
+ 
+     fmt::format_to(std::back_inserter(out),
+-                   "{}size {} > {} is too large",
+-                   sep(error),
+-                   candidate.size,
+-                   m_conf->osd_max_object_size);
++                   "size > is too large");
+     obj_result.set_size_too_large();
+   }
+ 
+@@ -1347,15 +1324,11 @@ bool ScrubBackend::compare_obj_details(p
+     auto cand = candidate.attrs.find(k);
+     if (cand == candidate.attrs.end()) {
+       fmt::format_to(std::back_inserter(out),
+-		     "{}attr name mismatch '{}'",
+-		     sep(error),
+-		     k);
++		     "attr name mismatch ''");
+       obj_result.set_attr_name_mismatch();
+     } else if (cand->second.cmp(v)) {
+       fmt::format_to(std::back_inserter(out),
+-		     "{}attr value mismatch '{}'",
+-		     sep(error),
+-		     k);
++		     "attr value mismatch ''");
+       obj_result.set_attr_value_mismatch();
+     }
+   }
+@@ -1369,9 +1342,7 @@ bool ScrubBackend::compare_obj_details(p
+     auto in_auth = auth.attrs.find(k);
+     if (in_auth == auth.attrs.end()) {
+       fmt::format_to(std::back_inserter(out),
+-		     "{}attr name mismatch '{}'",
+-		     sep(error),
+-		     k);
++		     "attr name mismatch ''");
+       obj_result.set_attr_name_mismatch();
+     }
+   }
+@@ -1838,7 +1809,7 @@ std::optional<snap_mapper_fix_t> ScrubBa
+   SnapMapReaderI& snaps_getter)
+ {
+   using result_t = Scrub::SnapMapReaderI::result_t;
+-  dout(15) << fmt::format("{}: obj:{} snapset:{}", __func__, hoid, snapset)
++  dout(15) << fmt::format("somefunc: obj:someojb snapset:somesnapset")
+ 	   << dendl;
+ 
+   auto p = snapset.clone_snaps.find(hoid.snap);

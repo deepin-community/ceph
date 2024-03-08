@@ -156,6 +156,17 @@ public:
                            })));
   }
 
+  void expect_reduce_parent_overlap(MockTestImageCtx& mock_image_ctx,
+                                    uint64_t overlap) {
+    EXPECT_CALL(mock_image_ctx, reduce_parent_overlap(overlap, false))
+      .WillOnce(Return(std::make_pair(overlap, io::ImageArea::DATA)));
+  }
+
+  void expect_get_area_size(MockTestImageCtx& mock_image_ctx) {
+    EXPECT_CALL(mock_image_ctx, get_area_size(io::ImageArea::CRYPTO_HEADER))
+      .WillOnce(Return(0));
+  }
+
   void expect_object_may_exist(MockTestImageCtx &mock_image_ctx,
                                uint64_t object_no, bool exists) {
     if (mock_image_ctx.object_map != nullptr) {
@@ -221,7 +232,9 @@ TEST_F(TestMockOperationTrimRequest, SuccessRemove) {
                            true, 0);
 
   // copy-up
+  expect_get_area_size(mock_image_ctx);
   expect_get_parent_overlap(mock_image_ctx, 0);
+  expect_reduce_parent_overlap(mock_image_ctx, 0);
 
   // remove
   expect_object_may_exist(mock_image_ctx, 0, true);
@@ -237,7 +250,7 @@ TEST_F(TestMockOperationTrimRequest, SuccessRemove) {
   MockTrimRequest *req = new MockTrimRequest(
     mock_image_ctx, &cond_ctx, m_image_size, 0, progress_ctx);
   {
-    RWLock::RLocker owner_locker(mock_image_ctx.owner_lock);
+    std::shared_lock owner_locker{mock_image_ctx.owner_lock};
     req->send();
   }
   ASSERT_EQ(0, cond_ctx.wait());
@@ -277,7 +290,9 @@ TEST_F(TestMockOperationTrimRequest, SuccessCopyUp) {
 
   // copy-up
   io::MockObjectDispatch mock_io_object_dispatch;
+  expect_get_area_size(mock_image_ctx);
   expect_get_parent_overlap(mock_image_ctx, ictx->get_object_size());
+  expect_reduce_parent_overlap(mock_image_ctx, ictx->get_object_size());
   expect_get_object_name(mock_image_ctx, 0, "object0");
   expect_object_discard(mock_image_ctx, mock_io_object_dispatch, 0,
                         ictx->get_object_size(), false, 0);
@@ -296,7 +311,7 @@ TEST_F(TestMockOperationTrimRequest, SuccessCopyUp) {
   MockTrimRequest *req = new MockTrimRequest(
     mock_image_ctx, &cond_ctx, 2 * ictx->get_object_size(), 0, progress_ctx);
   {
-    RWLock::RLocker owner_locker(mock_image_ctx.owner_lock);
+    std::shared_lock owner_locker{mock_image_ctx.owner_lock};
     req->send();
   }
   ASSERT_EQ(0, cond_ctx.wait());
@@ -329,7 +344,7 @@ TEST_F(TestMockOperationTrimRequest, SuccessBoundary) {
   MockTrimRequest *req = new MockTrimRequest(
     mock_image_ctx, &cond_ctx, ictx->get_object_size(), 1, progress_ctx);
   {
-    RWLock::RLocker owner_locker(mock_image_ctx.owner_lock);
+    std::shared_lock owner_locker{mock_image_ctx.owner_lock};
     req->send();
   }
   ASSERT_EQ(0, cond_ctx.wait());
@@ -369,7 +384,9 @@ TEST_F(TestMockOperationTrimRequest, RemoveError) {
                            false, 0);
 
   // copy-up
+  expect_get_area_size(mock_image_ctx);
   expect_get_parent_overlap(mock_image_ctx, 0);
+  expect_reduce_parent_overlap(mock_image_ctx, 0);
 
   // remove
   expect_object_may_exist(mock_image_ctx, 0, true);
@@ -381,7 +398,7 @@ TEST_F(TestMockOperationTrimRequest, RemoveError) {
   MockTrimRequest *req = new MockTrimRequest(
     mock_image_ctx, &cond_ctx, m_image_size, 0, progress_ctx);
   {
-    RWLock::RLocker owner_locker(mock_image_ctx.owner_lock);
+    std::shared_lock owner_locker{mock_image_ctx.owner_lock};
     req->send();
   }
   ASSERT_EQ(-EPERM, cond_ctx.wait());
@@ -421,7 +438,9 @@ TEST_F(TestMockOperationTrimRequest, CopyUpError) {
 
   // copy-up
   io::MockObjectDispatch mock_io_object_dispatch;
+  expect_get_area_size(mock_image_ctx);
   expect_get_parent_overlap(mock_image_ctx, ictx->get_object_size());
+  expect_reduce_parent_overlap(mock_image_ctx, ictx->get_object_size());
   expect_get_object_name(mock_image_ctx, 0, "object0");
   expect_object_discard(mock_image_ctx, mock_io_object_dispatch, 0,
                         ictx->get_object_size(), false, -EINVAL);
@@ -431,7 +450,7 @@ TEST_F(TestMockOperationTrimRequest, CopyUpError) {
   MockTrimRequest *req = new MockTrimRequest(
     mock_image_ctx, &cond_ctx, 2 * ictx->get_object_size(), 0, progress_ctx);
   {
-    RWLock::RLocker owner_locker(mock_image_ctx.owner_lock);
+    std::shared_lock owner_locker{mock_image_ctx.owner_lock};
     req->send();
   }
   ASSERT_EQ(-EINVAL, cond_ctx.wait());
@@ -464,7 +483,7 @@ TEST_F(TestMockOperationTrimRequest, BoundaryError) {
   MockTrimRequest *req = new MockTrimRequest(
     mock_image_ctx, &cond_ctx, ictx->get_object_size(), 1, progress_ctx);
   {
-    RWLock::RLocker owner_locker(mock_image_ctx.owner_lock);
+    std::shared_lock owner_locker{mock_image_ctx.owner_lock};
     req->send();
   }
   ASSERT_EQ(-EINVAL, cond_ctx.wait());

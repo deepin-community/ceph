@@ -2,7 +2,7 @@
 ;  Copyright(c) 2011-2015 Intel Corporation All rights reserved.
 ;
 ;  Redistribution and use in source and binary forms, with or without
-;  modification, are permitted provided that the following conditions 
+;  modification, are permitted provided that the following conditions
 ;  are met:
 ;    * Redistributions of source code must retain the above copyright
 ;      notice, this list of conditions and the following disclaimer.
@@ -97,7 +97,7 @@
  %define return rax
  %define return.w eax
 
- %define func(x) x:
+ %define func(x) x: endbranch
  %define FUNC_SAVE
  %define FUNC_RESTORE
 %endif
@@ -158,7 +158,7 @@ section .text
 %define xd3     xtmph1
 
 align 16
-global gf_3vect_mad_avx:function
+mk_global gf_3vect_mad_avx, function
 func(gf_3vect_mad_avx)
 	FUNC_SAVE
 	sub	len, 16

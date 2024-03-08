@@ -1,10 +1,10 @@
-//Copyright (c) 2008-2016 Emil Dotchevski and Reverge Studios, Inc.
+// Copyright 2008-2022 Emil Dotchevski and Reverge Studios, Inc.
 
-//Distributed under the Boost Software License, Version 1.0. (See accompanying
-//file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
+// Distributed under the Boost Software License, Version 1.0. (See accompanying
+// file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 
-#ifndef UUID_EF9152E42E4711DFB699737156D89593
-#define UUID_EF9152E42E4711DFB699737156D89593
+#ifndef BOOST_QVM_EF9152E42E4711DFB699737156D89593
+#define BOOST_QVM_EF9152E42E4711DFB699737156D89593
 
 #include <boost/qvm/quat_traits_defaults.hpp>
 #include <boost/qvm/deduce_quat.hpp>
@@ -37,12 +37,8 @@ test_qvm
         }
     }
 
-namespace
-boost
-    {
-    namespace
-    qvm
-        {
+namespace boost { namespace qvm {
+
         template <class Tag,class T>
         struct
         quat_traits< test_qvm::quaternion<Tag,T> >:

@@ -20,12 +20,13 @@
 #include <iostream>
 #include <string>
 
+#include "auth/KeyRing.h"
 #include "osd/OSD.h"
 #include "os/ObjectStore.h"
 #include "mon/MonClient.h"
 #include "include/ceph_features.h"
-
 #include "common/config.h"
+#include "extblkdev/ExtBlkDevPlugin.h"
 
 #include "mon/MonMap.h"
 
@@ -53,12 +54,23 @@
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_osd
 
+using std::cerr;
+using std::cout;
+using std::map;
+using std::ostringstream;
+using std::string;
+using std::vector;
+
+using ceph::bufferlist;
+
 namespace {
 
 TracepointProvider::Traits osd_tracepoint_traits("libosd_tp.so",
                                                  "osd_tracing");
 TracepointProvider::Traits os_tracepoint_traits("libos_tp.so",
                                                 "osd_objectstore_tracing");
+TracepointProvider::Traits bluestore_tracepoint_traits("libbluestore_tp.so",
+						       "bluestore_tracing");
 #ifdef WITH_OSD_INSTRUMENT_FUNCTIONS
 TracepointProvider::Traits cyg_profile_traits("libcyg_profile_tp.so",
                                                  "osd_function_tracing");
@@ -66,12 +78,12 @@ TracepointProvider::Traits cyg_profile_traits("libcyg_profile_tp.so",
 
 } // anonymous namespace
 
-OSD *osd = nullptr;
+OSD *osdptr = nullptr;
 
 void handle_osd_signal(int signum)
 {
-  if (osd)
-    osd->handle_signal(signum);
+  if (osdptr)
+    osdptr->handle_signal(signum);
 }
 
 static void usage()
@@ -88,6 +100,8 @@ static void usage()
        << "  --convert-filestore\n"
        << "                    run any pending upgrade operations\n"
        << "  --flush-journal   flush all data out of journal\n"
+       << "  --osdspec-affinity\n"
+       << "                    set affinity to an osdspec\n"
        << "  --dump-journal    dump all data of journal\n"
        << "  --mkjournal       initialize a new journal\n"
        << "  --check-wants-journal\n"
@@ -105,8 +119,7 @@ static void usage()
 
 int main(int argc, const char **argv)
 {
-  vector<const char*> args;
-  argv_to_vec(argc, argv, args);
+  auto args = argv_to_vec(argc, argv);
   if (args.empty()) {
     cerr << argv[0] << ": -h or --help for usage" << std::endl;
     exit(1);
@@ -124,8 +137,7 @@ int main(int argc, const char **argv)
   auto cct = global_init(
     &defaults,
     args, CEPH_ENTITY_TYPE_OSD,
-    CODE_ENVIRONMENT_DAEMON,
-    0, "osd_data");
+    CODE_ENVIRONMENT_DAEMON, 0);
   ceph_heap_profiler_init();
 
   Preforker forker;
@@ -146,6 +158,7 @@ int main(int argc, const char **argv)
   bool get_device_fsid = false;
   string device_path;
   std::string dump_pg_log;
+  std::string osdspec_affinity;
 
   std::string val;
   for (std::vector<const char*>::iterator i = args.begin(); i != args.end(); ) {
@@ -153,6 +166,8 @@ int main(int argc, const char **argv)
       break;
     } else if (ceph_argparse_flag(args, i, "--mkfs", (char*)NULL)) {
       mkfs = true;
+    } else if (ceph_argparse_witharg(args, i, &val, "--osdspec-affinity", (char*)NULL)) {
+     osdspec_affinity = val;
     } else if (ceph_argparse_flag(args, i, "--mkjournal", (char*)NULL)) {
       mkjournal = true;
     } else if (ceph_argparse_flag(args, i, "--check-allows-journal", (char*)NULL)) {
@@ -239,7 +254,7 @@ int main(int argc, const char **argv)
 	try {
 	  decode(e, p);
 	}
-	catch (const buffer::error &e) {
+	catch (const ceph::buffer::error &e) {
 	  derr << "failed to decode LogEntry at offset " << pos << dendl;
 	  forker.exit(1);
 	}
@@ -308,11 +323,11 @@ int main(int argc, const char **argv)
 
   std::string journal_path = g_conf().get_val<std::string>("osd_journal");
   uint32_t flags = g_conf().get_val<uint64_t>("osd_os_flags");
-  ObjectStore *store = ObjectStore::create(g_ceph_context,
-					   store_type,
-					   data_path,
-					   journal_path,
-                                           flags);
+  std::unique_ptr<ObjectStore> store = ObjectStore::create(g_ceph_context,
+							   store_type,
+							   data_path,
+							   journal_path,
+							   flags);
   if (!store) {
     derr << "unable to create object store" << dendl;
     forker.exit(-ENODEV);
@@ -321,25 +336,21 @@ int main(int argc, const char **argv)
 
   if (mkkey) {
     common_init_finish(g_ceph_context);
-    KeyRing *keyring = KeyRing::create_empty();
-    if (!keyring) {
-      derr << "Unable to get a Ceph keyring." << dendl;
-      forker.exit(1);
-    }
+    KeyRing keyring;
 
     EntityName ename{g_conf()->name};
     EntityAuth eauth;
 
     std::string keyring_path = g_conf().get_val<std::string>("keyring");
-    int ret = keyring->load(g_ceph_context, keyring_path);
+    int ret = keyring.load(g_ceph_context, keyring_path);
     if (ret == 0 &&
-	keyring->get_auth(ename, eauth)) {
+	keyring.get_auth(ename, eauth)) {
       derr << "already have key in keyring " << keyring_path << dendl;
     } else {
       eauth.key.create(g_ceph_context, CEPH_CRYPTO_AES);
-      keyring->add(ename, eauth);
+      keyring.add(ename, eauth);
       bufferlist bl;
-      keyring->encode_plaintext(bl);
+      keyring.encode_plaintext(bl);
       int r = bl.write_file(keyring_path.c_str(), 0600);
       if (r)
 	derr << TEXT_RED << " ** ERROR: writing new keyring to "
@@ -349,6 +360,7 @@ int main(int argc, const char **argv)
 	derr << "created new key in keyring " << keyring_path << dendl;
     }
   }
+
   if (mkfs) {
     common_init_finish(g_ceph_context);
 
@@ -357,8 +369,8 @@ int main(int argc, const char **argv)
       forker.exit(-EINVAL);
     }
 
-    int err = OSD::mkfs(g_ceph_context, store, g_conf().get_val<uuid_d>("fsid"),
-                        whoami);
+    int err = OSD::mkfs(g_ceph_context, std::move(store), g_conf().get_val<uuid_d>("fsid"),
+                        whoami, osdspec_affinity);
     if (err < 0) {
       derr << TEXT_RED << " ** ERROR: error creating empty object store in "
 	   << data_path << ": " << cpp_strerror(-err) << TEXT_NORMAL << dendl;
@@ -426,7 +438,7 @@ int main(int argc, const char **argv)
 	 << " for object store " << data_path
 	 << dendl;
 flushjournal_out:
-    delete store;
+    store.reset();
     forker.exit(err < 0 ? 1 : 0);
   }
   if (dump_journal) {
@@ -443,7 +455,6 @@ flushjournal_out:
 	 << dendl;
     forker.exit(0);
   }
-
 
   if (convertfilestore) {
     int err = store->mount();
@@ -462,11 +473,19 @@ flushjournal_out:
     forker.exit(0);
   }
   
+  {
+    int r = extblkdev::preload(g_ceph_context);
+    if (r < 0) {
+      derr << "Failed preloading extblkdev plugins, error code: " << r << dendl;
+      forker.exit(1);
+    }
+  }
+
   string magic;
   uuid_d cluster_fsid, osd_fsid;
-  int require_osd_release = 0;
+  ceph_release_t require_osd_release = ceph_release_t::unknown;
   int w;
-  int r = OSD::peek_meta(store, &magic, &cluster_fsid, &osd_fsid, &w,
+  int r = OSD::peek_meta(store.get(), &magic, &cluster_fsid, &osd_fsid, &w,
 			 &require_osd_release);
   if (r < 0) {
     derr << TEXT_RED << " ** ERROR: unable to open OSD superblock on "
@@ -497,19 +516,12 @@ flushjournal_out:
     forker.exit(0);
   }
 
-  if (require_osd_release > 0 &&
-      require_osd_release + 2 < (int)ceph_release()) {
-    derr << "OSD's recorded require_osd_release " << require_osd_release
-	 << " (" << ceph_release_name(require_osd_release)
-	 << ") is >2 releases older than installed " << ceph_release()
-	 << " (" << ceph_release_name(ceph_release())
-	 << "); you can only upgrade 2 releases at a time" << dendl;
-    derr << "you should first upgrade to "
-	 << (require_osd_release + 1)
-	 << " (" << ceph_release_name(require_osd_release + 1) << ") or "
-	 << (require_osd_release + 2)
-	 << " (" << ceph_release_name(require_osd_release + 2) << ")" << dendl;
-    forker.exit(1);
+  {
+    ostringstream err;
+    if (!can_upgrade_from(require_osd_release, "require_osd_release", err)) {
+      derr << err.str() << dendl;
+      forker.exit(1);
+    }
   }
 
   // consider objectstore numa node
@@ -532,31 +544,21 @@ flushjournal_out:
 
   public_msg_type = public_msg_type.empty() ? msg_type : public_msg_type;
   cluster_msg_type = cluster_msg_type.empty() ? msg_type : cluster_msg_type;
+  uint64_t nonce = Messenger::get_pid_nonce();
   Messenger *ms_public = Messenger::create(g_ceph_context, public_msg_type,
-					   entity_name_t::OSD(whoami), "client",
-					   getpid(),
-					   Messenger::HAS_HEAVY_TRAFFIC |
-					   Messenger::HAS_MANY_CONNECTIONS);
+					   entity_name_t::OSD(whoami), "client", nonce);
   Messenger *ms_cluster = Messenger::create(g_ceph_context, cluster_msg_type,
-					    entity_name_t::OSD(whoami), "cluster",
-					    getpid(),
-					    Messenger::HAS_HEAVY_TRAFFIC |
-					    Messenger::HAS_MANY_CONNECTIONS);
+					    entity_name_t::OSD(whoami), "cluster", nonce);
   Messenger *ms_hb_back_client = Messenger::create(g_ceph_context, cluster_msg_type,
-					     entity_name_t::OSD(whoami), "hb_back_client",
-					     getpid(), Messenger::HEARTBEAT);
+					     entity_name_t::OSD(whoami), "hb_back_client", nonce);
   Messenger *ms_hb_front_client = Messenger::create(g_ceph_context, public_msg_type,
-					     entity_name_t::OSD(whoami), "hb_front_client",
-					     getpid(), Messenger::HEARTBEAT);
+					     entity_name_t::OSD(whoami), "hb_front_client", nonce);
   Messenger *ms_hb_back_server = Messenger::create(g_ceph_context, cluster_msg_type,
-						   entity_name_t::OSD(whoami), "hb_back_server",
-						   getpid(), Messenger::HEARTBEAT);
+						   entity_name_t::OSD(whoami), "hb_back_server", nonce);
   Messenger *ms_hb_front_server = Messenger::create(g_ceph_context, public_msg_type,
-						    entity_name_t::OSD(whoami), "hb_front_server",
-						    getpid(), Messenger::HEARTBEAT);
+						    entity_name_t::OSD(whoami), "hb_front_server", nonce);
   Messenger *ms_objecter = Messenger::create(g_ceph_context, public_msg_type,
-					     entity_name_t::OSD(whoami), "ms_objecter",
-					     getpid(), 0);
+					     entity_name_t::OSD(whoami), "ms_objecter", nonce);
   if (!ms_public || !ms_cluster || !ms_hb_front_client || !ms_hb_back_client || !ms_hb_back_server || !ms_hb_front_server || !ms_objecter)
     forker.exit(1);
   ms_cluster->set_cluster_protocol(CEPH_OSD_PROTOCOL);
@@ -585,7 +587,7 @@ flushjournal_out:
     CEPH_FEATURE_PGID64 |
     CEPH_FEATURE_OSDENC;
 
-  ms_public->set_default_policy(Messenger::Policy::stateless_server(0));
+  ms_public->set_default_policy(Messenger::Policy::stateless_registered_server(0));
   ms_public->set_policy_throttlers(entity_name_t::TYPE_CLIENT,
 				   client_byte_throttler.get(),
 				   client_msg_throttler.get());
@@ -593,10 +595,6 @@ flushjournal_out:
                         Messenger::Policy::lossy_client(osd_required));
   ms_public->set_policy(entity_name_t::TYPE_MGR,
                         Messenger::Policy::lossy_client(osd_required));
-
-  //try to poison pill any OSD connections on the wrong address
-  ms_public->set_policy(entity_name_t::TYPE_OSD,
-			Messenger::Policy::stateless_server(0));
 
   ms_cluster->set_default_policy(Messenger::Policy::stateless_server(0));
   ms_cluster->set_policy(entity_name_t::TYPE_MON, Messenger::Policy::lossy_client(0));
@@ -616,12 +614,26 @@ flushjournal_out:
 
   ms_objecter->set_default_policy(Messenger::Policy::lossy_client(CEPH_FEATURE_OSDREPLYMUX));
 
-  entity_addrvec_t public_addrs, cluster_addrs;
+  entity_addrvec_t public_addrs, public_bind_addrs, cluster_addrs;
   r = pick_addresses(g_ceph_context, CEPH_PICK_ADDRESS_PUBLIC, &public_addrs,
 		     iface_preferred_numa_node);
   if (r < 0) {
     derr << "Failed to pick public address." << dendl;
     forker.exit(1);
+  } else {
+    dout(10) << "picked public_addrs " << public_addrs << dendl;
+  }
+  r = pick_addresses(g_ceph_context, CEPH_PICK_ADDRESS_PUBLIC_BIND,
+		     &public_bind_addrs, iface_preferred_numa_node);
+  if (r == -ENOENT) {
+    dout(10) << "there is no public_bind_addrs, defaulting to public_addrs"
+	     << dendl;
+    public_bind_addrs = public_addrs;
+  } else if (r < 0) {
+    derr << "Failed to pick public bind address." << dendl;
+    forker.exit(1);
+  } else {
+    dout(10) << "picked public_bind_addrs " << public_bind_addrs << dendl;
   }
   r = pick_addresses(g_ceph_context, CEPH_PICK_ADDRESS_CLUSTER, &cluster_addrs,
 		     iface_preferred_numa_node);
@@ -630,8 +642,10 @@ flushjournal_out:
     forker.exit(1);
   }
 
-  if (ms_public->bindv(public_addrs) < 0)
+  if (ms_public->bindv(public_bind_addrs, public_addrs) < 0) {
+    derr << "Failed to bind to " << public_bind_addrs << dendl;
     forker.exit(1);
+  }
 
   if (ms_cluster->bindv(cluster_addrs) < 0)
     forker.exit(1);
@@ -644,7 +658,7 @@ flushjournal_out:
     ms_hb_front_server->set_socket_priority(SOCKET_PRIORITY_MIN_DELAY);
   }
 
-  entity_addrvec_t hb_front_addrs = public_addrs;
+  entity_addrvec_t hb_front_addrs = public_bind_addrs;
   for (auto& a : hb_front_addrs.v) {
     a.set_port(0);
   }
@@ -668,13 +682,17 @@ flushjournal_out:
 
   TracepointProvider::initialize<osd_tracepoint_traits>(g_ceph_context);
   TracepointProvider::initialize<os_tracepoint_traits>(g_ceph_context);
+  TracepointProvider::initialize<bluestore_tracepoint_traits>(g_ceph_context);
 #ifdef WITH_OSD_INSTRUMENT_FUNCTIONS
   TracepointProvider::initialize<cyg_profile_traits>(g_ceph_context);
 #endif
 
   srand(time(NULL) + getpid());
 
-  MonClient mc(g_ceph_context);
+  ceph::async::io_context_pool poolctx(
+    cct->_conf.get_val<std::uint64_t>("osd_asio_thread_count"));
+
+  MonClient mc(g_ceph_context, poolctx);
   if (mc.build_initial_monmap() < 0)
     return -1;
   global_init_chdir(g_ceph_context);
@@ -683,21 +701,22 @@ flushjournal_out:
     forker.exit(1);
   }
 
-  osd = new OSD(g_ceph_context,
-                store,
-                whoami,
-                ms_cluster,
-                ms_public,
-                ms_hb_front_client,
-                ms_hb_back_client,
-                ms_hb_front_server,
-                ms_hb_back_server,
-                ms_objecter,
-                &mc,
-                data_path,
-                journal_path);
+  osdptr = new OSD(g_ceph_context,
+		   std::move(store),
+		   whoami,
+		   ms_cluster,
+		   ms_public,
+		   ms_hb_front_client,
+		   ms_hb_back_client,
+		   ms_hb_front_server,
+		   ms_hb_back_server,
+		   ms_objecter,
+		   &mc,
+		   data_path,
+		   journal_path,
+		   poolctx);
 
-  int err = osd->pre_init();
+  int err = osdptr->pre_init();
   if (err < 0) {
     derr << TEXT_RED << " ** ERROR: osd pre_init failed: " << cpp_strerror(-err)
 	 << TEXT_NORMAL << dendl;
@@ -713,7 +732,7 @@ flushjournal_out:
   ms_objecter->start();
 
   // start osd
-  err = osd->init();
+  err = osdptr->init();
   if (err < 0) {
     derr << TEXT_RED << " ** ERROR: osd init failed: " << cpp_strerror(-err)
          << TEXT_NORMAL << dendl;
@@ -731,7 +750,7 @@ flushjournal_out:
   register_async_signal_handler_oneshot(SIGINT, handle_osd_signal);
   register_async_signal_handler_oneshot(SIGTERM, handle_osd_signal);
 
-  osd->final_init();
+  osdptr->final_init();
 
   if (g_conf().get_val<bool>("inject_early_sigterm"))
     kill(getpid(), SIGTERM);
@@ -750,7 +769,8 @@ flushjournal_out:
   shutdown_async_signal_handler();
 
   // done
-  delete osd;
+  poolctx.stop();
+  delete osdptr;
   delete ms_public;
   delete ms_hb_front_client;
   delete ms_hb_back_client;

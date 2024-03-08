@@ -21,10 +21,29 @@
 
 #pragma once
 
+#include <type_traits>
+#include <utility>
+
+#include <seastar/util/concepts.hh>
+
+#ifdef SEASTAR_DEFERRED_ACTION_REQUIRE_NOEXCEPT
+#define SEASTAR_DEFERRED_ACTION_NOEXCEPT noexcept
+#else
+#define SEASTAR_DEFERRED_ACTION_NOEXCEPT
+#endif
+
+SEASTAR_CONCEPT(
+template <typename Func>
+concept deferrable_action = requires (Func func) {
+    { func() } SEASTAR_DEFERRED_ACTION_NOEXCEPT -> std::same_as<void>;
+};
+)
+
 namespace seastar {
 
 template <typename Func>
-class deferred_action {
+SEASTAR_CONCEPT( requires deferrable_action<Func> )
+class [[nodiscard("unassigned deferred_action")]] deferred_action {
     Func _func;
     bool _cancelled = false;
 public:
@@ -46,6 +65,7 @@ public:
 };
 
 template <typename Func>
+SEASTAR_CONCEPT( requires deferrable_action<Func> )
 inline
 deferred_action<Func>
 defer(Func&& func) {

@@ -3,6 +3,7 @@
 
 #include "common/errno.h"
 #include "cls/rbd/cls_rbd_client.h"
+#include "librbd/api/Mirror.h"
 #include "librbd/api/Namespace.h"
 #include "librbd/ImageCtx.h"
 
@@ -131,6 +132,13 @@ int Namespace<I>::remove(librados::IoCtx& io_ctx, const std::string& name)
     goto rollback;
   }
 
+  r = Mirror<I>::mode_set(ns_ctx, RBD_MIRROR_MODE_DISABLED);
+  if (r < 0) {
+    lderr(cct) << "failed to disable mirroring: " << cpp_strerror(r)
+               << dendl;
+    return r;
+  }
+
   for (auto& oid : POOL_OBJECTS) {
     r = ns_ctx.remove(oid);
     if (r < 0 && r != -ENOENT) {
@@ -161,7 +169,7 @@ rollback:
 }
 
 template <typename I>
-int Namespace<I>::list(IoCtx& io_ctx, vector<string> *names)
+int Namespace<I>::list(IoCtx& io_ctx, std::vector<std::string> *names)
 {
   CephContext *cct = (CephContext *)io_ctx.cct();
   ldout(cct, 5) << dendl;

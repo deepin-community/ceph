@@ -21,12 +21,18 @@
 #pragma once
 
 #include <seastar/core/sstring.hh>
+#include <seastar/util/concepts.hh>
+#include <seastar/util/log-impl.hh>
+#include <seastar/core/lowres_clock.hh>
+#include <seastar/util/std-compat.hh>
+
 #include <unordered_map>
 #include <exception>
 #include <iosfwd>
 #include <atomic>
 #include <mutex>
 #include <boost/lexical_cast.hpp>
+#include <fmt/format.h>
 
 
 /// \addtogroup logging
@@ -64,7 +70,7 @@ namespace seastar {
 class logger;
 class logger_registry;
 
-/// \brief Logger class for stdout or syslog.
+/// \brief Logger class for ostream or syslog.
 ///
 /// Java style api for logging.
 /// \code {.cpp}
@@ -74,150 +80,355 @@ class logger_registry;
 /// The output format is: (depending on level)
 /// DEBUG  %Y-%m-%d %T,%03d [shard 0] - "your msg" \n
 ///
+/// It is possible to rate-limit log messages, see \ref logger::rate_limit.
 class logger {
     sstring _name;
     std::atomic<log_level> _level = { log_level::info };
-    static std::atomic<bool> _stdout;
+    static std::ostream* _out;
+    static std::atomic<bool> _ostream;
     static std::atomic<bool> _syslog;
+    static unsigned _shard_field_width;
+    static inline thread_local bool silent = false;
+
+public:
+    class log_writer {
+    public:
+        virtual ~log_writer() = default;
+        virtual internal::log_buf::inserter_iterator operator()(internal::log_buf::inserter_iterator) = 0;
+    };
+    template <typename Func>
+    SEASTAR_CONCEPT(requires requires (Func fn, internal::log_buf::inserter_iterator it) {
+        it = fn(it);
+    })
+    class lambda_log_writer : public log_writer {
+        Func _func;
+    public:
+        lambda_log_writer(Func&& func) : _func(std::forward<Func>(func)) { }
+        virtual ~lambda_log_writer() override = default;
+        virtual internal::log_buf::inserter_iterator operator()(internal::log_buf::inserter_iterator it) override { return _func(it); }
+    };
+
+    /// \cond internal
+    /// \brief used to hold the log format string and the caller's source_location.
+    struct format_info {
+        /// implicitly construct format_info from a const char* format string.
+        /// \param fmt - {fmt} style format string
+        format_info(const char* format, compat::source_location loc = compat::source_location::current()) noexcept
+            : format(format)
+            , loc(loc)
+        {}
+        /// implicitly construct format_info from a std::string_view format string.
+        /// \param fmt - {fmt} style format string_view
+        format_info(std::string_view format, compat::source_location loc = compat::source_location::current()) noexcept
+            : format(format)
+            , loc(loc)
+        {}
+        /// implicitly construct format_info with no format string.
+        format_info(compat::source_location loc = compat::source_location::current()) noexcept
+            : format()
+            , loc(loc)
+        {}
+        std::string_view format;
+        compat::source_location loc;
+    };
+
 private:
-    struct stringer {
-        void (*append)(std::ostream& os, const void* object);
-        const void* object;
+
+    // We can't use an std::function<> as it potentially allocates.
+    void do_log(log_level level, log_writer& writer);
+    void failed_to_log(std::exception_ptr ex, format_info fmt) noexcept;
+
+    class silencer {
+    public:
+        silencer() noexcept {
+            silent = true;
+        }
+
+        ~silencer() {
+            silent = false;
+        }
     };
-    template <typename Arg>
-    stringer stringer_for(const Arg& arg) {
-        return stringer{
-            [] (std::ostream& os, const void* object) {
-                os << *static_cast<const std::remove_reference_t<Arg>*>(object);
-            },
-            &arg
-        };
+
+public:
+    /// Apply a rate limit to log message(s)
+    ///
+    /// Pass this to \ref logger::log() to apply a rate limit to the message.
+    /// The rate limit is applied to all \ref logger::log() calls this rate
+    /// limit is passed to. Example:
+    ///
+    ///     void handle_request() {
+    ///         static thread_local logger::rate_limit my_rl(std::chrono::seconds(10));
+    ///         // ...
+    ///         my_log.log(log_level::info, my_rl, "a message we don't want to log on every request, only at most once each 10 seconds");
+    ///         // ...
+    ///     }
+    ///
+    /// The rate limit ensures that at most one message per interval will be
+    /// logged. If there were messages dropped due to rate-limiting the
+    /// following snippet will be prepended to the first non-dropped log
+    /// messages:
+    ///
+    ///     (rate limiting dropped $N similar messages)
+    ///
+    /// Where $N is the number of messages dropped.
+    class rate_limit {
+        friend class logger;
+
+        using clock = lowres_clock;
+
+    private:
+        clock::duration _interval;
+        clock::time_point _next;
+        uint64_t _dropped_messages = 0;
+
+    private:
+        bool check();
+        bool has_dropped_messages() const { return bool(_dropped_messages); }
+        uint64_t get_and_reset_dropped_messages() {
+            return std::exchange(_dropped_messages, 0);
+        }
+
+    public:
+        explicit rate_limit(std::chrono::milliseconds interval);
     };
-    template <typename... Args>
-    void do_log(log_level level, const char* fmt, Args&&... args);
-    void really_do_log(log_level level, const char* fmt, const stringer* stringers, size_t n);
-    void failed_to_log(std::exception_ptr ex);
+
 public:
     explicit logger(sstring name);
     logger(logger&& x);
     ~logger();
 
-    bool is_shard_zero();
+    bool is_shard_zero() noexcept;
 
     /// Test if desired log level is enabled
     ///
     /// \param level - enum level value (info|error...)
     /// \return true if the log level has been enabled.
-    bool is_enabled(log_level level) const {
-        return __builtin_expect(level <= _level.load(std::memory_order_relaxed), false);
+    bool is_enabled(log_level level) const noexcept {
+        return __builtin_expect(level <= _level.load(std::memory_order_relaxed), false) && !silent;
     }
 
     /// logs to desired level if enabled, otherwise we ignore the log line
     ///
-    /// \param fmt - printf style format
+    /// \param fmt - {fmt} style format string (implictly converted to struct logger::format_info)
+    ///              or a logger::format_info passed down the call chain.
     /// \param args - args to print string
     ///
     template <typename... Args>
-    void log(log_level level, const char* fmt, const Args&... args) {
+    void log(log_level level, format_info fmt, Args&&... args) noexcept {
         if (is_enabled(level)) {
             try {
-                do_log(level, fmt, args...);
+                lambda_log_writer writer([&] (internal::log_buf::inserter_iterator it) {
+#if FMT_VERSION >= 80000
+                    return fmt::format_to(it, fmt::runtime(fmt.format), std::forward<Args>(args)...);
+#else
+                    return fmt::format_to(it, fmt.format, std::forward<Args>(args)...);
+#endif
+                });
+                do_log(level, writer);
             } catch (...) {
-                failed_to_log(std::current_exception());
+                failed_to_log(std::current_exception(), std::move(fmt));
             }
         }
     }
 
-    /// Log with error tag:
-    /// ERROR  %Y-%m-%d %T,%03d [shard 0] - "your msg" \n
+    /// logs with a rate limit to desired level if enabled, otherwise we ignore the log line
     ///
-    /// \param fmt - printf style format
+    /// If there were messages dropped due to rate-limiting the following snippet
+    /// will be prepended to the first non-dropped log messages:
+    ///
+    ///     (rate limiting dropped $N similar messages)
+    ///
+    /// Where $N is the number of messages dropped.
+    ///
+    /// \param rl - the \ref rate_limit to apply to this log
+    /// \param fmt - {fmt} style format string (implictly converted to struct logger::format_info)
+    ///              or a logger::format_info passed down the call chain.
     /// \param args - args to print string
     ///
     template <typename... Args>
-    void error(const char* fmt, Args&&... args) {
-        log(log_level::error, fmt, std::forward<Args>(args)...);
+    void log(log_level level, rate_limit& rl, format_info fmt, Args&&... args) noexcept {
+        if (is_enabled(level) && rl.check()) {
+            try {
+                lambda_log_writer writer([&] (internal::log_buf::inserter_iterator it) {
+                    if (rl.has_dropped_messages()) {
+                        it = fmt::format_to(it, "(rate limiting dropped {} similar messages) ", rl.get_and_reset_dropped_messages());
+                    }
+#if FMT_VERSION >= 80000
+                    return fmt::format_to(it, fmt::runtime(fmt.format), std::forward<Args>(args)...);
+#else
+                    return fmt::format_to(it, fmt.format, std::forward<Args>(args)...);
+#endif
+                });
+                do_log(level, writer);
+            } catch (...) {
+                failed_to_log(std::current_exception(), std::move(fmt));
+            }
+        }
+    }
+
+    /// \cond internal
+    /// logs to desired level if enabled, otherwise we ignore the log line
+    ///
+    /// \param writer a function which writes directly to the underlying log buffer
+    /// \param fmt - optional logger::format_info passed down the call chain.
+    ///
+    /// This is a low level method for use cases where it is very important to
+    /// avoid any allocations. The \arg writer will be passed a
+    /// internal::log_buf::inserter_iterator that allows it to write into the log
+    /// buffer directly, avoiding the use of any intermediary buffers.
+    void log(log_level level, log_writer& writer, format_info fmt = {}) noexcept {
+        if (is_enabled(level)) {
+            try {
+                do_log(level, writer);
+            } catch (...) {
+                failed_to_log(std::current_exception(), std::move(fmt));
+            }
+        }
+    }
+    /// logs to desired level if enabled, otherwise we ignore the log line
+    ///
+    /// \param writer a function which writes directly to the underlying log buffer
+    /// \param fmt - optional logger::format_info passed down the call chain.
+    ///
+    /// This is a low level method for use cases where it is very important to
+    /// avoid any allocations. The \arg writer will be passed a
+    /// internal::log_buf::inserter_iterator that allows it to write into the log
+    /// buffer directly, avoiding the use of any intermediary buffers.
+    /// This is rate-limited version, see \ref rate_limit.
+    void log(log_level level, rate_limit& rl, log_writer& writer, format_info fmt = {}) noexcept {
+        if (is_enabled(level) && rl.check()) {
+            try {
+                lambda_log_writer writer_wrapper([&] (internal::log_buf::inserter_iterator it) {
+                    if (rl.has_dropped_messages()) {
+                        it = fmt::format_to(it, "(rate limiting dropped {} similar messages) ", rl.get_and_reset_dropped_messages());
+                    }
+                    return writer(it);
+                });
+                do_log(level, writer_wrapper);
+            } catch (...) {
+                failed_to_log(std::current_exception(), std::move(fmt));
+            }
+        }
+    }
+    /// \endcond
+
+    /// Log with error tag:
+    /// ERROR  %Y-%m-%d %T,%03d [shard 0] - "your msg" \n
+    ///
+    /// \param fmt - {fmt} style format string (implictly converted to struct logger::format_info)
+    ///              or a logger::format_info passed down the call chain.
+    /// \param args - args to print string
+    ///
+    template <typename... Args>
+    void error(format_info fmt, Args&&... args) noexcept {
+        log(log_level::error, std::move(fmt), std::forward<Args>(args)...);
     }
     /// Log with warning tag:
     /// WARN  %Y-%m-%d %T,%03d [shard 0] - "your msg" \n
     ///
-    /// \param fmt - printf style format
+    /// \param fmt - {fmt} style format string (implictly converted to struct logger::format_info)
+    ///              or a logger::format_info passed down the call chain.
     /// \param args - args to print string
     ///
     template <typename... Args>
-    void warn(const char* fmt, Args&&... args) {
-        log(log_level::warn, fmt, std::forward<Args>(args)...);
+    void warn(format_info fmt, Args&&... args) noexcept {
+        log(log_level::warn, std::move(fmt), std::forward<Args>(args)...);
     }
     /// Log with info tag:
     /// INFO  %Y-%m-%d %T,%03d [shard 0] - "your msg" \n
     ///
-    /// \param fmt - printf style format
+    /// \param fmt - {fmt} style format string (implictly converted to struct logger::format_info)
+    ///              or a logger::format_info passed down the call chain.
     /// \param args - args to print string
     ///
     template <typename... Args>
-    void info(const char* fmt, Args&&... args) {
-        log(log_level::info, fmt, std::forward<Args>(args)...);
+    void info(format_info fmt, Args&&... args) noexcept {
+        log(log_level::info, std::move(fmt), std::forward<Args>(args)...);
     }
     /// Log with info tag on shard zero only:
     /// INFO  %Y-%m-%d %T,%03d [shard 0] - "your msg" \n
     ///
-    /// \param fmt - printf style format
+    /// \param fmt - {fmt} style format string (implictly converted to struct logger::format_info)
+    ///              or a logger::format_info passed down the call chain.
     /// \param args - args to print string
     ///
     template <typename... Args>
-    void info0(const char* fmt, Args&&... args) {
+    void info0(format_info fmt, Args&&... args) noexcept {
         if (is_shard_zero()) {
-            log(log_level::info, fmt, std::forward<Args>(args)...);
+            log(log_level::info, std::move(fmt), std::forward<Args>(args)...);
         }
     }
-    /// Log with info tag:
+    /// Log with debug tag:
     /// DEBUG  %Y-%m-%d %T,%03d [shard 0] - "your msg" \n
     ///
-    /// \param fmt - printf style format
+    /// \param fmt - {fmt} style format string (implictly converted to struct logger::format_info)
+    ///              or a logger::format_info passed down the call chain.
     /// \param args - args to print string
     ///
     template <typename... Args>
-    void debug(const char* fmt, Args&&... args) {
-        log(log_level::debug, fmt, std::forward<Args>(args)...);
+    void debug(format_info fmt, Args&&... args) noexcept {
+        log(log_level::debug, std::move(fmt), std::forward<Args>(args)...);
     }
     /// Log with trace tag:
     /// TRACE  %Y-%m-%d %T,%03d [shard 0] - "your msg" \n
     ///
-    /// \param fmt - printf style format
+    /// \param fmt - {fmt} style format string (implictly converted to struct logger::format_info)
+    ///              or a logger::format_info passed down the call chain.
     /// \param args - args to print string
     ///
     template <typename... Args>
-    void trace(const char* fmt, Args&&... args) {
-        log(log_level::trace, fmt, std::forward<Args>(args)...);
+    void trace(format_info fmt, Args&&... args) noexcept {
+        log(log_level::trace, std::move(fmt), std::forward<Args>(args)...);
     }
 
     /// \return name of the logger. Usually one logger per module
     ///
-    const sstring& name() const {
+    const sstring& name() const noexcept {
         return _name;
     }
 
     /// \return current log level for this logger
     ///
-    log_level level() const {
+    log_level level() const noexcept {
         return _level.load(std::memory_order_relaxed);
     }
 
     /// \param level - set the log level
     ///
-    void set_level(log_level level) {
+    void set_level(log_level level) noexcept {
         _level.store(level, std::memory_order_relaxed);
     }
 
+    /// Set output stream, default is std::cerr
+    static void set_ostream(std::ostream& out) noexcept;
+
+    /// Also output to ostream. default is true
+    static void set_ostream_enabled(bool enabled) noexcept;
+
     /// Also output to stdout. default is true
-    static void set_stdout_enabled(bool enabled);
+    [[deprecated("Use set_ostream_enabled instead")]]
+    static void set_stdout_enabled(bool enabled) noexcept;
 
     /// Also output to syslog. default is false
     ///
     /// NOTE: syslog() can block, which will stall the reactor thread.
     ///       this should be rare (will have to fill the pipe buffer
     ///       before syslogd can clear it) but can happen.
-    static void set_syslog_enabled(bool enabled);
+    static void set_syslog_enabled(bool enabled) noexcept;
+
+    /// Set the width of shard id field in log messages
+    ///
+    /// \c this_shard_id() is printed as a part of the prefix in logging
+    /// messages, like "[shard 42]", where \c 42 is the decimal number of the
+    /// current shard id printed with a minimal width.
+    ///
+    /// \param width the minimal width of the shard id field
+    static void set_shard_field_width(unsigned width) noexcept;
+
+    /// enable/disable the colored tag in ostream
+    ///
+    /// \note this is a noop if fmtlib's version is less than 6.0
+    static void set_with_color(bool enabled) noexcept;
 };
 
 /// \brief used to keep a static registry of loggers
@@ -273,10 +484,18 @@ public:
 
 logger_registry& global_logger_registry();
 
+/// \brief Timestamp style.
 enum class logger_timestamp_style {
     none,
     boot,
     real,
+};
+
+/// \brief Output stream to use for logging.
+enum class logger_ostream_type {
+    none,
+    stdout,
+    stderr,
 };
 
 struct logging_settings final {
@@ -284,7 +503,9 @@ struct logging_settings final {
     log_level default_level;
     bool stdout_enabled;
     bool syslog_enabled;
+    bool with_color;
     logger_timestamp_style stdout_timestamp_style = logger_timestamp_style::real;
+    logger_ostream_type logger_ostream = logger_ostream_type::stderr;
 };
 
 /// Shortcut for configuring the logging system all at once.
@@ -305,15 +526,6 @@ public:
     logger_for() : logger(pretty_type_name(typeid(T))) {}
 };
 
-template <typename... Args>
-void
-logger::do_log(log_level level, const char* fmt, Args&&... args) {
-    [&](auto... stringers) {
-        stringer s[sizeof...(stringers)] = {stringers...};
-        this->really_do_log(level, fmt, s, sizeof...(stringers));
-    } (stringer_for<Args>(std::forward<Args>(args))...);
-}
-
 /// \endcond
 } // end seastar namespace
 
@@ -323,5 +535,11 @@ std::ostream& operator<<(std::ostream&, const std::exception_ptr&);
 std::ostream& operator<<(std::ostream&, const std::exception&);
 std::ostream& operator<<(std::ostream&, const std::system_error&);
 }
+
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<std::exception_ptr> : fmt::ostream_formatter {};
+template <> struct fmt::formatter<std::exception> : fmt::ostream_formatter {};
+template <> struct fmt::formatter<std::system_error> : fmt::ostream_formatter {};
+#endif
 
 /// @}

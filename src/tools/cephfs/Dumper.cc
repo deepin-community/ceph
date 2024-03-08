@@ -34,6 +34,8 @@
 
 #define HEADER_LEN 4096
 
+using namespace std;
+
 int Dumper::init(mds_role_t role_, const std::string &type)
 {
   role = role_;
@@ -67,9 +69,9 @@ int Dumper::init(mds_role_t role_, const std::string &type)
 int Dumper::recover_journal(Journaler *journaler)
 {
   C_SaferCond cond;
-  lock.Lock();
+  lock.lock();
   journaler->recover(&cond);
-  lock.Unlock();
+  lock.unlock();
   const int r = cond.wait();
 
   if (r < 0) { // Error
@@ -104,7 +106,7 @@ int Dumper::dump(const char *dump_file)
 
   cout << "journal is " << start << "~" << len << std::endl;
 
-  int fd = ::open(dump_file, O_WRONLY|O_CREAT|O_TRUNC, 0644);
+  int fd = ::open(dump_file, O_WRONLY|O_CREAT|O_TRUNC|O_BINARY, 0644);
   if (fd >= 0) {
     // include an informative header
     uuid_d fsid = monc->get_fsid();
@@ -155,10 +157,10 @@ int Dumper::dump(const char *dump_file)
       const uint32_t read_size = std::min<uint64_t>(chunk_size, end - pos);
 
       C_SaferCond cond;
-      lock.Lock();
+      lock.lock();
       filer.read(ino, &journaler.get_layout(), CEPH_NOSNAP,
                  pos, read_size, &bl, 0, &cond);
-      lock.Unlock();
+      lock.unlock();
       r = cond.wait();
       if (r < 0) {
         derr << "Error " << r << " (" << cpp_strerror(r) << ") reading "
@@ -213,7 +215,7 @@ int Dumper::undump(const char *dump_file, bool force)
     derr << "recover_journal failed, try to get header from dump file " << dendl;
   }
 
-  int fd = ::open(dump_file, O_RDONLY);
+  int fd = ::open(dump_file, O_RDONLY|O_BINARY);
   if (fd < 0) {
     r = errno;
     derr << "couldn't open " << dump_file << ": " << cpp_strerror(r) << dendl;
@@ -339,11 +341,11 @@ int Dumper::undump(const char *dump_file, bool force)
 
   cout << "writing header " << oid << std::endl;
   C_SaferCond header_cond;
-  lock.Lock();
+  lock.lock();
   objecter->write_full(oid, oloc, snapc, hbl,
 		       ceph::real_clock::now(), 0,
 		       &header_cond);
-  lock.Unlock();
+  lock.unlock();
 
   r = header_cond.wait();
   if (r != 0) {
@@ -373,10 +375,10 @@ int Dumper::undump(const char *dump_file, bool force)
     }
     C_SaferCond purge_cond;
     cout << "Purging " << purge_count << " objects from " << last_obj << std::endl;
-    lock.Lock();
+    lock.lock();
     filer.purge_range(ino, &h.layout, snapc, last_obj, purge_count,
 		      ceph::real_clock::now(), 0, &purge_cond);
-    lock.Unlock();
+    lock.unlock();
     purge_cond.wait();
   }
   /* When the length is zero, zero the last object 
@@ -388,9 +390,9 @@ int Dumper::undump(const char *dump_file, bool force)
     C_SaferCond zero_cond;
     cout << "Zeroing " << len << " bytes in the last object." << std::endl;
     
-    lock.Lock();
+    lock.lock();
     filer.zero(ino, &h.layout, snapc, h.write_pos, len, ceph::real_clock::now(), 0, &zero_cond);
-    lock.Unlock();
+    lock.unlock();
     zero_cond.wait();
   }
 
@@ -407,10 +409,10 @@ int Dumper::undump(const char *dump_file, bool force)
     // Write
     cout << " writing " << pos << "~" << l << std::endl;
     C_SaferCond write_cond;
-    lock.Lock();
+    lock.lock();
     filer.write(ino, &h.layout, snapc, pos, l, j,
 		ceph::real_clock::now(), 0, &write_cond);
-    lock.Unlock();
+    lock.unlock();
 
     r = write_cond.wait();
     if (r != 0) {

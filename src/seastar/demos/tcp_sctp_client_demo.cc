@@ -21,16 +21,18 @@
 
 #include <iostream>
 #include <seastar/core/app-template.hh>
-#include <seastar/core/future-util.hh>
+#include <seastar/core/reactor.hh>
 #include <seastar/core/distributed.hh>
+#include <seastar/core/print.hh>
+#include <seastar/core/units.hh>
 
 using namespace seastar;
 using namespace net;
 using namespace std::chrono_literals;
 
-static int rx_msg_size = 4 * 1024;
-static int tx_msg_total_size = 100 * 1024 * 1024;
-static int tx_msg_size = 4 * 1024;
+static int rx_msg_size = 4_KiB;
+static int tx_msg_total_size = 100_MiB;
+static int tx_msg_size = 4_KiB;
 static int tx_msg_nr = tx_msg_total_size / tx_msg_size;
 static std::string str_txbuf(tx_msg_size, 'X');
 
@@ -46,8 +48,8 @@ private:
     unsigned _concurrent_connections;
     ipv4_addr _server_addr;
     std::string _test;
-    lowres_clock::time_point _earliest_started;
-    lowres_clock::time_point _latest_finished;
+    lowres_clock::time_point _earliest_started = lowres_clock::time_point::max();
+    lowres_clock::time_point _latest_finished = lowres_clock::time_point::min();
     size_t _processed_bytes;
     unsigned _num_reported;
 public:
@@ -92,12 +94,12 @@ public:
             }).then([this, times] {
                 return _read_buf.read_exactly(4).then([this, times] (temporary_buffer<char> buf) {
                     if (buf.size() != 4) {
-                        fprint(std::cerr, "illegal packet received: %d\n", buf.size());
+                        fmt::print(std::cerr, "illegal packet received: {}\n", buf.size());
                         return make_ready_future();
                     }
                     auto str = std::string(buf.get(), buf.size());
                     if (str != "pong") {
-                        fprint(std::cerr, "illegal packet received: %d\n", buf.size());
+                        fmt::print(std::cerr, "illegal packet received: {}\n", buf.size());
                         return make_ready_future();
                     }
                     if (times > 0) {
@@ -136,7 +138,7 @@ public:
         auto started = lowres_clock::now();
         return conn->ping(_pings_per_connection).then([started] {
             auto finished = lowres_clock::now();
-            clients.invoke_on(0, &client::ping_report, started, finished);
+            (void)clients.invoke_on(0, &client::ping_report, started, finished);
         });
     }
 
@@ -144,7 +146,7 @@ public:
         auto started = lowres_clock::now();
         return conn->rxrx().then([started] (size_t bytes) {
             auto finished = lowres_clock::now();
-            clients.invoke_on(0, &client::rxtx_report, started, finished, bytes);
+            (void)clients.invoke_on(0, &client::rxtx_report, started, finished, bytes);
         });
     }
 
@@ -152,7 +154,7 @@ public:
         auto started = lowres_clock::now();
         return conn->txtx().then([started] (size_t bytes) {
             auto finished = lowres_clock::now();
-            clients.invoke_on(0, &client::rxtx_report, started, finished, bytes);
+            (void)clients.invoke_on(0, &client::rxtx_report, started, finished, bytes);
         });
     }
 
@@ -165,14 +167,14 @@ public:
             auto elapsed = _latest_finished - _earliest_started;
             auto usecs = std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
             auto secs = static_cast<double>(usecs) / static_cast<double>(1000 * 1000);
-            fprint(std::cout, "========== ping ============\n");
-            fprint(std::cout, "Server: %s\n", _server_addr);
-            fprint(std::cout,"Connections: %u\n", _concurrent_connections);
-            fprint(std::cout, "Total PingPong: %u\n", _total_pings);
-            fprint(std::cout, "Total Time(Secs): %f\n", secs);
-            fprint(std::cout, "Requests/Sec: %f\n",
+            fmt::print(std::cout, "========== ping ============\n");
+            fmt::print(std::cout, "Server: {}\n", _server_addr);
+            fmt::print(std::cout,"Connections: {}\n", _concurrent_connections);
+            fmt::print(std::cout, "Total PingPong: {}\n", _total_pings);
+            fmt::print(std::cout, "Total Time(Secs): {}\n", secs);
+            fmt::print(std::cout, "Requests/Sec: {}\n",
                 static_cast<double>(_total_pings) / secs);
-            clients.stop().then([] {
+            (void)clients.stop().then([] {
                 engine().exit(0);
             });
         }
@@ -188,14 +190,14 @@ public:
             auto elapsed = _latest_finished - _earliest_started;
             auto usecs = std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count();
             auto secs = static_cast<double>(usecs) / static_cast<double>(1000 * 1000);
-            fprint(std::cout, "========== %s ============\n", _test);
-            fprint(std::cout, "Server: %s\n", _server_addr);
-            fprint(std::cout, "Connections: %u\n", _concurrent_connections);
-            fprint(std::cout, "Bytes Received(MiB): %u\n", _processed_bytes/1024/1024);
-            fprint(std::cout, "Total Time(Secs): %f\n", secs);
-            fprint(std::cout, "Bandwidth(Gbits/Sec): %f\n",
+            fmt::print(std::cout, "========== {} ============\n", _test);
+            fmt::print(std::cout, "Server: {}\n", _server_addr);
+            fmt::print(std::cout, "Connections: {}\n", _concurrent_connections);
+            fmt::print(std::cout, "Bytes Received(MiB): {}\n", _processed_bytes / 1_MiB);
+            fmt::print(std::cout, "Total Time(Secs): {}\n", secs);
+            fmt::print(std::cout, "Bandwidth(Gbits/Sec): {}\n",
                 static_cast<double>((_processed_bytes * 8)) / (1000 * 1000 * 1000) / secs);
-            clients.stop().then([] {
+            (void)clients.stop().then([] {
                 engine().exit(0);
             });
         }
@@ -209,14 +211,14 @@ public:
 
         for (unsigned i = 0; i < ncon; i++) {
             socket_address local = socket_address(::sockaddr_in{AF_INET, INADDR_ANY, {0}});
-            engine().net().connect(make_ipv4_address(server_addr), local, protocol).then([this, test] (connected_socket fd) {
+            (void)connect(make_ipv4_address(server_addr), local, protocol).then([this, test] (connected_socket fd) {
                 auto conn = new connection(std::move(fd));
-                (this->*tests.at(test))(conn).then_wrapped([conn] (auto&& f) {
+                (void)(this->*tests.at(test))(conn).then_wrapped([conn] (auto&& f) {
                     delete conn;
                     try {
                         f.get();
                     } catch (std::exception& ex) {
-                        fprint(std::cerr, "request error: %s\n", ex.what());
+                        fmt::print(std::cerr, "request error: {}\n", ex.what());
                     }
                 });
             });
@@ -254,17 +256,17 @@ int main(int ac, char ** av) {
         } else if (proto == "sctp") {
             protocol = transport::SCTP;
         } else {
-            fprint(std::cerr, "Error: --proto=tcp|sctp\n");
+            fmt::print(std::cerr, "Error: --proto=tcp|sctp\n");
             return engine().exit(1);
         }
 
         if (!client::tests.count(test)) {
-            fprint(std::cerr, "Error: -test=ping | rxrx | txtx\n");
+            fmt::print(std::cerr, "Error: -test=ping | rxrx | txtx\n");
             return engine().exit(1);
         }
 
-        clients.start().then([server, test, ncon] () {
-            clients.invoke_on_all(&client::start, ipv4_addr{server}, test, ncon);
+        (void)clients.start().then([server, test, ncon] () {
+            return clients.invoke_on_all(&client::start, ipv4_addr{server}, test, ncon);
         });
     });
 }

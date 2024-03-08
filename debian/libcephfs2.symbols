@@ -1,10 +1,20 @@
 libcephfs.so.2 libcephfs2 #MINVER#
  (regex|c++)"^_.*" 12.0.3
+ _ZNSt6thread11_State_implINS_8_InvokerISt5tupleIJZ17make_named_threadIZN4ceph5async15io_context_pool5startEsEUlvE_JEES_St17basic_string_viewIcSt11char_traitsIcEEOT_DpOT0_EUlSD_SG_E_S7_EEEEE6_M_runEv@Base 16.2.6+ds
+ _ZNSt6thread11_State_implINS_8_InvokerISt5tupleIJZ17make_named_threadIZN4ceph5async15io_context_pool5startEsEUlvE_JEES_St17basic_string_viewIcSt11char_traitsIcEEOT_DpOT0_EUlSD_SG_E_S7_EEEEED0Ev@Base 16.2.6+ds
+ _ZNSt6thread11_State_implINS_8_InvokerISt5tupleIJZ17make_named_threadIZN4ceph5async15io_context_pool5startEsEUlvE_JEES_St17basic_string_viewIcSt11char_traitsIcEEOT_DpOT0_EUlSD_SG_E_S7_EEEEED1Ev@Base 16.2.6+ds
+ _ZNSt6thread11_State_implINS_8_InvokerISt5tupleIJZ17make_named_threadIZN4ceph5async15io_context_pool5startEsEUlvE_JEES_St17basic_string_viewIcSt11char_traitsIcEEOT_DpOT0_EUlSD_SG_E_S7_EEEEED2Ev@Base 16.2.6+ds
+ _ZTINSt6thread11_State_implINS_8_InvokerISt5tupleIJZ17make_named_threadIZN4ceph5async15io_context_pool5startEsEUlvE_JEES_St17basic_string_viewIcSt11char_traitsIcEEOT_DpOT0_EUlSD_SG_E_S7_EEEEEE@Base 16.2.6+ds
+ _ZTSNSt6thread11_State_implINS_8_InvokerISt5tupleIJZ17make_named_threadIZN4ceph5async15io_context_pool5startEsEUlvE_JEES_St17basic_string_viewIcSt11char_traitsIcEEOT_DpOT0_EUlSD_SG_E_S7_EEEEEE@Base 16.2.6+ds
+ _ZTVNSt6thread11_State_implINS_8_InvokerISt5tupleIJZ17make_named_threadIZN4ceph5async15io_context_pool5startEsEUlvE_JEES_St17basic_string_viewIcSt11char_traitsIcEEOT_DpOT0_EUlSD_SG_E_S7_EEEEEE@Base 16.2.6+ds
+ boost_asio_detail_posix_thread_function@Base 18.2.0+ds
  ceph_abort_conn@Base 14.2.0
  ceph_buffer_free@Base 12.0.3
  ceph_chdir@Base 12.0.3
  ceph_chmod@Base 12.0.3
+ ceph_chmodat@Base 16.2.6+ds
  ceph_chown@Base 12.0.3
+ ceph_chownat@Base 16.2.6+ds
  ceph_close@Base 12.0.3
  ceph_closedir@Base 12.0.3
  ceph_conf_get@Base 12.0.3
@@ -20,10 +30,12 @@ libcephfs.so.2 libcephfs2 #MINVER#
  ceph_fallocate@Base 12.0.3
  ceph_fchmod@Base 12.0.3
  ceph_fchown@Base 12.0.3
+ ceph_fdopendir@Base 16.2.6+ds
  ceph_fgetxattr@Base 12.0.3
  ceph_finish_reclaim@Base 14.2.0
  ceph_flistxattr@Base 12.0.3
  ceph_flock@Base 12.0.3
+ ceph_free_snap_info_buffer@Base 16.2.6+ds
  ceph_fremovexattr@Base 12.0.3
  ceph_fsetattrx@Base 12.0.3
  ceph_fsetxattr@Base 12.0.3
@@ -61,7 +73,9 @@ libcephfs.so.2 libcephfs2 #MINVER#
  ceph_get_pool_id@Base 12.0.3
  ceph_get_pool_name@Base 12.0.3
  ceph_get_pool_replication@Base 12.0.3
+ ceph_get_snap_info@Base 16.2.6+ds
  ceph_get_stripe_unit_granularity@Base 12.0.3
+ ceph_getaddrs@Base 16.2.6+ds
  ceph_getcwd@Base 12.0.3
  ceph_getdents@Base 12.0.3
  ceph_getdnames@Base 12.0.3
@@ -71,6 +85,7 @@ libcephfs.so.2 libcephfs2 #MINVER#
  ceph_lazyio@Base 14.2.0
  ceph_lazyio_propagate@Base 14.2.15
  ceph_lazyio_synchronize@Base 14.2.15
+ ceph_lchmod@Base 16.2.6+ds
  ceph_lchown@Base 12.0.3
  ceph_lgetxattr@Base 12.0.3
  ceph_link@Base 12.0.3
@@ -95,6 +110,7 @@ libcephfs.so.2 libcephfs2 #MINVER#
  ceph_ll_lookup@Base 12.0.3
  ceph_ll_lookup_inode@Base 12.0.3
  ceph_ll_lookup_root@Base 12.0.3
+ ceph_ll_lookup_vino@Base 16.2.6+ds
  ceph_ll_lseek@Base 12.0.3
  ceph_ll_mkdir@Base 12.0.3
  ceph_ll_mknod@Base 12.0.3
@@ -107,6 +123,7 @@ libcephfs.so.2 libcephfs2 #MINVER#
  ceph_ll_read_block@Base 12.0.3
  ceph_ll_readlink@Base 12.0.3
  ceph_ll_readv@Base 12.0.3
+ ceph_ll_register_callbacks2@Base 18.2.0+ds
  ceph_ll_register_callbacks@Base 14.2.15
  ceph_ll_releasedir@Base 12.0.3
  ceph_ll_removexattr@Base 12.0.3
@@ -132,15 +149,19 @@ libcephfs.so.2 libcephfs2 #MINVER#
  ceph_lsetxattr@Base 12.0.3
  ceph_lstat@Base 14.2.0
  ceph_lutimes@Base 14.2.0
+ ceph_may_delete@Base 16.2.6+ds
  ceph_mds_command@Base 12.0.3
  ceph_mkdir@Base 12.0.3
+ ceph_mkdirat@Base 16.2.6+ds
  ceph_mkdirs@Base 12.0.3
  ceph_mknod@Base 12.0.3
+ ceph_mksnap@Base 16.2.6+ds
  ceph_mount@Base 12.0.3
  ceph_mount_perms@Base 12.0.3
  ceph_mount_perms_set@Base 13.2.0
  ceph_open@Base 12.0.3
  ceph_open_layout@Base 12.0.3
+ ceph_openat@Base 16.2.6+ds
  ceph_opendir@Base 12.0.3
  ceph_preadv@Base 12.0.3
  ceph_pwritev@Base 12.0.3
@@ -149,11 +170,13 @@ libcephfs.so.2 libcephfs2 #MINVER#
  ceph_readdir_r@Base 12.0.3
  ceph_readdirplus_r@Base 12.0.3
  ceph_readlink@Base 12.0.3
+ ceph_readlinkat@Base 16.2.6+ds
  ceph_release@Base 12.0.3
  ceph_removexattr@Base 12.0.3
  ceph_rename@Base 12.0.3
  ceph_rewinddir@Base 12.0.3
  ceph_rmdir@Base 12.0.3
+ ceph_rmsnap@Base 16.2.6+ds
  ceph_seekdir@Base 12.0.3
  ceph_select_filesystem@Base 14.2.0
  ceph_set_default_file_replication@Base 12.0.3
@@ -162,6 +185,7 @@ libcephfs.so.2 libcephfs2 #MINVER#
  ceph_set_default_object_size@Base 12.0.3
  ceph_set_default_preferred_pg@Base 12.0.3
  ceph_set_deleg_timeout@Base 13.2.0
+ ceph_set_mount_timeout@Base 16.2.6+ds
  ceph_set_session_timeout@Base 14.2.0
  ceph_set_uuid@Base 14.2.0
  ceph_setattrx@Base 12.0.3
@@ -171,16 +195,20 @@ libcephfs.so.2 libcephfs2 #MINVER#
  ceph_stat@Base 14.2.0
  ceph_statfs@Base 12.0.3
  ceph_statx@Base 12.0.3
+ ceph_statxat@Base 16.2.6+ds
  ceph_symlink@Base 12.0.3
+ ceph_symlinkat@Base 16.2.6+ds
  ceph_sync_fs@Base 12.0.3
  ceph_telldir@Base 12.0.3
  ceph_truncate@Base 12.0.3
  ceph_umask@Base 14.2.0
  ceph_unlink@Base 12.0.3
+ ceph_unlinkat@Base 16.2.6+ds
  ceph_unmount@Base 12.0.3
  ceph_userperm_destroy@Base 12.0.3
  ceph_userperm_new@Base 12.0.3
  ceph_utime@Base 12.0.3
+ ceph_utimensat@Base 16.2.6+ds
  ceph_utimes@Base 14.2.0
  ceph_version@Base 12.0.3
  ceph_write@Base 12.0.3

@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2010-2016 Freescale Semiconductor Inc.
- * Copyright 2017 NXP
+ * Copyright 2017-2019 NXP
  *
  */
 #include <inttypes.h>
-#include <of.h>
+#include <dpaa_of.h>
 #include <net/if.h>
 #include <sys/ioctl.h>
 #include <error.h>
@@ -21,7 +21,7 @@
 /* This data structure contaings all configurations information
  * related to usages of DPA devices.
  */
-struct netcfg_info *netcfg;
+static struct netcfg_info *netcfg;
 /* fd to open a socket for making ioctl request to disable/enable shared
  *  interfaces.
  */
@@ -114,7 +114,7 @@ netcfg_acquire(void)
 	size = sizeof(*netcfg) +
 		(num_ports * sizeof(struct fm_eth_port_cfg));
 
-	netcfg = calloc(1, size);
+	netcfg = rte_calloc(NULL, 1, size, 0);
 	if (unlikely(netcfg == NULL)) {
 		DPAA_BUS_LOG(ERR, "Unable to allocat mem for netcfg");
 		goto error;
@@ -141,7 +141,7 @@ netcfg_acquire(void)
 
 error:
 	if (netcfg) {
-		free(netcfg);
+		rte_free(netcfg);
 		netcfg = NULL;
 	}
 
@@ -151,7 +151,7 @@ error:
 void
 netcfg_release(struct netcfg_info *cfg_ptr)
 {
-	free(cfg_ptr);
+	rte_free(cfg_ptr);
 	/* Close socket for shared interfaces */
 	if (skfd >= 0) {
 		close(skfd);

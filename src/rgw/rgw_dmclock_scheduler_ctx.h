@@ -1,5 +1,7 @@
-#ifndef RGW_DMCLOCK_SCHEDULER_CTX_H
-#define RGW_DMCLOCK_SCHEDULER_CTX_H
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// vim: ts=8 sw=2 smarttab ft=cpp
+
+#pragma once
 
 #include "common/perf_counters.h"
 #include "common/ceph_context.h"
@@ -33,6 +35,7 @@ namespace throttle_counters {
   enum {
         l_first = 437219,
         l_throttle,
+        l_outstanding,
         l_last
   };
 
@@ -114,5 +117,3 @@ private:
 };
 
 } // namespace rgw::dmclock
-
-#endif /* RGW_DMCLOCK_SCHEDULER_CTX_H */

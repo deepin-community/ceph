@@ -12,6 +12,7 @@
 #include "common/ceph_json.h"
 
 #include <iostream>
+#include <cmath>
 
 using namespace std;
 
@@ -31,7 +32,8 @@ int main(int argc, char **argv) {
   return RUN_ALL_TESTS();
 }
 
-class OSDMapTest : public testing::Test {
+class OSDMapTest : public testing::Test,
+                   public ::testing::WithParamInterface<std::pair<int, int>> {
   int num_osds = 6;
 public:
   OSDMap osdmap;
@@ -39,6 +41,13 @@ public:
   const uint64_t my_ec_pool = 1;
   const uint64_t my_rep_pool = 2;
 
+  // Blacklist testing lists
+  // I pulled the first two ranges and their start/end points from
+  // https://en.wikipedia.org/wiki/Classless_Inter-Domain_Routing#CIDR_notation
+  static const string range_addrs[];
+  static const string ip_addrs[];
+  static const string unblocked_ip_addrs[];
+  const string EC_RULE_NAME = "erasure";
 
   OSDMapTest() {}
 
@@ -66,39 +75,57 @@ public:
     if (no_default_pools) // do not create any default pool(s)
       return;
 
-    // Create an EC ruleset and a pool using it
-    int r = osdmap.crush->add_simple_rule(
-      "erasure", "default", "osd", "",
-      "indep", pg_pool_t::TYPE_ERASURE,
-      &cerr);
-
     OSDMap::Incremental new_pool_inc(osdmap.get_epoch() + 1);
     new_pool_inc.new_pool_max = osdmap.get_pool_max();
     new_pool_inc.fsid = osdmap.get_fsid();
-    pg_pool_t empty;
     // make an ec pool
+    set_ec_pool("ec", new_pool_inc);
+    // and a replicated pool
+    set_rep_pool("reppool",new_pool_inc);
+    osdmap.apply_incremental(new_pool_inc);
+  }
+  int get_ec_crush_rule() {
+    int r = osdmap.crush->get_rule_id(EC_RULE_NAME);
+    if (r < 0) {
+      r = osdmap.crush->add_simple_rule(
+        EC_RULE_NAME, "default", "osd", "",
+        "indep", pg_pool_t::TYPE_ERASURE,
+        &cerr);
+    }
+    return r;
+  }
+  uint64_t set_ec_pool(const string &name, OSDMap::Incremental &new_pool_inc,
+                       bool assert_pool_id = true) {
+    pg_pool_t empty;
     uint64_t pool_id = ++new_pool_inc.new_pool_max;
-    ceph_assert(pool_id == my_ec_pool);
+    if (assert_pool_id)
+      ceph_assert(pool_id == my_ec_pool);
     pg_pool_t *p = new_pool_inc.get_new_pool(pool_id, &empty);
     p->size = 3;
     p->set_pg_num(64);
     p->set_pgp_num(64);
     p->type = pg_pool_t::TYPE_ERASURE;
-    p->crush_rule = r;
-    new_pool_inc.new_pool_names[pool_id] = "ec";
-    // and a replicated pool
-    pool_id = ++new_pool_inc.new_pool_max;
-    ceph_assert(pool_id == my_rep_pool);
-    p = new_pool_inc.get_new_pool(pool_id, &empty);
+    p->crush_rule = get_ec_crush_rule();
+    new_pool_inc.new_pool_names[pool_id] = name;//"ec";
+    return pool_id;
+  }
+  uint64_t set_rep_pool(const string name, OSDMap::Incremental &new_pool_inc,
+                        bool assert_pool_id = true) {
+    pg_pool_t empty;
+    uint64_t pool_id = ++new_pool_inc.new_pool_max;
+    if (assert_pool_id)
+      ceph_assert(pool_id == my_rep_pool);
+    pg_pool_t *p = new_pool_inc.get_new_pool(pool_id, &empty);
     p->size = 3;
     p->set_pg_num(64);
     p->set_pgp_num(64);
     p->type = pg_pool_t::TYPE_REPLICATED;
     p->crush_rule = 0;
     p->set_flag(pg_pool_t::FLAG_HASHPSPOOL);
-    new_pool_inc.new_pool_names[pool_id] = "reppool";
-    osdmap.apply_incremental(new_pool_inc);
+    new_pool_inc.new_pool_names[pool_id] = name;//"reppool";
+    return pool_id;
   }
+
   unsigned int get_num_osds() { return num_osds; }
   void get_crush(const OSDMap& tmap, CrushWrapper& newcrush) {
     bufferlist bl;
@@ -203,6 +230,17 @@ public:
     mapper.queue(&job, pgs_per_chunk, pgs_to_check);
     job.wait();
     tp.stop();
+  }
+  void set_primary_affinity_all(float pa) {
+    for (uint i = 0 ; i < get_num_osds() ; i++) {
+      osdmap.set_primary_affinity(i, int(pa * CEPH_OSD_MAX_PRIMARY_AFFINITY));
+    }
+  }
+  bool score_in_range(float score, uint nosds = 0) {
+    if (nosds == 0) {
+      nosds = get_num_osds();
+    }
+    return score >= 1.0 && score <= float(nosds);
   }
 };
 
@@ -824,15 +862,13 @@ TEST_F(OSDMapTest, CleanPGUpmaps) {
     ASSERT_TRUE(!crush.rule_exists(rule_name));
     int rno;
     for (rno = 0; rno < crush.get_max_rules(); rno++) {
-      if (!crush.rule_exists(rno) && !crush.ruleset_exists(rno))
+      if (!crush.rule_exists(rno))
         break;
     }
     string root_name = "default";
     int root = crush.get_item_id(root_name);
-    int min_size = 3;
-    int max_size = 4;
     int steps = 6;
-    crush_rule *rule = crush_make_rule(steps, rno, rule_type, min_size, max_size);
+    crush_rule *rule = crush_make_rule(steps, rule_type);
     int step = 0;
     crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSELEAF_TRIES, 5, 0);
     crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSE_TRIES, 100, 0);
@@ -959,15 +995,15 @@ TEST_F(OSDMapTest, CleanPGUpmaps) {
         vector<int> new_up;
         int new_up_primary;
         osdmap.pg_to_raw_up(pgid, &new_up, &new_up_primary);
-        ASSERT_TRUE(up.size() == new_up.size());
-        ASSERT_TRUE(new_up[0] == new_pg_upmap[0]);
-        ASSERT_TRUE(new_up[1] == new_pg_upmap[1]);
+        ASSERT_EQ(new_up.size(), up.size());
+        ASSERT_EQ(new_up[0], new_pg_upmap[0]);
+        ASSERT_EQ(new_up[1], new_pg_upmap[1]);
         // and we shall have two OSDs from a same host now..
         int parent_0 = osdmap.crush->get_parent_of_type(new_up[0],
           osdmap.crush->get_type_id("host"));
         int parent_1 = osdmap.crush->get_parent_of_type(new_up[1],
           osdmap.crush->get_type_id("host"));
-        ASSERT_TRUE(parent_0 == parent_1);
+        ASSERT_EQ(parent_0, parent_1);
       }
     }
     {
@@ -980,8 +1016,8 @@ TEST_F(OSDMapTest, CleanPGUpmaps) {
         vector<int> new_up;
         int new_up_primary;
         osdmap.pg_to_raw_up(pgid, &new_up, &new_up_primary);
-        ASSERT_TRUE(new_up == up);
-        ASSERT_TRUE(new_up_primary = up_primary);
+        ASSERT_EQ(new_up, up);
+        ASSERT_EQ(new_up_primary, up_primary);
       }
     }
   }
@@ -1028,12 +1064,12 @@ TEST_F(OSDMapTest, CleanPGUpmaps) {
         }
       }
       ASSERT_LT(-1, will_choose); // it is an OSD!
-      ASSERT_TRUE(candidate_parent != 0);
+      ASSERT_NE(candidate_parent, 0);
       osdmap.crush->get_leaves(osdmap.crush->get_item_name(candidate_parent),
         &candidate_children);
       ASSERT_TRUE(candidate_children.count(will_choose));
       candidate_children.erase(will_choose);
-      ASSERT_TRUE(!candidate_children.empty());
+      ASSERT_FALSE(candidate_children.empty());
       up_after_out = new_up; // needed for verification..
     }
     {
@@ -1071,7 +1107,7 @@ TEST_F(OSDMapTest, CleanPGUpmaps) {
         vector<int> new_up;
         int new_up_primary;
         osdmap.pg_to_raw_up(pgid, &new_up, &new_up_primary);
-        ASSERT_TRUE(up.size() == new_up.size());
+        ASSERT_EQ(new_up.size(), up.size());
         ASSERT_TRUE(std::find(new_up.begin(), new_up.end(), replaced_by) !=
           new_up.end());
         // and up[1] too
@@ -1096,12 +1132,12 @@ TEST_F(OSDMapTest, CleanPGUpmaps) {
         vector<int> new_up;
         int new_up_primary;
         osdmap.pg_to_raw_up(pgid, &new_up, &new_up_primary);
-        ASSERT_TRUE(up.size() == new_up.size());
+        ASSERT_EQ(up.size(), new_up.size());
         int parent_0 = osdmap.crush->get_parent_of_type(new_up[0],
           osdmap.crush->get_type_id("host"));
         int parent_1 = osdmap.crush->get_parent_of_type(new_up[1],
           osdmap.crush->get_type_id("host"));
-        ASSERT_TRUE(parent_0 == parent_1);
+        ASSERT_EQ(parent_0, parent_1);
       } 
     }
     {
@@ -1114,7 +1150,7 @@ TEST_F(OSDMapTest, CleanPGUpmaps) {
         vector<int> new_up;
         int new_up_primary;
         osdmap.pg_to_raw_up(pgid, &new_up, &new_up_primary);
-        ASSERT_TRUE(new_up == up_after_out);
+        ASSERT_EQ(new_up, up_after_out);
       }
     }
   }
@@ -1151,13 +1187,11 @@ TEST_F(OSDMapTest, BUG_38897) {
     ASSERT_TRUE(!crush.rule_exists(rule_name));
     int rno;
     for (rno = 0; rno < crush.get_max_rules(); rno++) {
-      if (!crush.rule_exists(rno) && !crush.ruleset_exists(rno))
+      if (!crush.rule_exists(rno))
         break;
     }
-    int min_size = 3;
-    int max_size = 3;
     int steps = 7;
-    crush_rule *rule = crush_make_rule(steps, rno, rule_type, min_size, max_size);
+    crush_rule *rule = crush_make_rule(steps, rule_type);
     int step = 0;
     crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSELEAF_TRIES, 5, 0);
     crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSE_TRIES, 100, 0);
@@ -1250,13 +1284,11 @@ TEST_F(OSDMapTest, BUG_38897) {
     ASSERT_TRUE(!crush.rule_exists(rule_name));
     int rno;
     for (rno = 0; rno < crush.get_max_rules(); rno++) {
-      if (!crush.rule_exists(rno) && !crush.ruleset_exists(rno))
+      if (!crush.rule_exists(rno))
         break;
     }
-    int min_size = 3;
-    int max_size = 3;
     int steps = 7;
-    crush_rule *rule = crush_make_rule(steps, rno, rule_type, min_size, max_size);
+    crush_rule *rule = crush_make_rule(steps, rule_type);
     int step = 0;
     crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSELEAF_TRIES, 5, 0);
     crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSE_TRIES, 100, 0);
@@ -1407,13 +1439,11 @@ TEST_F(OSDMapTest, BUG_42052) {
   ASSERT_TRUE(!crush.rule_exists(rule_name));
   int rno;
   for (rno = 0; rno < crush.get_max_rules(); rno++) {
-    if (!crush.rule_exists(rno) && !crush.ruleset_exists(rno))
+    if (!crush.rule_exists(rno))
       break;
   }
-  int min_size = 3;
-  int max_size = 3;
   int steps = 8;
-  crush_rule *rule = crush_make_rule(steps, rno, rule_type, min_size, max_size);
+  crush_rule *rule = crush_make_rule(steps, rule_type);
   int step = 0;
   crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSELEAF_TRIES, 5, 0);
   crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSE_TRIES, 100, 0);
@@ -1481,6 +1511,222 @@ TEST_F(OSDMapTest, BUG_42052) {
   }
 }
 
+TEST_F(OSDMapTest, BUG_42485) {
+  set_up_map(60);
+  {
+    // build a temporary crush topology of 2datacenters, 3racks per dc,
+    // 1host per rack, 10osds per host
+    OSDMap tmp; // use a tmpmap here, so we do not dirty origin map..
+    tmp.deepish_copy_from(osdmap);
+    const int expected_host_num = 6;
+    int osd_per_host = (int)get_num_osds() / expected_host_num;
+    ASSERT_GE(osd_per_host, 10);
+    int host_per_dc = 3;
+    int index = 0;
+    int dc_index = 0;
+    for (int i = 0; i < (int)get_num_osds(); i++) {
+      if (i && i % osd_per_host == 0) {
+        ++index;
+      }
+      if (i && i % (host_per_dc * osd_per_host) == 0) {
+        ++dc_index;
+      }
+      stringstream osd_name;
+      stringstream host_name;
+      stringstream rack_name;
+      stringstream dc_name;
+      vector<string> move_to;
+      osd_name << "osd." << i;
+      host_name << "host-" << index;
+      rack_name << "rack-" << index;
+      dc_name << "dc-" << dc_index;
+      move_to.push_back("root=default");
+      string dc_loc = "datacenter=" + dc_name.str();
+      move_to.push_back(dc_loc);
+      string rack_loc = "rack=" + rack_name.str();
+      move_to.push_back(rack_loc);
+      string host_loc = "host=" + host_name.str();
+      move_to.push_back(host_loc);
+      auto r = crush_move(tmp, osd_name.str(), move_to);
+      ASSERT_EQ(0, r);
+    }
+
+    // build crush rule
+    CrushWrapper crush;
+    get_crush(tmp, crush);
+    string rule_name = "rule_xeus_993_1";
+    int rule_type = pg_pool_t::TYPE_REPLICATED;
+    ASSERT_TRUE(!crush.rule_exists(rule_name));
+    int rno;
+    for (rno = 0; rno < crush.get_max_rules(); rno++) {
+      if (!crush.rule_exists(rno))
+        break;
+    }
+    string root_name = "default";
+    string dc_1 = "dc-0";
+    int dc1 = crush.get_item_id(dc_1);
+    string dc_2 = "dc-1";
+    int dc2 = crush.get_item_id(dc_2);
+    int steps = 8;
+    crush_rule *rule = crush_make_rule(steps, rule_type);
+    int step = 0;
+    crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSELEAF_TRIES, 5, 0);
+    crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSE_TRIES, 100, 0);
+    crush_rule_set_step(rule, step++, CRUSH_RULE_TAKE, dc1, 0);
+    crush_rule_set_step(rule, step++, CRUSH_RULE_CHOOSELEAF_FIRSTN, 2, 3 /* rack */);
+    crush_rule_set_step(rule, step++, CRUSH_RULE_EMIT, 0, 0);
+    crush_rule_set_step(rule, step++, CRUSH_RULE_TAKE, dc2, 0);
+    crush_rule_set_step(rule, step++, CRUSH_RULE_CHOOSELEAF_FIRSTN, 2, 3 /* rack */);
+    crush_rule_set_step(rule, step++, CRUSH_RULE_EMIT, 0, 0);
+    ASSERT_TRUE(step == steps);
+    auto r = crush_add_rule(crush.get_crush_map(), rule, rno);
+    ASSERT_TRUE(r >= 0);
+    crush.set_rule_name(rno, rule_name);
+    {
+      OSDMap::Incremental pending_inc(tmp.get_epoch() + 1);
+      pending_inc.crush.clear();
+      crush.encode(pending_inc.crush, CEPH_FEATURES_SUPPORTED_DEFAULT);
+      tmp.apply_incremental(pending_inc);
+    }
+    // create a repliacted pool referencing the above rule
+    int64_t pool_xeus_993;
+    {
+      OSDMap::Incremental new_pool_inc(tmp.get_epoch() + 1);
+      new_pool_inc.new_pool_max = tmp.get_pool_max();
+      new_pool_inc.fsid = tmp.get_fsid();
+      pg_pool_t empty;
+      pool_xeus_993 = ++new_pool_inc.new_pool_max;
+      pg_pool_t *p = new_pool_inc.get_new_pool(pool_xeus_993, &empty);
+      p->size = 4;
+      p->set_pg_num(4096);
+      p->set_pgp_num(4096);
+      p->type = pg_pool_t::TYPE_REPLICATED;
+      p->crush_rule = rno;
+      p->set_flag(pg_pool_t::FLAG_HASHPSPOOL);
+      new_pool_inc.new_pool_names[pool_xeus_993] = "pool_xeus_993";
+      tmp.apply_incremental(new_pool_inc);
+    }
+
+    pg_t rep_pg(0, pool_xeus_993);
+    pg_t rep_pgid = tmp.raw_pg_to_pg(rep_pg);
+    {
+      int from = -1;
+      int to = -1;
+      vector<int> rep_up;
+      int rep_up_primary;
+      tmp.pg_to_raw_up(rep_pgid, &rep_up, &rep_up_primary);
+      std::cout << "pgid " << rep_up << " up " << rep_up << std::endl;
+      ASSERT_TRUE(rep_up.size() == 4);
+      from = *(rep_up.begin());
+      ASSERT_TRUE(from >= 0);
+      auto dc_parent = tmp.crush->get_parent_of_type(from, 8 /* dc */, rno);
+      if (dc_parent == dc1)
+        dc_parent = dc2;
+      else
+        dc_parent = dc1;
+      auto rack_parent = tmp.crush->get_parent_of_type(from, 3 /* rack */, rno);
+      ASSERT_TRUE(dc_parent < 0);
+      ASSERT_TRUE(rack_parent < 0);
+      set<int> rack_parents;
+      for (auto &i: rep_up) {
+        if (i == from) continue;
+        auto rack_parent = tmp.crush->get_parent_of_type(i, 3 /* rack */, rno);
+        rack_parents.insert(rack_parent);
+      }
+      for (int i = 0; i < (int)get_num_osds(); i++) {
+        if (std::find(rep_up.begin(), rep_up.end(), i) == rep_up.end()) {
+          auto dc_p = tmp.crush->get_parent_of_type(i, 8 /* dc */, rno);
+          auto rack_p = tmp.crush->get_parent_of_type(i, 3 /* rack */, rno);
+          if (dc_p == dc_parent &&
+              rack_parents.find(rack_p) == rack_parents.end()) {
+            to = i;
+            break;
+          }
+        }
+      }
+      ASSERT_TRUE(to >= 0);
+      ASSERT_TRUE(from != to);
+      std::cout << "from " << from << " to " << to << std::endl;
+      vector<pair<int32_t,int32_t>> new_pg_upmap_items;
+      new_pg_upmap_items.push_back(make_pair(from, to));
+      OSDMap::Incremental pending_inc(tmp.get_epoch() + 1);
+      pending_inc.new_pg_upmap_items[rep_pgid] =
+        mempool::osdmap::vector<pair<int32_t,int32_t>>(
+          new_pg_upmap_items.begin(), new_pg_upmap_items.end());
+      tmp.apply_incremental(pending_inc);
+      ASSERT_TRUE(tmp.have_pg_upmaps(rep_pgid));
+    }
+    pg_t rep_pg2(2, pool_xeus_993);
+    pg_t rep_pgid2 = tmp.raw_pg_to_pg(rep_pg2);
+    {
+      pg_t rep_pgid = rep_pgid2;
+      vector<int> from_osds{-1, -1};
+      vector<int> rep_up;
+      int rep_up_primary;
+      tmp.pg_to_raw_up(rep_pgid, &rep_up, &rep_up_primary);
+      ASSERT_TRUE(rep_up.size() == 4);
+      from_osds[0] = *(rep_up.begin());
+      from_osds[1] = *(rep_up.rbegin());
+      std::cout << "pgid " << rep_pgid2 << " up " << rep_up << std::endl;
+      ASSERT_TRUE(*(from_osds.begin()) >= 0);
+      ASSERT_TRUE(*(from_osds.rbegin()) >= 0);
+      vector<pair<int32_t,int32_t>> new_pg_upmap_items;
+      for (auto &from: from_osds) {
+        int to = -1;
+        auto dc_parent = tmp.crush->get_parent_of_type(from, 8 /* dc */, rno);
+        if (dc_parent == dc1)
+          dc_parent = dc2;
+        else
+          dc_parent = dc1;
+        auto rack_parent = tmp.crush->get_parent_of_type(from, 3 /* rack */, rno);
+        ASSERT_TRUE(dc_parent < 0);
+        ASSERT_TRUE(rack_parent < 0);
+        set<int> rack_parents;
+        for (auto &i: rep_up) {
+          if (i == from) continue;
+          auto rack_parent = tmp.crush->get_parent_of_type(i, 3 /* rack */, rno);
+          rack_parents.insert(rack_parent);
+        }
+        for (auto &i: new_pg_upmap_items) {
+            auto rack_from = tmp.crush->get_parent_of_type(i.first, 3, rno);
+            auto rack_to = tmp.crush->get_parent_of_type(i.second, 3, rno);
+            rack_parents.insert(rack_from);
+            rack_parents.insert(rack_to);
+	}
+        for (int i = 0; i < (int)get_num_osds(); i++) {
+          if (std::find(rep_up.begin(), rep_up.end(), i) == rep_up.end()) {
+            auto dc_p = tmp.crush->get_parent_of_type(i, 8 /* dc */, rno);
+            auto rack_p = tmp.crush->get_parent_of_type(i, 3 /* rack */, rno);
+            if (dc_p == dc_parent &&
+                rack_parents.find(rack_p) == rack_parents.end()) {
+              to = i;
+              break;
+            }
+          }
+        }
+        ASSERT_TRUE(to >= 0);
+        ASSERT_TRUE(from != to);
+        std::cout << "from " << from << " to " << to << std::endl;
+        new_pg_upmap_items.push_back(make_pair(from, to));
+      }
+      OSDMap::Incremental pending_inc(tmp.get_epoch() + 1);
+      pending_inc.new_pg_upmap_items[rep_pgid] =
+        mempool::osdmap::vector<pair<int32_t,int32_t>>(
+          new_pg_upmap_items.begin(), new_pg_upmap_items.end());
+      tmp.apply_incremental(pending_inc);
+      ASSERT_TRUE(tmp.have_pg_upmaps(rep_pgid));
+    }
+    {
+      // *maybe_remove_pg_upmaps* should remove the above upmap_item
+      OSDMap::Incremental pending_inc(tmp.get_epoch() + 1);
+      clean_pg_upmaps(g_ceph_context, tmp, pending_inc);
+      tmp.apply_incremental(pending_inc);
+      ASSERT_FALSE(tmp.have_pg_upmaps(rep_pgid));
+      ASSERT_FALSE(tmp.have_pg_upmaps(rep_pgid2));
+    }
+  }
+}
+
 TEST(PGTempMap, basic)
 {
   PGTempMap m;
@@ -1495,6 +1741,156 @@ TEST(PGTempMap, basic)
   ASSERT_EQ(m.find(a), m.begin());
   ASSERT_EQ(m.find(b), m.end());
   ASSERT_EQ(998u, m.size());
+}
+
+TEST_F(OSDMapTest, BUG_43124) {
+  set_up_map(200);
+  {
+    // https://tracker.ceph.com/issues/43124
+
+    // build a temporary crush topology of 5racks,
+    // 4 hosts per rack, 10osds per host
+    OSDMap tmp; // use a tmpmap here, so we do not dirty origin map..
+    tmp.deepish_copy_from(osdmap);
+    const int expected_host_num = 20;
+    int osd_per_host = (int)get_num_osds() / expected_host_num;
+    ASSERT_GE(osd_per_host, 10);
+    int host_per_rack = 4;
+    int index = 0;
+    int rack_index = 0;
+    for (int i = 0; i < (int)get_num_osds(); i++) {
+      if (i && i % osd_per_host == 0) {
+        ++index;
+      }
+      if (i && i % (host_per_rack * osd_per_host) == 0) {
+        ++rack_index;
+      }
+      stringstream osd_name;
+      stringstream host_name;
+      stringstream rack_name;
+      vector<string> move_to;
+      osd_name << "osd." << i;
+      host_name << "host-" << index;
+      rack_name << "rack-" << rack_index;
+      move_to.push_back("root=default");
+      string rack_loc = "rack=" + rack_name.str();
+      move_to.push_back(rack_loc);
+      string host_loc = "host=" + host_name.str();
+      move_to.push_back(host_loc);
+      auto r = crush_move(tmp, osd_name.str(), move_to);
+      ASSERT_EQ(0, r);
+    }
+
+    // build crush rule
+    CrushWrapper crush;
+    get_crush(tmp, crush);
+    string rule_name = "rule_angel_1944";
+    int rule_type = pg_pool_t::TYPE_ERASURE;
+    ASSERT_TRUE(!crush.rule_exists(rule_name));
+    int rno;
+    for (rno = 0; rno < crush.get_max_rules(); rno++) {
+      if (!crush.rule_exists(rno))
+        break;
+    }
+    int steps = 6;
+    string root_name = "default";
+    int root = crush.get_item_id(root_name);
+    crush_rule *rule = crush_make_rule(steps, rule_type);
+    int step = 0;
+    crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSELEAF_TRIES, 5, 0);
+    crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSE_TRIES, 100, 0);
+    crush_rule_set_step(rule, step++, CRUSH_RULE_TAKE, root, 0);
+    crush_rule_set_step(rule, step++, CRUSH_RULE_CHOOSE_FIRSTN, 4, 3 /* rack */);
+    crush_rule_set_step(rule, step++, CRUSH_RULE_CHOOSELEAF_INDEP, 3, 1 /* host */);
+    crush_rule_set_step(rule, step++, CRUSH_RULE_EMIT, 0, 0);
+    ASSERT_TRUE(step == steps);
+    auto r = crush_add_rule(crush.get_crush_map(), rule, rno);
+    ASSERT_TRUE(r >= 0);
+    crush.set_rule_name(rno, rule_name);
+    {
+      OSDMap::Incremental pending_inc(tmp.get_epoch() + 1);
+      pending_inc.crush.clear();
+      crush.encode(pending_inc.crush, CEPH_FEATURES_SUPPORTED_DEFAULT);
+      tmp.apply_incremental(pending_inc);
+    }
+    {
+      stringstream oss;
+      crush.dump_tree(&oss, NULL);
+      std::cout << oss.str() << std::endl;
+      Formatter *f = Formatter::create("json-pretty");
+      f->open_object_section("crush_rules");
+      crush.dump_rules(f);
+      f->close_section();
+      f->flush(cout);
+      delete f;
+    }
+    // create a erasuce-coded pool referencing the above rule
+    int64_t pool_angel_1944;
+    {
+      OSDMap::Incremental new_pool_inc(tmp.get_epoch() + 1);
+      new_pool_inc.new_pool_max = tmp.get_pool_max();
+      new_pool_inc.fsid = tmp.get_fsid();
+      pg_pool_t empty;
+      pool_angel_1944 = ++new_pool_inc.new_pool_max;
+      pg_pool_t *p = new_pool_inc.get_new_pool(pool_angel_1944, &empty);
+      p->size = 12;
+      p->set_pg_num(4096);
+      p->set_pgp_num(4096);
+      p->type = pg_pool_t::TYPE_ERASURE;
+      p->crush_rule = rno;
+      p->set_flag(pg_pool_t::FLAG_HASHPSPOOL);
+      new_pool_inc.new_pool_names[pool_angel_1944] = "pool_angel_1944";
+      tmp.apply_incremental(new_pool_inc);
+    }
+
+    pg_t rep_pg(0, pool_angel_1944);
+    pg_t rep_pgid = tmp.raw_pg_to_pg(rep_pg);
+    {
+      // insert a pg_upmap_item
+      int from = -1;
+      int to = -1;
+      vector<int> rep_up;
+      int rep_up_primary;
+      tmp.pg_to_raw_up(rep_pgid, &rep_up, &rep_up_primary);
+      std::cout << "pgid " << rep_pgid << " up " << rep_up << std::endl;
+      ASSERT_TRUE(rep_up.size() == 12);
+      from = *(rep_up.begin());
+      ASSERT_TRUE(from >= 0);
+      auto from_rack = tmp.crush->get_parent_of_type(from, 3 /* rack */, rno);
+      set<int> failure_domains;
+      for (auto &osd : rep_up) {
+        failure_domains.insert(tmp.crush->get_parent_of_type(osd, 1 /* host */, rno));
+      }
+      for (int i = 0; i < (int)get_num_osds(); i++) {
+        if (std::find(rep_up.begin(), rep_up.end(), i) == rep_up.end()) {
+          auto to_rack = tmp.crush->get_parent_of_type(i, 3 /* rack */, rno);
+          auto to_host = tmp.crush->get_parent_of_type(i, 1 /* host */, rno);
+          if (to_rack != from_rack && failure_domains.count(to_host) == 0) {
+            to = i;
+            break;
+          }
+        }
+      }
+      ASSERT_TRUE(to >= 0);
+      ASSERT_TRUE(from != to);
+      std::cout << "from " << from << " to " << to << std::endl;
+      vector<pair<int32_t,int32_t>> new_pg_upmap_items;
+      new_pg_upmap_items.push_back(make_pair(from, to));
+      OSDMap::Incremental pending_inc(tmp.get_epoch() + 1);
+      pending_inc.new_pg_upmap_items[rep_pgid] =
+        mempool::osdmap::vector<pair<int32_t,int32_t>>(
+          new_pg_upmap_items.begin(), new_pg_upmap_items.end());
+      tmp.apply_incremental(pending_inc);
+      ASSERT_TRUE(tmp.have_pg_upmaps(rep_pgid));
+    }
+    {
+      // *maybe_remove_pg_upmaps* should not remove the above upmap_item
+      OSDMap::Incremental pending_inc(tmp.get_epoch() + 1);
+      clean_pg_upmaps(g_ceph_context, tmp, pending_inc);
+      tmp.apply_incremental(pending_inc);
+      ASSERT_TRUE(tmp.have_pg_upmaps(rep_pgid));
+    }
+  }
 }
 
 TEST_F(OSDMapTest, BUG_48884)
@@ -1551,25 +1947,773 @@ TEST_F(OSDMapTest, BUG_48884)
 
   stringstream ss;
   boost::scoped_ptr<Formatter> f(Formatter::create("json-pretty"));
-  print_osd_utilization(osdmap, pgmap, ss, f.get(), true, "", "root");
+  print_osd_utilization(osdmap, pgmap, ss, f.get(), true, "root");
   JSONParser parser;
   parser.parse(ss.str().c_str(), static_cast<int>(ss.str().size()));
   auto iter = parser.find_first();
-  for (const auto bucket : (*iter)->get_array_elements()) {
+  for (const auto& bucket : (*iter)->get_array_elements()) {
     JSONParser parser2;
     parser2.parse(bucket.c_str(), static_cast<int>(bucket.size()));
     auto* obj = parser2.find_obj("name");
-    if (obj->get_data_val().str.compare("localrack") == 0) {
+    if (obj->get_data().compare("localrack") == 0) {
       obj = parser2.find_obj("kb");
-      ASSERT_EQ(obj->get_data_val().str, "3904");
+      ASSERT_EQ(obj->get_data(), "3904");
       obj = parser2.find_obj("kb_used");
-      ASSERT_EQ(obj->get_data_val().str, "3512");
+      ASSERT_EQ(obj->get_data(), "3512");
       obj = parser2.find_obj("kb_used_omap");
-      ASSERT_EQ(obj->get_data_val().str, "384");
+      ASSERT_EQ(obj->get_data(), "384");
       obj = parser2.find_obj("kb_used_meta");
-      ASSERT_EQ(obj->get_data_val().str, "384");
+      ASSERT_EQ(obj->get_data(), "384");
       obj = parser2.find_obj("kb_avail");
-      ASSERT_EQ(obj->get_data_val().str, "384");
+      ASSERT_EQ(obj->get_data(), "384");
     }
   }
 }
+
+TEST_P(OSDMapTest, BUG_51842) {
+    set_up_map(3, true);
+    OSDMap tmp; // use a tmpmap here, so we do not dirty origin map..
+    tmp.deepish_copy_from(osdmap);
+    for (int i = 0; i < (int)get_num_osds(); i++) {
+      stringstream osd_name;
+      stringstream host_name;
+      vector<string> move_to;
+      osd_name << "osd." << i;
+      host_name << "host=host-" << i;
+      move_to.push_back("root=infra-1706");
+      move_to.push_back(host_name.str());
+      auto r = crush_move(tmp, osd_name.str(), move_to);
+      ASSERT_EQ(0, r);
+    }
+
+    // build crush rule
+    CrushWrapper crush;
+    get_crush(tmp, crush);
+    string rule_name = "infra-1706";
+    int rule_type = pg_pool_t::TYPE_REPLICATED;
+    ASSERT_TRUE(!crush.rule_exists(rule_name));
+    int rno;
+    for (rno = 0; rno < crush.get_max_rules(); rno++) {
+      if (!crush.rule_exists(rno))
+        break;
+    }
+    string root_bucket = "infra-1706";
+    int root = crush.get_item_id(root_bucket);
+    int steps = 5;
+    crush_rule *rule = crush_make_rule(steps, rule_type);
+    int step = 0;
+    crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSELEAF_TRIES, 5, 0);
+    crush_rule_set_step(rule, step++, CRUSH_RULE_SET_CHOOSE_TRIES, 100, 0);
+    crush_rule_set_step(rule, step++, CRUSH_RULE_TAKE, root, 0);
+    // note: it's ok to set like 'step chooseleaf_firstn 0 host'
+    std::pair<int, int> param = GetParam();
+    int rep_num = std::get<0>(param);
+    int domain = std::get<1>(param);
+    crush_rule_set_step(rule, step++, CRUSH_RULE_CHOOSELEAF_FIRSTN, rep_num, domain);
+    crush_rule_set_step(rule, step++, CRUSH_RULE_EMIT, 0, 0);
+    ASSERT_TRUE(step == steps);
+    auto r = crush_add_rule(crush.get_crush_map(), rule, rno);
+    ASSERT_TRUE(r >= 0);
+    crush.set_rule_name(rno, rule_name);
+    {
+      OSDMap::Incremental pending_inc(tmp.get_epoch() + 1);
+      pending_inc.crush.clear();
+      crush.encode(pending_inc.crush, CEPH_FEATURES_SUPPORTED_DEFAULT);
+      tmp.apply_incremental(pending_inc);
+    }
+    {
+      stringstream oss;
+      crush.dump_tree(&oss, NULL);
+      std::cout << oss.str() << std::endl;
+      Formatter *f = Formatter::create("json-pretty");
+      f->open_object_section("crush_rules");
+      crush.dump_rules(f);
+      f->close_section();
+      f->flush(cout);
+      delete f;
+    }
+    // create a replicated pool referencing the above rule
+    int64_t pool_infra_1706;
+    {
+      OSDMap::Incremental new_pool_inc(tmp.get_epoch() + 1);
+      new_pool_inc.new_pool_max = tmp.get_pool_max();
+      new_pool_inc.fsid = tmp.get_fsid();
+      pg_pool_t empty;
+      pool_infra_1706 = ++new_pool_inc.new_pool_max;
+      pg_pool_t *p = new_pool_inc.get_new_pool(pool_infra_1706, &empty);
+      p->size = 3;
+      p->min_size = 1;
+      p->set_pg_num(256);
+      p->set_pgp_num(256);
+      p->type = pg_pool_t::TYPE_REPLICATED;
+      p->crush_rule = rno;
+      p->set_flag(pg_pool_t::FLAG_HASHPSPOOL);
+      new_pool_inc.new_pool_names[pool_infra_1706] = "pool_infra_1706";
+      tmp.apply_incremental(new_pool_inc);
+    }
+
+    // add upmaps
+    pg_t rep_pg(3, pool_infra_1706);
+    pg_t rep_pgid = tmp.raw_pg_to_pg(rep_pg);
+    pg_t rep_pg2(4, pool_infra_1706);
+    pg_t rep_pgid2 = tmp.raw_pg_to_pg(rep_pg2);
+    pg_t rep_pg3(6, pool_infra_1706);
+    pg_t rep_pgid3 = tmp.raw_pg_to_pg(rep_pg3);
+    {
+      OSDMap::Incremental pending_inc(tmp.get_epoch() + 1);
+      pending_inc.new_pg_upmap[rep_pgid] = mempool::osdmap::vector<int32_t>({1,0,2});
+      pending_inc.new_pg_upmap[rep_pgid2] = mempool::osdmap::vector<int32_t>({1,2,0});
+      pending_inc.new_pg_upmap[rep_pgid3] = mempool::osdmap::vector<int32_t>({1,2,0});
+      tmp.apply_incremental(pending_inc);
+      ASSERT_TRUE(tmp.have_pg_upmaps(rep_pgid));
+      ASSERT_TRUE(tmp.have_pg_upmaps(rep_pgid2));
+      ASSERT_TRUE(tmp.have_pg_upmaps(rep_pgid3));
+    }
+
+    {
+      // now, set pool size to 1
+      OSDMap tmpmap;
+      tmpmap.deepish_copy_from(tmp);
+      OSDMap::Incremental new_pool_inc(tmpmap.get_epoch() + 1);
+      pg_pool_t p = *tmpmap.get_pg_pool(pool_infra_1706);
+      p.size = 1;
+      p.last_change = new_pool_inc.epoch;
+      new_pool_inc.new_pools[pool_infra_1706] = p;
+      tmpmap.apply_incremental(new_pool_inc);
+
+      OSDMap::Incremental new_pending_inc(tmpmap.get_epoch() + 1);
+      clean_pg_upmaps(g_ceph_context, tmpmap, new_pending_inc);
+      tmpmap.apply_incremental(new_pending_inc);
+      // check pg upmaps
+      ASSERT_TRUE(!tmpmap.have_pg_upmaps(rep_pgid));
+      ASSERT_TRUE(!tmpmap.have_pg_upmaps(rep_pgid2));
+      ASSERT_TRUE(!tmpmap.have_pg_upmaps(rep_pgid3));
+    }
+    {
+      // now, set pool size to 4
+      OSDMap tmpmap;
+      tmpmap.deepish_copy_from(tmp);
+      OSDMap::Incremental new_pool_inc(tmpmap.get_epoch() + 1);
+      pg_pool_t p = *tmpmap.get_pg_pool(pool_infra_1706);
+      p.size = 4;
+      p.last_change = new_pool_inc.epoch;
+      new_pool_inc.new_pools[pool_infra_1706] = p;
+      tmpmap.apply_incremental(new_pool_inc);
+
+      OSDMap::Incremental new_pending_inc(tmpmap.get_epoch() + 1);
+      clean_pg_upmaps(g_ceph_context, tmpmap, new_pending_inc);
+      tmpmap.apply_incremental(new_pending_inc);
+      // check pg upmaps
+      ASSERT_TRUE(!tmpmap.have_pg_upmaps(rep_pgid));
+      ASSERT_TRUE(!tmpmap.have_pg_upmaps(rep_pgid2));
+      ASSERT_TRUE(!tmpmap.have_pg_upmaps(rep_pgid3));
+    }
+}
+
+const string OSDMapTest::range_addrs[] = {"198.51.100.0/22", "10.2.5.102/32", "2001:db8::/48",
+  "3001:db8::/72", "4001:db8::/30", "5001:db8::/64", "6001:db8::/128", "7001:db8::/127"};
+const string OSDMapTest::ip_addrs[] = {"198.51.100.14", "198.51.100.0", "198.51.103.255",
+  "10.2.5.102",
+  "2001:db8:0:0:0:0:0:0", "2001:db8:0:0:0:0001:ffff:ffff",
+  "2001:db8:0:ffff:ffff:ffff:ffff:ffff",
+  "3001:db8:0:0:0:0:0:0", "3001:db8:0:0:0:0001:ffff:ffff",
+  "3001:db8:0:0:00ff:ffff:ffff:ffff",
+  "4001:db8::", "4001:db8:0:0:0:0001:ffff:ffff",
+  "4001:dbb:ffff:ffff:ffff:ffff:ffff:ffff",
+  "5001:db8:0:0:0:0:0:0", "5001:db8:0:0:0:0:ffff:ffff",
+  "5001:db8:0:0:ffff:ffff:ffff:ffff",
+  "6001:db8:0:0:0:0:0:0",
+  "7001:db8:0:0:0:0:0:0", "7001:db8:0:0:0:0:0:0001"
+};
+const string OSDMapTest::unblocked_ip_addrs[] = { "0.0.0.0", "1.1.1.1", "192.168.1.1",
+  "198.51.99.255", "198.51.104.0",
+  "10.2.5.101", "10.2.5.103",
+  "2001:db7:ffff:ffff:ffff:ffff:ffff:ffff", "2001:db8:0001::",
+  "3001:db7:ffff:ffff:ffff:ffff:ffff:ffff", "3001:db8:0:0:0100::",
+  "4001:db7:ffff:ffff:ffff:ffff:ffff:ffff", "4001:dbc::",
+  "5001:db7:ffff:ffff:ffff:ffff:ffff:ffff", "5001:db8:0:0001:0:0:0:0", 
+  "6001:db8:0:0:0:0:0:0001",
+  "7001:db7:ffff:ffff:ffff:ffff:ffff:ffff", "7001:db8:0:0:0:0:0:0002"
+};
+
+TEST_F(OSDMapTest, blocklisting_ips) {
+  set_up_map(6); //whatever
+
+  OSDMap::Incremental new_blocklist_inc(osdmap.get_epoch() + 1);
+  for (const auto& a : ip_addrs) {
+    entity_addr_t addr;
+    addr.parse(a);
+    addr.set_type(entity_addr_t::TYPE_LEGACY);
+    new_blocklist_inc.new_blocklist[addr] = ceph_clock_now();
+  }
+  osdmap.apply_incremental(new_blocklist_inc);
+
+  for (const auto& a: ip_addrs) {
+    entity_addr_t addr;
+    addr.parse(a);
+    addr.set_type(entity_addr_t::TYPE_LEGACY);
+    ASSERT_TRUE(osdmap.is_blocklisted(addr, g_ceph_context));
+  }
+  for (const auto& a: unblocked_ip_addrs) {
+    entity_addr_t addr;
+    addr.parse(a);
+    addr.set_type(entity_addr_t::TYPE_LEGACY);
+    ASSERT_FALSE(osdmap.is_blocklisted(addr, g_ceph_context));
+  }
+
+  OSDMap::Incremental rm_blocklist_inc(osdmap.get_epoch() + 1);
+  for (const auto& a : ip_addrs) {
+    entity_addr_t addr;
+    addr.parse(a);
+    addr.set_type(entity_addr_t::TYPE_LEGACY);
+    rm_blocklist_inc.old_blocklist.push_back(addr);
+  }
+  osdmap.apply_incremental(rm_blocklist_inc);
+  for (const auto& a: ip_addrs) {
+    entity_addr_t addr;
+    addr.parse(a);
+    addr.set_type(entity_addr_t::TYPE_LEGACY);
+    ASSERT_FALSE(osdmap.is_blocklisted(addr, g_ceph_context));
+  }
+  for (const auto& a: unblocked_ip_addrs) {
+    entity_addr_t addr;
+    addr.parse(a);
+    addr.set_type(entity_addr_t::TYPE_LEGACY);
+    bool blocklisted = osdmap.is_blocklisted(addr, g_ceph_context);
+    if (blocklisted) {
+      cout << "erroneously blocklisted " << addr << std::endl;
+    }
+    EXPECT_FALSE(blocklisted);
+  }
+}
+
+TEST_F(OSDMapTest, blocklisting_ranges) {
+  set_up_map(6); //whatever
+  OSDMap::Incremental range_blocklist_inc(osdmap.get_epoch() + 1);
+  for (const auto& a : range_addrs) {
+    entity_addr_t addr;
+    addr.parse(a);
+    addr.type = entity_addr_t::TYPE_CIDR;
+    range_blocklist_inc.new_range_blocklist[addr] = ceph_clock_now();
+  }
+  osdmap.apply_incremental(range_blocklist_inc);
+
+  for (const auto& a: ip_addrs) {
+    entity_addr_t addr;
+    addr.parse(a);
+    addr.set_type(entity_addr_t::TYPE_LEGACY);
+    bool blocklisted = osdmap.is_blocklisted(addr, g_ceph_context);
+    if (!blocklisted) {
+      cout << "erroneously not blocklisted " << addr << std::endl;
+    }
+    ASSERT_TRUE(blocklisted);
+  }
+  for (const auto& a: unblocked_ip_addrs) {
+    entity_addr_t addr;
+    addr.parse(a);
+    addr.set_type(entity_addr_t::TYPE_LEGACY);
+    bool blocklisted = osdmap.is_blocklisted(addr, g_ceph_context);
+    if (blocklisted) {
+      cout << "erroneously blocklisted " << addr << std::endl;
+    }
+    EXPECT_FALSE(blocklisted);
+  }
+
+  OSDMap::Incremental rm_range_blocklist(osdmap.get_epoch() + 1);
+  for (const auto& a : range_addrs) {
+    entity_addr_t addr;
+    addr.parse(a);
+    addr.type = entity_addr_t::TYPE_CIDR;
+    rm_range_blocklist.old_range_blocklist.push_back(addr);
+  }
+  osdmap.apply_incremental(rm_range_blocklist);
+
+  for (const auto& a: ip_addrs) {
+    entity_addr_t addr;
+    addr.parse(a);
+    addr.set_type(entity_addr_t::TYPE_LEGACY);
+    ASSERT_FALSE(osdmap.is_blocklisted(addr, g_ceph_context));
+  }
+  for (const auto& a: unblocked_ip_addrs) {
+    entity_addr_t addr;
+    addr.parse(a);
+    addr.set_type(entity_addr_t::TYPE_LEGACY);
+    bool blocklisted = osdmap.is_blocklisted(addr, g_ceph_context);
+    if (blocklisted) {
+      cout << "erroneously blocklisted " << addr << std::endl;
+    }
+    EXPECT_FALSE(blocklisted);
+  }
+}
+
+TEST_F(OSDMapTest, blocklisting_everything) {
+  set_up_map(6); //whatever
+  OSDMap::Incremental range_blocklist_inc(osdmap.get_epoch() + 1);
+  entity_addr_t baddr;
+  baddr.parse("2001:db8::/0");
+  baddr.type = entity_addr_t::TYPE_CIDR;
+  range_blocklist_inc.new_range_blocklist[baddr] = ceph_clock_now();
+  osdmap.apply_incremental(range_blocklist_inc);
+
+  for (const auto& a: ip_addrs) {
+    entity_addr_t addr;
+    addr.parse(a);
+    addr.set_type(entity_addr_t::TYPE_LEGACY);
+    if (addr.is_ipv4()) continue;
+    bool blocklisted = osdmap.is_blocklisted(addr, g_ceph_context);
+    if (!blocklisted) {
+      cout << "erroneously not  blocklisted " << addr << std::endl;
+    }
+    ASSERT_TRUE(blocklisted);
+  }
+  for (const auto& a: unblocked_ip_addrs) {
+    entity_addr_t addr;
+    addr.parse(a);
+    addr.set_type(entity_addr_t::TYPE_LEGACY);
+    if (addr.is_ipv4()) continue;
+    bool blocklisted = osdmap.is_blocklisted(addr, g_ceph_context);
+    if (!blocklisted) {
+      cout << "erroneously not  blocklisted " << addr << std::endl;
+    }
+    ASSERT_TRUE(blocklisted);
+  }
+
+  OSDMap::Incremental swap_blocklist_inc(osdmap.get_epoch()+1);
+  swap_blocklist_inc.old_range_blocklist.push_back(baddr);
+
+  entity_addr_t caddr;
+  caddr.parse("1.1.1.1/0");
+  caddr.type = entity_addr_t::TYPE_CIDR;
+  swap_blocklist_inc.new_range_blocklist[caddr] = ceph_clock_now();
+  osdmap.apply_incremental(swap_blocklist_inc);
+
+  for (const auto& a: ip_addrs) {
+    entity_addr_t addr;
+    addr.parse(a);
+    addr.set_type(entity_addr_t::TYPE_LEGACY);
+    if (!addr.is_ipv4()) continue;
+    bool blocklisted = osdmap.is_blocklisted(addr, g_ceph_context);
+    if (!blocklisted) {
+      cout << "erroneously not  blocklisted " << addr << std::endl;
+    }
+    ASSERT_TRUE(blocklisted);
+  }
+  for (const auto& a: unblocked_ip_addrs) {
+    entity_addr_t addr;
+    addr.parse(a);
+    addr.set_type(entity_addr_t::TYPE_LEGACY);
+    if (!addr.is_ipv4()) continue;
+    bool blocklisted = osdmap.is_blocklisted(addr, g_ceph_context);
+    if (!blocklisted) {
+      cout << "erroneously not  blocklisted " << addr << std::endl;
+    }
+    ASSERT_TRUE(blocklisted);
+  }
+}
+
+TEST_F(OSDMapTest, ReadBalanceScore1) {
+    std::srand ( unsigned ( std::time(0) ) );
+    uint osd_rand = rand() % 13;
+    set_up_map(6 + osd_rand); //whatever
+    auto pools = osdmap.get_pools();
+    for (auto &[pid, pg_pool] : pools) {
+      const pg_pool_t *pi = osdmap.get_pg_pool(pid);
+      if (pi->is_replicated()) {
+        //cout << "pool " << pid << " " << pg_pool << std::endl;
+        auto replica_count = pi->get_size();
+        OSDMap::read_balance_info_t rbi;
+        auto rc = osdmap.calc_read_balance_score(g_ceph_context, pid, &rbi);
+
+        // "Normal" score is between 1 and num_osds
+        ASSERT_TRUE(rc == 0);
+        ASSERT_TRUE(score_in_range(rbi.adjusted_score));
+        ASSERT_TRUE(score_in_range(rbi.acting_adj_score));
+        ASSERT_TRUE(rbi.err_msg.empty());
+
+        // When all OSDs have primary_affinity 0, score should be 0
+        auto num_osds = get_num_osds();
+        set_primary_affinity_all(0.);
+
+        rc = osdmap.calc_read_balance_score(g_ceph_context, pid, &rbi);
+        ASSERT_TRUE(rc < 0);
+        ASSERT_TRUE(rbi.adjusted_score == 0.);
+        ASSERT_TRUE(rbi.acting_adj_score == 0.);
+        ASSERT_FALSE(rbi.err_msg.empty());
+
+        std::vector<uint> osds;
+        for (uint i = 0 ; i < num_osds ; i++) {
+          osds.push_back(i);
+        }
+
+        // Change primary_affinity of some OSDs to 1 others are 0
+        float fratio = 1. / (float)replica_count;
+        for (int iter = 0 ; iter < 100 ; iter++) {  // run the test 100 times
+          // Create random shuffle of OSDs
+          std::random_device seed;
+          std::default_random_engine generator(seed());
+          std::shuffle(osds.begin(), osds.end(), generator);
+          for (uint i = 0 ; i < num_osds ; i++) {
+            if ((float(i + 1) / float(num_osds)) < fratio) {
+              ASSERT_TRUE(osds[i] < num_osds);
+              osdmap.set_primary_affinity(osds[i], CEPH_OSD_MAX_PRIMARY_AFFINITY);
+              rc = osdmap.calc_read_balance_score(g_ceph_context, pid, &rbi);
+
+              ASSERT_TRUE(rc < 0);
+              ASSERT_TRUE(rbi.adjusted_score == 0.);
+              ASSERT_TRUE(rbi.acting_adj_score == 0.);
+              ASSERT_FALSE(rbi.err_msg.empty());
+            }
+            else {
+              if (rc < 0) {
+                ASSERT_TRUE(rbi.adjusted_score == 0.);
+                ASSERT_TRUE(rbi.acting_adj_score == 0.);
+                ASSERT_FALSE(rbi.err_msg.empty());
+              }
+              else {
+                ASSERT_TRUE(score_in_range(rbi.acting_adj_score, i + 1));
+                ASSERT_TRUE(rbi.err_msg.empty());
+              }
+            }
+          }
+          set_primary_affinity_all(0.);
+        }
+      }
+    }
+
+  }
+
+TEST_F(OSDMapTest, ReadBalanceScore2) {
+    std::srand ( unsigned ( std::time(0) ) );
+    uint osd_num = 6 + rand() % 13;
+    set_up_map(osd_num, true);
+    for (int i = 0 ; i < 100 ; i++) { //running 100 random tests
+      uint num_pa_osds = 0;
+      float pa_sum = 0.;
+      OSDMap::read_balance_info_t rbi;
+
+      // set pa for all osds
+      for (uint j = 0 ; j < osd_num ; j++) {
+        uint pa = 1 + rand() % 100;
+        if (pa > 80)
+          pa = 100;
+        if (pa < 20)
+          pa = 0;
+        float fpa = (float)pa / 100.;
+        if (pa > 0) {
+          num_pa_osds++;
+          pa_sum += fpa;
+        }
+        osdmap.set_primary_affinity(j, int(fpa * CEPH_OSD_MAX_PRIMARY_AFFINITY));
+      }
+      float pa_ratio = pa_sum / (float) osd_num;
+
+      // create a pool with the current osdmap configuration
+      OSDMap::Incremental new_pool_inc(osdmap.get_epoch() + 1);
+      new_pool_inc.new_pool_max = osdmap.get_pool_max();
+      new_pool_inc.fsid = osdmap.get_fsid();
+      string pool_name = "rep_pool" + stringify(i);
+      uint64_t new_pid = set_rep_pool(pool_name, new_pool_inc, false);
+      ASSERT_TRUE(new_pid > 0);
+      osdmap.apply_incremental(new_pool_inc);
+
+      // now run the test on the pool.
+      const pg_pool_t *pi = osdmap.get_pg_pool(new_pid);
+      ASSERT_NE(pi, nullptr);
+      ASSERT_TRUE(pi->is_replicated());
+      float fratio = 1. / (float)pi->get_size();
+      auto rc = osdmap.calc_read_balance_score(g_ceph_context, new_pid, &rbi);
+      if (pa_ratio < fratio) {
+        ASSERT_TRUE(rc < 0);
+        ASSERT_FALSE(rbi.err_msg.empty());
+        ASSERT_TRUE(rbi.acting_adj_score == 0.);
+        ASSERT_TRUE(rbi.adjusted_score == 0.);
+      }
+      else {
+        if (rc < 0) {
+          ASSERT_TRUE(rbi.adjusted_score == 0.);
+          ASSERT_TRUE(rbi.acting_adj_score == 0.);
+          ASSERT_FALSE(rbi.err_msg.empty());
+        }
+        else {
+          if (rbi.err_msg.empty()) {
+            ASSERT_TRUE(score_in_range(rbi.acting_adj_score, num_pa_osds));
+          }
+        }
+      }
+
+    }
+        //TODO add ReadBalanceScore3 - with weighted osds.
+
+  }
+
+TEST_F(OSDMapTest, read_balance_small_map) {
+  // Set up a map with 4 OSDs and default pools
+  set_up_map(4);
+
+  const vector<string> test_cases = {"basic", "prim_affinity"};
+  for (const auto & test : test_cases) {
+    if (test == "prim_affinity") {
+      // Make osd.0 off-limits for primaries by giving it prim affinity 0
+      OSDMap::Incremental pending_inc0(osdmap.get_epoch() + 1);
+      pending_inc0.new_primary_affinity[0] = 0;
+      osdmap.apply_incremental(pending_inc0);
+
+      // Ensure osd.0 has no primaries assigned to it
+      map<uint64_t,set<pg_t>> prim_pgs_by_osd, acting_prims_by_osd;
+      osdmap.get_pgs_by_osd(g_ceph_context, my_rep_pool, &prim_pgs_by_osd, &acting_prims_by_osd);
+      ASSERT_TRUE(prim_pgs_by_osd[0].size() == 0);
+      ASSERT_TRUE(acting_prims_by_osd[0].size() == 0);
+    }
+
+    // Make sure capacity is balanced first
+    set<int64_t> only_pools;
+    only_pools.insert(my_rep_pool);
+    OSDMap::Incremental pending_inc(osdmap.get_epoch()+1);
+    osdmap.calc_pg_upmaps(g_ceph_context,
+                          0,
+                          100,
+                          only_pools,
+                          &pending_inc);
+    osdmap.apply_incremental(pending_inc);
+
+    // Get read balance score before balancing
+    OSDMap::read_balance_info_t rb_info;
+    auto rc = osdmap.calc_read_balance_score(g_ceph_context, my_rep_pool, &rb_info);
+    ASSERT_TRUE(rc >= 0);
+    float read_balance_score_before = rb_info.adjusted_score;
+
+    // Calculate desired prim distributions to verify later
+    map<uint64_t,set<pg_t>> prim_pgs_by_osd_2, acting_prims_by_osd_2;
+    osdmap.get_pgs_by_osd(g_ceph_context, my_rep_pool, &prim_pgs_by_osd_2, &acting_prims_by_osd_2);
+    vector<uint64_t> osds_to_check;
+    for (const auto & [osd, pgs] : prim_pgs_by_osd_2) {
+      osds_to_check.push_back(osd);
+    }
+    map<uint64_t,float> desired_prim_dist;
+    rc = osdmap.calc_desired_primary_distribution(g_ceph_context, my_rep_pool,
+                                                  osds_to_check, desired_prim_dist);
+    ASSERT_TRUE(rc >= 0);
+
+    // Balance reads
+    OSDMap::Incremental pending_inc_2(osdmap.get_epoch()+1);
+    int num_changes = osdmap.balance_primaries(g_ceph_context, my_rep_pool, &pending_inc_2, osdmap);
+    osdmap.apply_incremental(pending_inc_2);
+
+    if (test == "prim_affinity") {
+      // Ensure osd.0 still has no primaries assigned to it
+      map<uint64_t,set<pg_t>> prim_pgs_by_osd_3, acting_prims_by_osd_3;
+      osdmap.get_pgs_by_osd(g_ceph_context, my_rep_pool, &prim_pgs_by_osd_3, &acting_prims_by_osd_3);
+      ASSERT_TRUE(prim_pgs_by_osd_3[0].size() == 0);
+      ASSERT_TRUE(acting_prims_by_osd_3[0].size() == 0);
+    }
+
+    // Get read balance score after balancing
+    rc = osdmap.calc_read_balance_score(g_ceph_context, my_rep_pool, &rb_info);
+    ASSERT_TRUE(rc >= 0);
+    float read_balance_score_after = rb_info.adjusted_score;
+
+    // Ensure the score hasn't gotten worse
+    ASSERT_TRUE(read_balance_score_after <= read_balance_score_before);
+
+    // Check for improvements
+    if (num_changes > 0) {
+      ASSERT_TRUE(read_balance_score_after < read_balance_score_before);
+
+      // Check num primaries for each OSD is within range
+      map<uint64_t,set<pg_t>> prim_pgs_by_osd_4, acting_prims_by_osd_4;
+      osdmap.get_pgs_by_osd(g_ceph_context, my_rep_pool, &prim_pgs_by_osd_4, &acting_prims_by_osd_4);
+      for (const auto & [osd, primaries] : prim_pgs_by_osd_4) {
+        ASSERT_TRUE(primaries.size() >= floor(desired_prim_dist[osd] - 1));
+        ASSERT_TRUE(primaries.size() <= ceil(desired_prim_dist[osd] + 1));
+      }
+    }
+  }
+}
+
+TEST_F(OSDMapTest, read_balance_large_map) {
+  // Set up a map with 60 OSDs and default pools
+  set_up_map(60);
+
+  const vector<string> test_cases = {"basic", "prim_affinity"};
+  for (const auto & test : test_cases) {
+    if (test == "prim_affinity") {
+      // Make osd.0 off-limits for primaries by giving it prim affinity 0
+      OSDMap::Incremental pending_inc0(osdmap.get_epoch() + 1);
+      pending_inc0.new_primary_affinity[0] = 0;
+      osdmap.apply_incremental(pending_inc0);
+
+      // Ensure osd.0 has no primaries assigned to it
+      map<uint64_t,set<pg_t>> prim_pgs_by_osd, acting_prims_by_osd;
+      osdmap.get_pgs_by_osd(g_ceph_context, my_rep_pool, &prim_pgs_by_osd, &acting_prims_by_osd);
+      ASSERT_TRUE(prim_pgs_by_osd[0].size() == 0);
+      ASSERT_TRUE(acting_prims_by_osd[0].size() == 0);
+    }
+
+    // Make sure capacity is balanced first
+    set<int64_t> only_pools;
+    only_pools.insert(my_rep_pool);
+    OSDMap::Incremental pending_inc(osdmap.get_epoch()+1);
+    osdmap.calc_pg_upmaps(g_ceph_context,
+                          0,
+                          100,
+                          only_pools,
+                          &pending_inc);
+    osdmap.apply_incremental(pending_inc);
+  
+    // Get read balance score before balancing
+    OSDMap::read_balance_info_t rb_info;
+    auto rc = osdmap.calc_read_balance_score(g_ceph_context, my_rep_pool, &rb_info);
+    ASSERT_TRUE(rc >= 0);
+    float read_balance_score_before = rb_info.adjusted_score;
+
+    // Calculate desired prim distributions to verify later
+    map<uint64_t,set<pg_t>> prim_pgs_by_osd_2, acting_prims_by_osd_2;
+    osdmap.get_pgs_by_osd(g_ceph_context, my_rep_pool, &prim_pgs_by_osd_2, &acting_prims_by_osd_2);
+    vector<uint64_t> osds_to_check;
+    for (auto [osd, pgs] : prim_pgs_by_osd_2) {
+      osds_to_check.push_back(osd);
+    }
+    map<uint64_t,float> desired_prim_dist;
+    rc = osdmap.calc_desired_primary_distribution(g_ceph_context, my_rep_pool,
+                                                  osds_to_check, desired_prim_dist);
+    ASSERT_TRUE(rc >= 0);
+
+    // Balance reads
+    OSDMap::Incremental pending_inc_2(osdmap.get_epoch()+1);
+    int num_changes = osdmap.balance_primaries(g_ceph_context, my_rep_pool, &pending_inc_2, osdmap);
+    osdmap.apply_incremental(pending_inc_2);
+
+    if (test == "prim_affinity") {
+      // Ensure osd.0 still has no primaries assigned to it
+      map<uint64_t,set<pg_t>> prim_pgs_by_osd_3, acting_prims_by_osd_3;
+      osdmap.get_pgs_by_osd(g_ceph_context, my_rep_pool, &prim_pgs_by_osd_3, &acting_prims_by_osd_3);
+      ASSERT_TRUE(prim_pgs_by_osd_3[0].size() == 0);
+      ASSERT_TRUE(acting_prims_by_osd_3[0].size() == 0);
+    }
+  
+    // Get read balance score after balancing
+    rc = osdmap.calc_read_balance_score(g_ceph_context, my_rep_pool, &rb_info);
+    ASSERT_TRUE(rc >= 0);
+    float read_balance_score_after = rb_info.adjusted_score;
+
+    // Ensure the score hasn't gotten worse
+    ASSERT_TRUE(read_balance_score_after <= read_balance_score_before);
+
+    // Check for improvements
+    if (num_changes > 0) {
+      ASSERT_TRUE(read_balance_score_after < read_balance_score_before);
+
+      // Check num primaries for each OSD is within range
+      map<uint64_t,set<pg_t>> prim_pgs_by_osd_4, acting_prims_by_osd_4;
+      osdmap.get_pgs_by_osd(g_ceph_context, my_rep_pool, &prim_pgs_by_osd_4, &acting_prims_by_osd_4);
+      for (const auto & [osd, primaries] : prim_pgs_by_osd_4) {
+        ASSERT_TRUE(primaries.size() >= floor(desired_prim_dist[osd] - 1));
+        ASSERT_TRUE(primaries.size() <= ceil(desired_prim_dist[osd] + 1));
+      }
+    }
+  }
+}
+
+TEST_F(OSDMapTest, read_balance_random_map) {
+  // Set up map with random number of OSDs
+  std::srand ( unsigned ( std::time(0) ) );
+  uint num_osds = 3 + (rand() % 10);
+  ASSERT_TRUE(num_osds >= 3);
+  set_up_map(num_osds);
+
+  const vector<string> test_cases = {"basic", "prim_affinity"};
+  for (const auto & test : test_cases) {
+    uint rand_osd = rand() % num_osds;
+    if (test == "prim_affinity") {
+      // Make a random OSD off-limits for primaries by giving it prim affinity 0
+      ASSERT_TRUE(rand_osd < num_osds);
+      OSDMap::Incremental pending_inc0(osdmap.get_epoch() + 1);
+      pending_inc0.new_primary_affinity[rand_osd] = 0;
+      osdmap.apply_incremental(pending_inc0);
+
+      // Ensure the random OSD has no primaries assigned to it
+      map<uint64_t,set<pg_t>> prim_pgs_by_osd, acting_prims_by_osd;
+      osdmap.get_pgs_by_osd(g_ceph_context, my_rep_pool, &prim_pgs_by_osd, &acting_prims_by_osd);
+      ASSERT_TRUE(prim_pgs_by_osd[rand_osd].size() == 0);
+      ASSERT_TRUE(acting_prims_by_osd[rand_osd].size() == 0);
+    }
+
+    // Make sure capacity is balanced first
+    set<int64_t> only_pools;
+    only_pools.insert(my_rep_pool);
+    OSDMap::Incremental pending_inc(osdmap.get_epoch()+1);
+    osdmap.calc_pg_upmaps(g_ceph_context,
+                          0,
+                          100,
+                          only_pools,
+                          &pending_inc);
+    osdmap.apply_incremental(pending_inc);
+
+    // Get read balance score before balancing
+    OSDMap::read_balance_info_t rb_info;
+    auto rc = osdmap.calc_read_balance_score(g_ceph_context, my_rep_pool, &rb_info);
+    ASSERT_TRUE(rc >= 0);
+    float read_balance_score_before = rb_info.adjusted_score;
+
+    // Calculate desired prim distributions to verify later
+    map<uint64_t,set<pg_t>> prim_pgs_by_osd_2, acting_prims_by_osd_2;
+    osdmap.get_pgs_by_osd(g_ceph_context, my_rep_pool, &prim_pgs_by_osd_2, &acting_prims_by_osd_2);
+    vector<uint64_t> osds_to_check;
+    for (const auto & [osd, pgs] : prim_pgs_by_osd_2) {
+      osds_to_check.push_back(osd);
+    }
+    map<uint64_t,float> desired_prim_dist;
+    rc = osdmap.calc_desired_primary_distribution(g_ceph_context, my_rep_pool,
+                                                  osds_to_check, desired_prim_dist);
+    ASSERT_TRUE(rc >= 0);
+
+    // Balance reads
+    OSDMap::Incremental pending_inc_2(osdmap.get_epoch()+1);
+    int num_changes = osdmap.balance_primaries(g_ceph_context, my_rep_pool, &pending_inc_2, osdmap);
+    osdmap.apply_incremental(pending_inc_2);
+
+    if (test == "prim_affinity") {
+      // Ensure the random OSD still has no primaries assigned to it
+      map<uint64_t,set<pg_t>> prim_pgs_by_osd_3, acting_prims_by_osd_3;
+      osdmap.get_pgs_by_osd(g_ceph_context, my_rep_pool, &prim_pgs_by_osd_3, &acting_prims_by_osd_3);
+      ASSERT_TRUE(prim_pgs_by_osd_3[rand_osd].size() == 0);
+      ASSERT_TRUE(acting_prims_by_osd_3[rand_osd].size() == 0);
+    }
+
+    // Get read balance score after balancing
+    rc = osdmap.calc_read_balance_score(g_ceph_context, my_rep_pool, &rb_info);
+    ASSERT_TRUE(rc >= 0);
+    float read_balance_score_after = rb_info.adjusted_score;
+
+    // Ensure the score hasn't gotten worse
+    ASSERT_TRUE(read_balance_score_after <= read_balance_score_before);
+
+    // Check for improvements
+    if (num_changes > 0) {
+      ASSERT_TRUE(read_balance_score_after < read_balance_score_before);
+
+      // Check num primaries for each OSD is within range
+      map<uint64_t,set<pg_t>> prim_pgs_by_osd_4, acting_prims_by_osd_4;
+      osdmap.get_pgs_by_osd(g_ceph_context, my_rep_pool, &prim_pgs_by_osd_4, &acting_prims_by_osd_4);
+      for (auto [osd, primaries] : prim_pgs_by_osd_4) {
+        ASSERT_TRUE(primaries.size() >= floor(desired_prim_dist[osd] - 1));
+        ASSERT_TRUE(primaries.size() <= ceil(desired_prim_dist[osd] + 1));
+      }
+      for (auto [osd, primaries] : prim_pgs_by_osd_4) {
+        ASSERT_TRUE(primaries.size() >= floor(desired_prim_dist[osd] - 1));
+        ASSERT_TRUE(primaries.size() <= ceil(desired_prim_dist[osd] + 1));
+      }
+    }
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+  OSDMap,
+  OSDMapTest,
+  ::testing::Values(
+    std::make_pair<int, int>(0, 1), // chooseleaf firstn 0 host
+   std::make_pair<int, int>(3, 1), // chooseleaf firstn 3 host
+    std::make_pair<int, int>(0, 0), // chooseleaf firstn 0 osd
+    std::make_pair<int, int>(3, 0)  // chooseleaf firstn 3 osd
+  )
+);

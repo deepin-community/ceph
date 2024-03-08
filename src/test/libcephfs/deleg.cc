@@ -7,7 +7,9 @@
  */
 
 #include "gtest/gtest.h"
+#include "include/compat.h"
 #include "include/cephfs/libcephfs.h"
+#include "include/fs_types.h"
 #include "include/stat.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -40,6 +42,20 @@ static void wait_for_atomic_bool(std::atomic_bool &recalled)
     ASSERT_LT(i++, MAX_WAIT);
     usleep(1000);
   }
+}
+
+static int ceph_ll_delegation_wait(struct ceph_mount_info *cmount, Fh *fh,
+				   unsigned cmd, ceph_deleg_cb_t cb, void *priv)
+{
+  int ret, retry = 0;
+
+  /* Wait 10s at most */
+  do {
+    ret = ceph_ll_delegation(cmount, fh, cmd, cb, priv);
+    usleep(10000);
+  } while (ret == -CEPHFS_EAGAIN && retry++ < 1000);
+
+  return ret;
 }
 
 static int set_default_deleg_timeout(struct ceph_mount_info *cmount)
@@ -79,7 +95,7 @@ static void open_breaker_func(struct ceph_mount_info *cmount, const char *filena
   for (;;) {
     ASSERT_EQ(ceph_ll_getattr(cmount, file, &stx, CEPH_STATX_ALL_STATS, 0, perms), 0);
     ret = ceph_ll_open(cmount, file, flags, &fh, perms);
-    if (ret != -EAGAIN)
+    if (ret != -CEPHFS_EAGAIN)
       break;
     ASSERT_LT(i++, MAX_WAIT);
     usleep(1000);
@@ -136,7 +152,7 @@ static void namespace_breaker_func(struct ceph_mount_info *cmount, int cmd, cons
       // Bad command
       ceph_abort();
     }
-    if (ret != -EAGAIN)
+    if (ret != -CEPHFS_EAGAIN)
       break;
     ASSERT_LT(i++, MAX_WAIT);
     usleep(1000);
@@ -166,7 +182,7 @@ static void simple_deleg_test(struct ceph_mount_info *cmount, struct ceph_mount_
   sprintf(filename, "deleg.rwrw.%x", getpid());
   ASSERT_EQ(ceph_ll_create(cmount, root, filename, 0666,
 		    O_RDWR|O_CREAT|O_EXCL, &file, &fh, &stx, 0, 0, perms), 0);
-  ASSERT_EQ(ceph_ll_delegation(cmount, fh, CEPH_DELEGATION_WR, dummy_deleg_cb, &recalled), 0);
+  ASSERT_EQ(ceph_ll_delegation_wait(cmount, fh, CEPH_DELEGATION_WR, dummy_deleg_cb, &recalled), 0);
   std::thread breaker1(open_breaker_func, tcmount, filename, O_RDWR, &opened);
 
   wait_for_atomic_bool(recalled);
@@ -182,7 +198,7 @@ static void simple_deleg_test(struct ceph_mount_info *cmount, struct ceph_mount_
   sprintf(filename, "deleg.rorw.%x", getpid());
   ASSERT_EQ(ceph_ll_create(cmount, root, filename, 0666,
 		    O_RDWR|O_CREAT|O_EXCL, &file, &fh, &stx, 0, 0, perms), 0);
-  ASSERT_EQ(ceph_ll_delegation(cmount, fh, CEPH_DELEGATION_WR, dummy_deleg_cb, &recalled), 0);
+  ASSERT_EQ(ceph_ll_delegation_wait(cmount, fh, CEPH_DELEGATION_WR, dummy_deleg_cb, &recalled), 0);
   std::thread breaker2(open_breaker_func, tcmount, filename, O_RDONLY, &opened);
   wait_for_atomic_bool(recalled);
   ASSERT_EQ(opened.load(), false);
@@ -196,7 +212,7 @@ static void simple_deleg_test(struct ceph_mount_info *cmount, struct ceph_mount_
   ASSERT_EQ(ceph_ll_create(cmount, root, filename, 0666,
 		    O_RDONLY|O_CREAT|O_EXCL, &file, &fh, &stx, 0, 0, perms), 0);
   recalled.store(false);
-  ASSERT_EQ(ceph_ll_delegation(cmount, fh, CEPH_DELEGATION_RD, dummy_deleg_cb, &recalled), 0);
+  ASSERT_EQ(ceph_ll_delegation_wait(cmount, fh, CEPH_DELEGATION_RD, dummy_deleg_cb, &recalled), 0);
   std::thread breaker3(open_breaker_func, tcmount, filename, O_RDONLY, &opened);
   breaker3.join();
   ASSERT_EQ(recalled.load(), false);
@@ -219,7 +235,7 @@ static void simple_deleg_test(struct ceph_mount_info *cmount, struct ceph_mount_
   sprintf(newname, "deleg.new.%x", getpid());
   ASSERT_EQ(ceph_ll_create(cmount, root, filename, 0666,
 		    O_RDWR|O_CREAT|O_EXCL, &file, &fh, &stx, 0, 0, perms), 0);
-  ASSERT_EQ(ceph_ll_delegation(cmount, fh, CEPH_DELEGATION_WR, dummy_deleg_cb, &recalled), 0);
+  ASSERT_EQ(ceph_ll_delegation_wait(cmount, fh, CEPH_DELEGATION_WR, dummy_deleg_cb, &recalled), 0);
   std::thread breaker5(namespace_breaker_func, tcmount, DelegTestLink, filename, newname);
   wait_for_atomic_bool(recalled);
   ASSERT_EQ(ceph_ll_delegation(cmount, fh, CEPH_DELEGATION_NONE, dummy_deleg_cb, &recalled), 0);
@@ -232,7 +248,7 @@ static void simple_deleg_test(struct ceph_mount_info *cmount, struct ceph_mount_
   recalled.store(false);
   ASSERT_EQ(ceph_ll_create(cmount, root, filename, 0666,
 		    O_RDWR|O_CREAT|O_EXCL, &file, &fh, &stx, 0, 0, perms), 0);
-  ASSERT_EQ(ceph_ll_delegation(cmount, fh, CEPH_DELEGATION_WR, dummy_deleg_cb, &recalled), 0);
+  ASSERT_EQ(ceph_ll_delegation_wait(cmount, fh, CEPH_DELEGATION_WR, dummy_deleg_cb, &recalled), 0);
   std::thread breaker6(namespace_breaker_func, tcmount, DelegTestRename, filename, newname);
   wait_for_atomic_bool(recalled);
   ASSERT_EQ(ceph_ll_delegation(cmount, fh, CEPH_DELEGATION_NONE, dummy_deleg_cb, &recalled), 0);
@@ -244,7 +260,7 @@ static void simple_deleg_test(struct ceph_mount_info *cmount, struct ceph_mount_
   recalled.store(false);
   ASSERT_EQ(ceph_ll_create(cmount, root, filename, 0666,
 		    O_RDWR|O_CREAT|O_EXCL, &file, &fh, &stx, 0, 0, perms), 0);
-  ASSERT_EQ(ceph_ll_delegation(cmount, fh, CEPH_DELEGATION_WR, dummy_deleg_cb, &recalled), 0);
+  ASSERT_EQ(ceph_ll_delegation_wait(cmount, fh, CEPH_DELEGATION_WR, dummy_deleg_cb, &recalled), 0);
   std::thread breaker7(namespace_breaker_func, tcmount, DelegTestUnlink, filename, nullptr);
   wait_for_atomic_bool(recalled);
   ASSERT_EQ(ceph_ll_delegation(cmount, fh, CEPH_DELEGATION_NONE, dummy_deleg_cb, &recalled), 0);
@@ -307,12 +323,12 @@ TEST(LibCephFS, DelegTimeout) {
   ASSERT_EQ(ceph_ll_open(cmount, file, O_RDONLY, &fh, perms), 0);
 
   std::atomic_bool recalled(false);
-  ASSERT_EQ(ceph_ll_delegation(cmount, fh, CEPH_DELEGATION_RD, dummy_deleg_cb, &recalled), 0);
+  ASSERT_EQ(ceph_ll_delegation_wait(cmount, fh, CEPH_DELEGATION_RD, dummy_deleg_cb, &recalled), 0);
   std::atomic_bool opened(false);
   std::thread breaker1(open_breaker_func, nullptr, filename, O_RDWR, &opened);
   breaker1.join();
   ASSERT_EQ(recalled.load(), true);
-  ASSERT_EQ(ceph_ll_getattr(cmount, root, &stx, 0, 0, perms), -ENOTCONN);
+  ASSERT_EQ(ceph_ll_getattr(cmount, root, &stx, 0, 0, perms), -CEPHFS_ENOTCONN);
   ceph_release(cmount);
 }
 
@@ -361,7 +377,7 @@ TEST(LibCephFS, RecalledGetattr) {
 
   /* Break delegation */
   std::atomic_bool recalled(false);
-  ASSERT_EQ(ceph_ll_delegation(cmount2, fh, CEPH_DELEGATION_RD, dummy_deleg_cb, &recalled), 0);
+  ASSERT_EQ(ceph_ll_delegation_wait(cmount2, fh, CEPH_DELEGATION_RD, dummy_deleg_cb, &recalled), 0);
   ASSERT_EQ(ceph_ll_read(cmount2, fh, 0, sizeof(filename), filename),
 	    static_cast<int>(sizeof(filename)));
   ASSERT_EQ(ceph_ll_getattr(cmount2, file, &stx, CEPH_STATX_ALL_STATS, 0, perms), 0);

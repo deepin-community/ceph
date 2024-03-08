@@ -10,18 +10,12 @@
 #include <rte_pci.h>
 #include <rte_bus_pci.h>
 
+extern struct rte_pci_bus rte_pci_bus;
+
 struct rte_pci_driver;
 struct rte_pci_device;
 
-/**
- * Probe the PCI bus
- *
- * @return
- *   - 0 on success.
- *   - !0 on error.
- */
-int
-rte_pci_probe(void);
+extern struct rte_pci_bus rte_pci_bus;
 
 /**
  * Scan the content of the PCI bus, and the devices in the devices
@@ -37,6 +31,17 @@ int rte_pci_scan(void);
  */
 void
 pci_name_set(struct rte_pci_device *dev);
+
+/**
+ * Validate whether a device with given PCI address should be ignored or not.
+ *
+ * @param pci_addr
+ *	PCI address of device to be validated
+ * @return
+ *	true: if device is to be ignored,
+ *	false: if device is to be scanned,
+ */
+bool rte_pci_ignore_device(const struct rte_pci_addr *pci_addr);
 
 /**
  * Add a PCI device to the PCI Bus (append to PCI Device list). This function
@@ -123,6 +128,18 @@ void pci_uio_free_resource(struct rte_pci_device *dev,
 		struct mapped_pci_resource *uio_res);
 
 /**
+ * Remap the PCI resource of a PCI device in anonymous virtual memory.
+ *
+ * @param dev
+ *   Point to the struct rte pci device.
+ * @return
+ *   - On success, zero.
+ *   - On failure, a negative value.
+ */
+int
+pci_uio_remap_resource(struct rte_pci_device *dev);
+
+/**
  * Map device memory to uio resource
  *
  * This function is private to EAL.
@@ -157,6 +174,17 @@ rte_pci_match(const struct rte_pci_driver *pci_drv,
 	      const struct rte_pci_device *pci_dev);
 
 /**
+ * OS specific callbacks for rte_pci_get_iommu_class
+ *
+ */
+bool
+pci_device_iommu_support_va(const struct rte_pci_device *dev);
+
+enum rte_iova_mode
+pci_device_iova_mode(const struct rte_pci_driver *pci_drv,
+		     const struct rte_pci_device *pci_dev);
+
+/**
  * Get iommu class of PCI devices on the bus.
  * And return their preferred iova mapping mode.
  *
@@ -165,5 +193,28 @@ rte_pci_match(const struct rte_pci_driver *pci_drv,
  */
 enum rte_iova_mode
 rte_pci_get_iommu_class(void);
+
+/*
+ * Iterate over internal devices,
+ * matching any device against the provided
+ * string.
+ *
+ * @param start
+ *   Iteration starting point.
+ *
+ * @param str
+ *   Device string to match against.
+ *
+ * @param it
+ *   (unused) iterator structure.
+ *
+ * @return
+ *   A pointer to the next matching device if any.
+ *   NULL otherwise.
+ */
+void *
+rte_pci_dev_iterate(const void *start,
+		    const char *str,
+		    const struct rte_dev_iterator *it);
 
 #endif /* _PCI_PRIVATE_H_ */

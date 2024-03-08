@@ -25,6 +25,10 @@
 #include <ares.h>
 #include <boost/lexical_cast.hpp>
 
+#include <ostream>
+#include <seastar/util/std-compat.hh>
+#include <seastar/net/inet_address.hh>
+
 #include <seastar/net/ip.hh>
 #include <seastar/net/api.hh>
 #include <seastar/net/dns.hh>
@@ -32,8 +36,30 @@
 #include <seastar/core/timer.hh>
 #include <seastar/core/reactor.hh>
 #include <seastar/core/gate.hh>
+#include <seastar/core/print.hh>
+
+namespace seastar::net {
+
+// NOTE: Should be prior to <seastar/util/log.hh> include because
+// logger::stringer_for<T> needs to see the corresponding `operator <<`
+// declaration at the call site
+//
+// This doesn't need to be in the public API, so leave it there instead of placing into `inet_address.hh`
+std::ostream& operator<<(std::ostream& os, const opt_family& f) {
+    if (f) {
+        return os << *f;
+    } else {
+        return os << "ANY";
+    }
+}
+
+}
+
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<seastar::net::opt_family> : fmt::ostream_formatter {};
+#endif
+
 #include <seastar/util/log.hh>
-#include <seastar/util/std-compat.hh>
 
 namespace seastar {
 
@@ -201,13 +227,13 @@ public:
         }
     }
 
-    future<inet_address> resolve_name(sstring name, inet_address::family family) {
+    future<inet_address> resolve_name(sstring name, opt_family family) {
         return get_host_by_name(std::move(name), family).then([](hostent h) {
             return make_ready_future<inet_address>(h.addr_list.front());
         });
     }
 
-    future<hostent> get_host_by_name(sstring name, inet_address::family family)  {
+    future<hostent> get_host_by_name(sstring name, opt_family family)  {
         class promise_wrap : public promise<hostent> {
         public:
             promise_wrap(sstring s)
@@ -218,12 +244,24 @@ public:
 
         dns_log.debug("Query name {} ({})", name, family);
 
+        if (!family) {
+            auto res = inet_address::parse_numerical(name);
+            if (res) {
+                return make_ready_future<hostent>(hostent{ {name}, {*res}});
+            }
+        }
+
         auto p = new promise_wrap(std::move(name));
         auto f = p->get_future();
 
         dns_call call(*this);
 
-        ares_gethostbyname(_channel, p->name.c_str(), int(family), [](void* arg, int status, int timeouts, ::hostent* host) {
+        auto af = family ? int(*family) : AF_UNSPEC;
+
+// The following pragma is needed to work around a false-positive warning
+// in Gcc 11 (see https://gcc.gnu.org/bugzilla/show_bug.cgi?id=96003).
+#pragma GCC diagnostic ignored "-Wnonnull"
+        ares_gethostbyname(_channel, p->name.c_str(), af, [](void* arg, int status, int timeouts, ::hostent* host) {
             // we do potentially allocating operations below, so wrap the pointer in a
             // unique here.
             std::unique_ptr<promise_wrap> p(reinterpret_cast<promise_wrap *>(arg));
@@ -578,7 +616,8 @@ private:
                     dns_log.trace("Connection pending: {}", fd);
                     e.avail = 0;
                     use(fd);
-                    f.then_wrapped([me = shared_from_this(), &e, fd](future<connected_socket> f) {
+                    // FIXME: future is discarded
+                    (void)f.then_wrapped([me = shared_from_this(), &e, fd](future<connected_socket> f) {
                         try {
                             e.tcp.socket = f.get0();
                             dns_log.trace("Connection complete: {}", fd);
@@ -632,6 +671,10 @@ private:
                         tcp.indata.trim_front(len);
                         return len;
                     }
+                    if (!tcp.socket) {
+                        errno = ENOTCONN;
+                        return -1;
+                    }
                     if (!tcp.in) {
                         tcp.in = tcp.socket.input();
                     }
@@ -640,7 +683,8 @@ private:
                         dns_log.trace("Read {}: data unavailable", fd);
                         e.avail &= ~POLLIN;
                         use(fd);
-                        f.then_wrapped([me = shared_from_this(), &e, fd](future<temporary_buffer<char>> f) {
+                        // FIXME: future is discarded
+                        (void)f.then_wrapped([me = shared_from_this(), &e, fd](future<temporary_buffer<char>> f) {
                             try {
                                 auto buf = f.get0();
                                 dns_log.trace("Read {} -> {} bytes", fd, buf.size());
@@ -702,7 +746,8 @@ private:
                         e.avail &= ~POLLIN;
                         use(fd);
                         dns_log.trace("Read {}: data unavailable", fd);
-                        f.then_wrapped([me = shared_from_this(), &e, fd](future<net::udp_datagram> f) {
+                        // FIXME: future is discarded
+                        (void)f.then_wrapped([me = shared_from_this(), &e, fd](future<net::udp_datagram> f) {
                             try {
                                 auto d = f.get0();
                                 dns_log.trace("Read {} -> {} bytes", fd, d.get_data().len());
@@ -770,6 +815,11 @@ private:
                     return -1;
                 }
 
+                if (!e.tcp.socket) {
+                    errno = ENOTCONN;
+                    return -1;
+                }
+
                 net::packet p;
                 p.reserve(len);
                 for (int i = 0; i < len; ++i) {
@@ -779,6 +829,8 @@ private:
                 auto bytes = p.len();
                 auto f = make_ready_future();
 
+                use(fd);
+
                 switch (e.typ) {
                 case type::tcp:
                     if (!e.tcp.out) {
@@ -787,8 +839,27 @@ private:
                     f = e.tcp.out->write(std::move(p));
                     break;
                 case type::udp:
-                    f = e.udp.channel.send(e.udp.dst, std::move(p));
-                    break;
+                    // always chain UDP sends
+                    e.udp.f = e.udp.f.finally([&e, p = std::move(p)]() mutable {
+                        return e.udp.channel.send(e.udp.dst, std::move(p));;
+                    }).finally([fd, me = shared_from_this()] {
+                        me->release(fd);
+                    });
+                    // if we have a fast-fail, give error.
+                    if (e.udp.f.failed()) {
+                        try {
+                            e.udp.f.get();
+                        } catch (std::system_error& e) {
+                            errno = e.code().value();
+                        } catch (...) {
+                        }
+                        e.udp.f = make_ready_future<>();
+                        return -1;
+                    }
+                    // c-ares does _not_ use non-blocking retry for udp sockets. We just pretend
+                    // all is fine even though we have no idea. Barring stack/adapter failure it
+                    // is close to the same guarantee a "normal" message send would have anyway.
+                    return bytes;
                 default:
                     return -1;
                 }
@@ -796,8 +867,8 @@ private:
                 if (!f.available()) {
                     dns_log.trace("Send {} unavailable.", fd);
                     e.avail &= ~POLLOUT;
-                    use(fd);
-                    f.then_wrapped([me = shared_from_this(), &e, bytes, fd](future<> f) {
+                    // FIXME: future is discarded
+                    (void)f.then_wrapped([me = shared_from_this(), &e, bytes, fd](future<> f) {
                         try {
                             f.get();
                             dns_log.trace("Send {}. {} bytes sent.", fd, bytes);
@@ -808,12 +879,14 @@ private:
                         me->poll_sockets();
                         me->release(fd);
                     });
-                    // c-ares does _not_ use non-blocking retry for udp sockets. We just pretend
-                    // all is fine even though we have no idea. Barring stack/adapter failure it
-                    // is close to the same guarantee a "normal" message send would have anyway.
+
                     // For tcp we also pretend we're done, to make sure we don't have to deal with
                     // matching sent data
+                    return bytes;
                 }
+
+                release(fd);
+
                 if (f.failed()) {
                     try {
                         f.get();
@@ -824,7 +897,7 @@ private:
                     return -1;
                 }
 
-                return len;
+                return bytes;
             }
         } catch (...) {
         }
@@ -849,8 +922,8 @@ private:
         }
         ;
         connected_socket socket;
-        compat::optional<input_stream<char>> in;
-        compat::optional<output_stream<char>> out;
+        std::optional<input_stream<char>> in;
+        std::optional<output_stream<char>> out;
         temporary_buffer<char> indata;
     };
     struct udp_entry {
@@ -858,8 +931,9 @@ private:
                         : channel(std::move(c)) {
         }
         net::udp_channel channel;
-        compat::optional<net::udp_datagram> in;;
+        std::optional<net::udp_datagram> in;;
         socket_address dst;
+        future<> f = make_ready_future<>();
     };
     struct sock_entry {
         union {
@@ -878,10 +952,10 @@ private:
             e.typ = type::none;
             switch (typ) {
             case type::tcp:
-                tcp = std::move(e.tcp);
+                new (&tcp) tcp_entry(std::move(e.tcp));
                 break;
             case type::udp:
-                udp = std::move(e.udp);
+                new (&udp) udp_entry(std::move(e.udp));
                 break;
             default:
                 break;
@@ -913,7 +987,7 @@ private:
     }
 
 
-    typedef std::unordered_map<ares_socket_t, sock_entry> socket_map;
+    using socket_map = std::unordered_map<ares_socket_t, sock_entry>;
 
     friend struct dns_call;
 
@@ -921,7 +995,7 @@ private:
     network_stack & _stack;
 
     ares_channel _channel = {};
-    uint64_t _ops = 0, _calls = 0;
+    uint64_t _calls = 0;
     std::chrono::milliseconds _timeout;
     timer<> _timer;
     gate _gate;
@@ -947,7 +1021,7 @@ net::dns_resolver::dns_resolver(dns_resolver&&) noexcept = default;
 net::dns_resolver& net::dns_resolver::operator=(dns_resolver&&) noexcept = default;
 
 future<net::hostent> net::dns_resolver::get_host_by_name(const sstring& name, opt_family family) {
-    return _impl->get_host_by_name(name, family.value_or(inet_address::family::INET));
+    return _impl->get_host_by_name(name, family);
 }
 
 future<net::hostent> net::dns_resolver::get_host_by_addr(const inet_address& addr) {
@@ -955,7 +1029,7 @@ future<net::hostent> net::dns_resolver::get_host_by_addr(const inet_address& add
 }
 
 future<net::inet_address> net::dns_resolver::resolve_name(const sstring& name, opt_family family) {
-    return _impl->resolve_name(name, family.value_or(inet_address::family::INET));
+    return _impl->resolve_name(name, family);
 }
 
 future<sstring> net::dns_resolver::resolve_addr(const inet_address& addr) {
@@ -979,7 +1053,7 @@ static net::dns_resolver& resolver() {
 
 
 future<net::hostent> net::dns::get_host_by_name(const sstring& name, opt_family family) {
-    return resolver().get_host_by_name(name, family.value_or(inet_address::family::INET));
+    return resolver().get_host_by_name(name, family);
 }
 
 future<net::hostent> net::dns::get_host_by_addr(const inet_address& addr) {
@@ -987,7 +1061,7 @@ future<net::hostent> net::dns::get_host_by_addr(const inet_address& addr) {
 }
 
 future<net::inet_address> net::dns::resolve_name(const sstring& name, opt_family family) {
-    return resolver().resolve_name(name, family.value_or(inet_address::family::INET));
+    return resolver().resolve_name(name, family);
 }
 
 future<sstring> net::dns::resolve_addr(const inet_address& addr) {
@@ -1035,4 +1109,3 @@ future<std::vector<net::inet_address>> net::inet_address::find_all(
 }
 
 }
-

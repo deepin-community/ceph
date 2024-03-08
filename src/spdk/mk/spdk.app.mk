@@ -31,45 +31,40 @@
 #  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 
-# Event subsystems only export constructor functions, so wrap these
-# in whole-archive linker args
-SPDK_FILTER_LIB_LIST = $(filter event_%,$(SPDK_LIB_LIST))
+include $(SPDK_ROOT_DIR)/mk/spdk.app_vars.mk
 
-# RPC libraries only export constructor functions, so these need to be treated
-#  separately and wrapped in whole-archive linker args
-SPDK_FILTER_LIB_LIST += $(filter %_rpc,$(SPDK_LIB_LIST))
+# Applications in app/ go into build/bin/.
+# Applications in examples/ go into build/examples/.
+# Use findstring to identify if the current directory is in the app
+# or examples directory. If it is, change the APP location.
+APP_NAME := $(notdir $(APP))
+ifneq (,$(findstring $(SPDK_ROOT_DIR)/app,$(CURDIR)))
+	APP := $(APP_NAME:%=$(SPDK_ROOT_DIR)/build/bin/%)
+else
+ifneq (,$(findstring $(SPDK_ROOT_DIR)/examples,$(CURDIR)))
+	APP := $(APP_NAME:%=$(SPDK_ROOT_DIR)/build/examples/%)
+endif
+endif
 
-# Currently some libraries contain their respective RPC methods
-#  rather than breaking them out into separate libraries.  So we must also include
-#  these directories in the RPC library list.
-SPDK_FILTER_LIB_LIST += $(filter iscsi,$(SPDK_LIB_LIST))
-SPDK_FILTER_LIB_LIST += $(filter nbd,$(SPDK_LIB_LIST))
-SPDK_FILTER_LIB_LIST += $(filter net,$(SPDK_LIB_LIST))
-SPDK_FILTER_LIB_LIST += $(filter vhost,$(SPDK_LIB_LIST))
-SPDK_FILTER_LIB_LIST += $(filter scsi,$(SPDK_LIB_LIST))
+LIBS += $(SPDK_LIB_LINKER_ARGS)
 
-# The unit test mock wrappers need to be wrapped in whole-archive so they don't get
-# automatically removed with LTO.
-SPDK_FILTER_LIB_LIST += $(filter spdk_mock,$(SPDK_LIB_LIST))
+CLEAN_FILES = $(APP)
 
-SPDK_WHOLE_ARCHIVE_LIB_LIST = $(SPDK_FILTER_LIB_LIST)
-SPDK_REMAINING_LIB_LIST = $(filter-out $(SPDK_WHOLE_ARCHIVE_LIB_LIST),$(SPDK_LIB_LIST))
+all : $(APP)
+	@:
 
-SPDK_LIB_FILES = $(call spdk_lib_list_to_static_libs,$(SPDK_LIB_LIST))
-SPDK_LIB_LINKER_ARGS = \
-	-L$(SPDK_ROOT_DIR)/build/lib \
-	-Wl,--whole-archive \
-	$(SPDK_WHOLE_ARCHIVE_LIB_LIST:%=-lspdk_%) \
-	-Wl,--no-whole-archive \
-	$(SPDK_REMAINING_LIB_LIST:%=-lspdk_%)
+install: empty_rule
 
-# This is primarily used for unit tests to ensure they link when shared library
-# build is enabled.  Shared libraries can't get their mock implementation from
-# the unit test file.
-SPDK_STATIC_LIB_LINKER_ARGS = \
-	-Wl,--whole-archive \
-	$(SPDK_WHOLE_ARCHIVE_LIB_LIST:%=$(SPDK_ROOT_DIR)/build/lib/libspdk_%.a) \
-	-Wl,--no-whole-archive \
-	$(SPDK_REMAINING_LIB_LIST:%=$(SPDK_ROOT_DIR)/build/lib/libspdk_%.a)
+uninstall: empty_rule
 
-install: all
+# To avoid overwriting warning
+empty_rule:
+	@:
+
+$(APP) : $(OBJS) $(SPDK_LIB_FILES) $(ENV_LIBS)
+	$(LINK_C)
+
+clean :
+	$(CLEAN_C) $(CLEAN_FILES)
+
+include $(SPDK_ROOT_DIR)/mk/spdk.deps.mk

@@ -27,20 +27,18 @@
 #include <seastar/core/sstring.hh>
 #include <seastar/core/reactor.hh>
 #include <seastar/core/do_with.hh>
-#include <seastar/core/future-util.hh>
+#include <seastar/core/when_all.hh>
 #include <seastar/net/dns.hh>
 #include <seastar/net/inet_address.hh>
 
 using namespace seastar;
 using namespace seastar::net;
 
-static const inet_address google_addr = inet_address("216.58.201.164");
-static const sstring google_name = "www.google.com";
+static const sstring seastar_name = "seastar.io";
 
 static future<> test_resolve(dns_resolver::options opts) {
     auto d = ::make_lw_shared<dns_resolver>(std::move(opts));
-    return d->get_host_by_name(google_name, inet_address::family::INET).then([d](hostent e) {
-        //BOOST_REQUIRE(std::count(e.addr_list.begin(), e.addr_list.end(), google_addr));
+    return d->get_host_by_name(seastar_name, inet_address::family::INET).then([d](hostent e) {
         return d->get_host_by_addr(e.addr_list.front()).then([d, a = e.addr_list.front()](hostent e) {
             return d->get_host_by_name(e.names.front(), inet_address::family::INET).then([a](hostent e) {
                 BOOST_REQUIRE(std::count(e.addr_list.begin(), e.addr_list.end(), a));
@@ -80,7 +78,7 @@ SEASTAR_TEST_CASE(test_timeout_udp) {
     opts.timeout = std::chrono::milliseconds(500);
 
     auto d = ::make_lw_shared<dns_resolver>(engine().net(), opts);
-    return d->get_host_by_name(google_name, inet_address::family::INET).then_wrapped([d](future<hostent> f) {
+    return d->get_host_by_name(seastar_name, inet_address::family::INET).then_wrapped([d](future<hostent> f) {
         try {
             f.get();
             BOOST_FAIL("should not succeed");
@@ -92,14 +90,35 @@ SEASTAR_TEST_CASE(test_timeout_udp) {
     });
 }
 
-// Currently failing, disable until fixed (#521)
-#if 0
+// NOTE: cannot really test timeout in TCP mode, because seastar sockets do not support 
+// connect with timeout -> cannot complete connect future in dns::do_connect in reasonable
+// time.
+
+// But we can test for connection refused working as expected.
+SEASTAR_TEST_CASE(test_connection_refused_tcp) {
+    dns_resolver::options opts;
+    opts.servers = std::vector<inet_address>({ inet_address("127.0.0.1") }); 
+    opts.use_tcp_query = true;
+    opts.tcp_port = 29953; // not a dns port
+
+    auto d = ::make_lw_shared<dns_resolver>(engine().net(), opts);
+    return d->get_host_by_name(seastar_name, inet_address::family::INET).then_wrapped([d](future<hostent> f) {
+        try {
+            f.get();
+            BOOST_FAIL("should not succeed");
+        } catch (...) {
+            // ok.
+        }
+    }).finally([d]{
+        return d->close();
+    });
+}
+
 SEASTAR_TEST_CASE(test_resolve_tcp) {
     dns_resolver::options opts;
     opts.use_tcp_query = true;
     return test_resolve(opts);
 }
-#endif
 
 SEASTAR_TEST_CASE(test_bad_name_tcp) {
     dns_resolver::options opts;
@@ -131,4 +150,34 @@ static future<> test_srv() {
 
 SEASTAR_TEST_CASE(test_srv_tcp) {
     return test_srv();
+}
+
+
+SEASTAR_TEST_CASE(test_parallel_resolve_name) {
+    dns_resolver::options opts;
+    opts.use_tcp_query = true;
+
+    auto d = ::make_lw_shared<dns_resolver>(std::move(opts));
+    return when_all(
+        d->resolve_name("www.google.com"),
+        d->resolve_name("www.google.com"),
+        d->resolve_name("www.google.com"),
+        d->resolve_name("www.google.com"),
+        d->resolve_name("www.google.com"),
+        d->resolve_name("www.google.com")
+    ).finally([d](auto&&...) {}).discard_result();
+}
+
+SEASTAR_TEST_CASE(test_parallel_resolve_name_udp) {
+    dns_resolver::options opts;
+
+    auto d = ::make_lw_shared<dns_resolver>(std::move(opts));
+    return when_all(
+        d->resolve_name("www.google.com"),
+        d->resolve_name("www.google.com"),
+        d->resolve_name("www.google.com"),
+        d->resolve_name("www.google.com"),
+        d->resolve_name("www.google.com"),
+        d->resolve_name("www.google.com")
+    ).finally([d](auto&...) {}).discard_result();
 }

@@ -213,19 +213,25 @@ test_cpuset_fmt(void)
 
 	/* Set all cores */
 	spdk_cpuset_zero(core_mask);
+	CU_ASSERT(cpuset_check_range(core_mask, 0, SPDK_CPUSET_SIZE - 1, false) == 0);
+
 	for (lcore = 0; lcore < SPDK_CPUSET_SIZE; lcore++) {
 		spdk_cpuset_set_cpu(core_mask, lcore, true);
 	}
-	for (i = 0; i < SPDK_CPUSET_SIZE / 4 - 1; i++) {
+	for (i = 0; i < SPDK_CPUSET_SIZE / 4; i++) {
 		hex_mask_ref[i] = 'f';
 	}
-	hex_mask_ref[SPDK_CPUSET_SIZE / 4 - 1] = '\0';
+	hex_mask_ref[SPDK_CPUSET_SIZE / 4] = '\0';
+
+	/* Check data before format */
+	CU_ASSERT(cpuset_check_range(core_mask, 0, SPDK_CPUSET_SIZE - 1, true) == 0);
 
 	hex_mask = spdk_cpuset_fmt(core_mask);
-	CU_ASSERT(hex_mask != NULL);
-	if (hex_mask != NULL) {
-		CU_ASSERT(strcmp(hex_mask_ref, hex_mask) == 0);
-	}
+	SPDK_CU_ASSERT_FATAL(hex_mask != NULL);
+	CU_ASSERT(strcmp(hex_mask_ref, hex_mask) == 0);
+
+	/* Check data integrity after format */
+	CU_ASSERT(cpuset_check_range(core_mask, 0, SPDK_CPUSET_SIZE - 1, true) == 0);
 
 	spdk_cpuset_free(core_mask);
 }
@@ -236,23 +242,14 @@ main(int argc, char **argv)
 	CU_pSuite	suite = NULL;
 	unsigned int	num_failures;
 
-	if (CU_initialize_registry() != CUE_SUCCESS) {
-		return CU_get_error();
-	}
+	CU_set_error_action(CUEA_ABORT);
+	CU_initialize_registry();
 
 	suite = CU_add_suite("cpuset", NULL, NULL);
-	if (suite == NULL) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
 
-	if (
-		CU_add_test(suite, "test_cpuset", test_cpuset) == NULL ||
-		CU_add_test(suite, "test_cpuset_parse", test_cpuset_parse) == NULL ||
-		CU_add_test(suite, "test_cpuset_fmt", test_cpuset_fmt) == NULL) {
-		CU_cleanup_registry();
-		return CU_get_error();
-	}
+	CU_ADD_TEST(suite, test_cpuset);
+	CU_ADD_TEST(suite, test_cpuset_parse);
+	CU_ADD_TEST(suite, test_cpuset_fmt);
 
 	CU_basic_set_mode(CU_BRM_VERBOSE);
 

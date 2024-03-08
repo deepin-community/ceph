@@ -6,7 +6,7 @@
 #pragma once
 #include "rocksdb/types.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 enum class SnapshotCheckerResult : int {
   kInSnapshot = 0,
@@ -33,10 +33,9 @@ class DisableGCSnapshotChecker : public SnapshotChecker {
     // By returning kNotInSnapshot, we prevent all the values from being GCed
     return SnapshotCheckerResult::kNotInSnapshot;
   }
-  static DisableGCSnapshotChecker* Instance() { return &instance_; }
+  static DisableGCSnapshotChecker* Instance();
 
  protected:
-  static DisableGCSnapshotChecker instance_;
   explicit DisableGCSnapshotChecker() {}
 };
 
@@ -58,4 +57,4 @@ class WritePreparedSnapshotChecker : public SnapshotChecker {
 #endif  // !ROCKSDB_LITE
 };
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

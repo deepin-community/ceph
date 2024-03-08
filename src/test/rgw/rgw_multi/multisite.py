@@ -1,9 +1,9 @@
 from abc import ABCMeta, abstractmethod
-from six import StringIO
+from io import StringIO
 
 import json
 
-from .conn import get_gateway_connection, get_gateway_secure_connection
+from .conn import get_gateway_connection, get_gateway_iam_connection, get_gateway_secure_connection
 
 class Cluster:
     """ interface to run commands against a distinct ceph cluster """
@@ -26,6 +26,7 @@ class Gateway:
         self.connection = None
         self.secure_connection = None
         self.ssl_port = ssl_port
+        self.iam_connection = None
 
     @abstractmethod
     def start(self, args = []):
@@ -72,8 +73,7 @@ class SystemObject:
         data and retcode """
         s, r = self.command(cluster, cmd, args or [], **kwargs)
         if r == 0:
-            output = s[s.find('{'):] # trim extra output before json
-            data = json.loads(output)
+            data = json.loads(s)
             self.load_from_json(data)
             self.data = data
         return self.data, r
@@ -163,7 +163,13 @@ class Zone(SystemObject, SystemObject.CreateDelete, SystemObject.GetSet, SystemO
     def tier_type(self):
         raise NotImplementedError
 
+    def syncs_from(self, zone_name):
+        return zone_name != self.name
+
     def has_buckets(self):
+        return True
+
+    def has_roles(self):
         return True
 
     def get_conn(self, credentials):
@@ -183,8 +189,21 @@ class ZoneConn(object):
             self.conn = get_gateway_connection(self.zone.gateways[0], self.credentials)
             self.secure_conn = get_gateway_secure_connection(self.zone.gateways[0], self.credentials)
 
+            self.iam_conn = get_gateway_iam_connection(self.zone.gateways[0], self.credentials)
+
+            # create connections for the rest of the gateways (if exist)
+            for gw in list(self.zone.gateways):
+                get_gateway_connection(gw, self.credentials)
+                get_gateway_secure_connection(gw, self.credentials)
+
+                get_gateway_iam_connection(gw, self.credentials)
+
+
     def get_connection(self):
         return self.conn
+
+    def get_iam_connection(self):
+        return self.iam_conn
 
     def get_bucket(self, bucket_name, credentials):
         raise NotImplementedError

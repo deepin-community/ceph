@@ -2,33 +2,40 @@
 // vim: ts=8 sw=2 smarttab
 
 #include "librbd/io/CopyupRequest.h"
+#include "include/neorados/RADOS.hpp"
 #include "common/ceph_context.h"
+#include "common/ceph_mutex.h"
 #include "common/dout.h"
 #include "common/errno.h"
-#include "common/Mutex.h"
-#include "common/WorkQueue.h"
+#include "librbd/AsioEngine.h"
 #include "librbd/AsyncObjectThrottle.h"
 #include "librbd/ExclusiveLock.h"
 #include "librbd/ImageCtx.h"
 #include "librbd/ObjectMap.h"
 #include "librbd/Utils.h"
+#include "librbd/asio/ContextWQ.h"
+#include "librbd/asio/Utils.h"
 #include "librbd/deep_copy/ObjectCopyRequest.h"
 #include "librbd/io/AioCompletion.h"
-#include "librbd/io/ImageRequest.h"
+#include "librbd/io/ImageDispatchSpec.h"
+#include "librbd/io/ObjectDispatcherInterface.h"
 #include "librbd/io/ObjectRequest.h"
 #include "librbd/io/ReadResult.h"
+#include "librbd/io/Utils.h"
 
-#include <boost/bind.hpp>
 #include <boost/lambda/bind.hpp>
 #include <boost/lambda/construct.hpp>
 
 #define dout_subsys ceph_subsys_rbd
 #undef dout_prefix
-#define dout_prefix *_dout << "librbd::io::CopyupRequest: " << this \
-                           << " " << __func__ << ": "
+#define dout_prefix *_dout << "librbd::io::CopyupRequest: " << this            \
+                           << " " << __func__ << ": "                          \
+                           << data_object_name(m_image_ctx, m_object_no) << " "
 
 namespace librbd {
 namespace io {
+
+using librbd::util::data_object_name;
 
 namespace {
 
@@ -49,13 +56,13 @@ public:
 
   int send() override {
     auto& image_ctx = this->m_image_ctx;
-    ceph_assert(image_ctx.owner_lock.is_locked());
+    ceph_assert(ceph_mutex_is_locked(image_ctx.owner_lock));
     if (image_ctx.exclusive_lock == nullptr) {
       return 1;
     }
     ceph_assert(image_ctx.exclusive_lock->is_lock_owner());
 
-    RWLock::RLocker snap_locker(image_ctx.snap_lock);
+    std::shared_lock image_locker{image_ctx.image_lock};
     if (image_ctx.object_map == nullptr) {
       return 1;
     }
@@ -70,7 +77,8 @@ public:
 
   int update_head() {
     auto& image_ctx = this->m_image_ctx;
-    RWLock::WLocker object_map_locker(image_ctx.object_map_lock);
+    ceph_assert(ceph_mutex_is_locked(image_ctx.image_lock));
+
     bool sent = image_ctx.object_map->template aio_update<Context>(
       CEPH_NOSNAP, m_object_no, m_head_object_map_state, {}, m_trace, false,
       this);
@@ -79,15 +87,16 @@ public:
 
   int update_snapshot(uint64_t snap_id) {
     auto& image_ctx = this->m_image_ctx;
+    ceph_assert(ceph_mutex_is_locked(image_ctx.image_lock));
+
     uint8_t state = OBJECT_EXISTS;
-    if (image_ctx.test_features(RBD_FEATURE_FAST_DIFF, image_ctx.snap_lock) &&
+    if (image_ctx.test_features(RBD_FEATURE_FAST_DIFF, image_ctx.image_lock) &&
         (m_snap_id_idx > 0 || m_first_snap_is_clean)) {
       // first snapshot should be exists+dirty since it contains
       // the copyup data -- later snapshots inherit the data.
       state = OBJECT_EXISTS_CLEAN;
     }
 
-    RWLock::RLocker object_map_locker(image_ctx.object_map_lock);
     bool sent = image_ctx.object_map->template aio_update<Context>(
       snap_id, m_object_no, state, {}, m_trace, true, this);
     ceph_assert(sent);
@@ -106,16 +115,15 @@ private:
 } // anonymous namespace
 
 template <typename I>
-CopyupRequest<I>::CopyupRequest(I *ictx, const std::string &oid,
-                                uint64_t objectno, Extents &&image_extents,
+CopyupRequest<I>::CopyupRequest(I *ictx, uint64_t objectno,
+                                Extents &&image_extents, ImageArea area,
                                 const ZTracer::Trace &parent_trace)
-  : m_image_ctx(ictx), m_oid(oid), m_object_no(objectno),
-    m_image_extents(image_extents),
-    m_trace(util::create_trace(*m_image_ctx, "copy-up", parent_trace)),
-    m_lock("CopyupRequest", false, false)
+  : m_image_ctx(ictx), m_object_no(objectno),
+    m_image_extents(std::move(image_extents)), m_image_area(area),
+    m_trace(librbd::util::create_trace(*m_image_ctx, "copy-up", parent_trace))
 {
   ceph_assert(m_image_ctx->data_ctx.is_valid());
-  m_async_op.start_op(*util::get_image_ctx(m_image_ctx));
+  m_async_op.start_op(*librbd::util::get_image_ctx(m_image_ctx));
 }
 
 template <typename I>
@@ -125,15 +133,21 @@ CopyupRequest<I>::~CopyupRequest() {
 }
 
 template <typename I>
-void CopyupRequest<I>::append_request(AbstractObjectWriteRequest<I> *req) {
-  Mutex::Locker locker(m_lock);
+void CopyupRequest<I>::append_request(AbstractObjectWriteRequest<I> *req,
+                                      const Extents& object_extents) {
+  std::lock_guard locker{m_lock};
 
   auto cct = m_image_ctx->cct;
-  ldout(cct, 20) << "oid=" << m_oid << ", "
-                 << "object_request=" << req << ", "
+  ldout(cct, 20) << "object_request=" << req << ", "
                  << "append=" << m_append_request_permitted << dendl;
   if (m_append_request_permitted) {
     m_pending_requests.push_back(req);
+
+    for (auto [offset, length] : object_extents) {
+      if (length > 0) {
+        m_write_object_extents.union_insert(offset, length);
+      }
+    }
   } else {
     m_restart_requests.push_back(req);
   }
@@ -147,16 +161,13 @@ void CopyupRequest<I>::send() {
 template <typename I>
 void CopyupRequest<I>::read_from_parent() {
   auto cct = m_image_ctx->cct;
-  RWLock::RLocker snap_locker(m_image_ctx->snap_lock);
-  RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
+  std::shared_lock image_locker{m_image_ctx->image_lock};
 
   if (m_image_ctx->parent == nullptr) {
     ldout(cct, 5) << "parent detached" << dendl;
 
-    m_image_ctx->op_work_queue->queue(
-      util::create_context_callback<
-        CopyupRequest<I>, &CopyupRequest<I>::handle_read_from_parent>(this),
-      -ENOENT);
+    m_image_ctx->asio_engine->post(
+      [this]() { handle_read_from_parent(-ENOENT); });
     return;
   } else if (is_deep_copy()) {
     deep_copy();
@@ -166,40 +177,56 @@ void CopyupRequest<I>::read_from_parent() {
   auto comp = AioCompletion::create_and_start<
     CopyupRequest<I>,
     &CopyupRequest<I>::handle_read_from_parent>(
-      this, util::get_image_ctx(m_image_ctx->parent), AIO_TYPE_READ);
+      this, librbd::util::get_image_ctx(m_image_ctx->parent), AIO_TYPE_READ);
 
-  ldout(cct, 20) << "oid=" << m_oid << ", "
-                 << "completion=" << comp << ", "
-                 << "extents=" << m_image_extents
-                 << dendl;
-  ImageRequest<I>::aio_read(m_image_ctx->parent, comp,
-                            std::move(m_image_extents),
-                            ReadResult{&m_copyup_data}, 0, m_trace);
+  ldout(cct, 20) << "completion=" << comp
+                 << " image_extents=" << m_image_extents
+                 << " area=" << m_image_area << dendl;
+  auto req = io::ImageDispatchSpec::create_read(
+    *m_image_ctx->parent, io::IMAGE_DISPATCH_LAYER_INTERNAL_START, comp,
+    std::move(m_image_extents), m_image_area,
+    ReadResult{&m_copyup_extent_map, &m_copyup_data},
+    m_image_ctx->parent->get_data_io_context(), 0, 0, m_trace);
+  req->send();
 }
 
 template <typename I>
 void CopyupRequest<I>::handle_read_from_parent(int r) {
   auto cct = m_image_ctx->cct;
-  ldout(cct, 20) << "oid=" << m_oid << ", r=" << r << dendl;
-
-  m_image_ctx->snap_lock.get_read();
-  m_lock.Lock();
-  m_copyup_is_zero = m_copyup_data.is_zero();
-  m_copyup_required = is_copyup_required();
-  disable_append_requests();
+  ldout(cct, 20) << "r=" << r << dendl;
 
   if (r < 0 && r != -ENOENT) {
-    m_lock.Unlock();
-    m_image_ctx->snap_lock.put_read();
+    m_lock.lock();
+    disable_append_requests();
+    m_lock.unlock();
 
     lderr(cct) << "error reading from parent: " << cpp_strerror(r) << dendl;
     finish(r);
     return;
   }
 
+  convert_copyup_extent_map();
+
+  m_image_ctx->image_lock.lock_shared();
+  m_lock.lock();
+  disable_append_requests();
+
+  r = prepare_copyup_data();
+  if (r < 0) {
+    m_lock.unlock();
+    m_image_ctx->image_lock.unlock_shared();
+
+    lderr(m_image_ctx->cct) << "failed to prepare copyup data: "
+                            << cpp_strerror(r) << dendl;
+    finish(r);
+    return;
+  }
+
+  m_copyup_is_zero = m_copyup_data.is_zero();
+  m_copyup_required = is_copyup_required();
   if (!m_copyup_required) {
-    m_lock.Unlock();
-    m_image_ctx->snap_lock.put_read();
+    m_lock.unlock();
+    m_image_ctx->image_lock.unlock_shared();
 
     ldout(cct, 20) << "no-op, skipping" << dendl;
     finish(0);
@@ -213,8 +240,8 @@ void CopyupRequest<I>::handle_read_from_parent(int r) {
                       m_image_ctx->snaps.rend());
   }
 
-  m_lock.Unlock();
-  m_image_ctx->snap_lock.put_read();
+  m_lock.unlock();
+  m_image_ctx->image_lock.unlock_shared();
 
   update_object_maps();
 }
@@ -222,21 +249,26 @@ void CopyupRequest<I>::handle_read_from_parent(int r) {
 template <typename I>
 void CopyupRequest<I>::deep_copy() {
   auto cct = m_image_ctx->cct;
-  ceph_assert(m_image_ctx->snap_lock.is_locked());
-  ceph_assert(m_image_ctx->parent_lock.is_locked());
+  ceph_assert(ceph_mutex_is_locked(m_image_ctx->image_lock));
   ceph_assert(m_image_ctx->parent != nullptr);
 
-  m_lock.Lock();
+  m_lock.lock();
+  m_deep_copied = true;
   m_flatten = is_copyup_required() ? true : m_image_ctx->migration_info.flatten;
-  m_lock.Unlock();
+  m_lock.unlock();
 
-  ldout(cct, 20) << "oid=" << m_oid << ", flatten=" << m_flatten << dendl;
+  ldout(cct, 20) << "flatten=" << m_flatten << dendl;
 
-  auto ctx = util::create_context_callback<
+  uint32_t flags = deep_copy::OBJECT_COPY_REQUEST_FLAG_MIGRATION;
+  if (m_flatten) {
+    flags |= deep_copy::OBJECT_COPY_REQUEST_FLAG_FLATTEN;
+  }
+
+  auto ctx = librbd::util::create_context_callback<
     CopyupRequest<I>, &CopyupRequest<I>::handle_deep_copy>(this);
   auto req = deep_copy::ObjectCopyRequest<I>::create(
     m_image_ctx->parent, m_image_ctx, 0, 0,
-    m_image_ctx->migration_info.snap_map, m_object_no, m_flatten, ctx);
+    m_image_ctx->migration_info.snap_map, m_object_no, flags, nullptr, ctx);
 
   req->send();
 }
@@ -244,14 +276,14 @@ void CopyupRequest<I>::deep_copy() {
 template <typename I>
 void CopyupRequest<I>::handle_deep_copy(int r) {
   auto cct = m_image_ctx->cct;
-  ldout(cct, 20) << "oid=" << m_oid << ", r=" << r << dendl;
+  ldout(cct, 20) << "r=" << r << dendl;
 
-  m_image_ctx->snap_lock.get_read();
-  m_lock.Lock();
+  m_image_ctx->image_lock.lock_shared();
+  m_lock.lock();
   m_copyup_required = is_copyup_required();
   if (r == -ENOENT && !m_flatten && m_copyup_required) {
-    m_lock.Unlock();
-    m_image_ctx->snap_lock.put_read();
+    m_lock.unlock();
+    m_image_ctx->image_lock.unlock_shared();
 
     ldout(cct, 10) << "restart deep-copy with flatten" << dendl;
     send();
@@ -261,8 +293,8 @@ void CopyupRequest<I>::handle_deep_copy(int r) {
   disable_append_requests();
 
   if (r < 0 && r != -ENOENT) {
-    m_lock.Unlock();
-    m_image_ctx->snap_lock.put_read();
+    m_lock.unlock();
+    m_image_ctx->image_lock.unlock_shared();
 
     lderr(cct) << "error encountered during deep-copy: " << cpp_strerror(r)
                << dendl;
@@ -271,8 +303,8 @@ void CopyupRequest<I>::handle_deep_copy(int r) {
   }
 
   if (!m_copyup_required && !is_update_object_map_required(r)) {
-    m_lock.Unlock();
-    m_image_ctx->snap_lock.put_read();
+    m_lock.unlock();
+    m_image_ctx->image_lock.unlock_shared();
 
     if (r == -ENOENT) {
       r = 0;
@@ -291,18 +323,18 @@ void CopyupRequest<I>::handle_deep_copy(int r) {
     compute_deep_copy_snap_ids();
   }
 
-  m_lock.Unlock();
-  m_image_ctx->snap_lock.put_read();
+  m_lock.unlock();
+  m_image_ctx->image_lock.unlock_shared();
 
   update_object_maps();
 }
 
 template <typename I>
 void CopyupRequest<I>::update_object_maps() {
-  RWLock::RLocker owner_locker(m_image_ctx->owner_lock);
-  RWLock::RLocker snap_locker(m_image_ctx->snap_lock);
+  std::shared_lock owner_locker{m_image_ctx->owner_lock};
+  std::shared_lock image_locker{m_image_ctx->image_lock};
   if (m_image_ctx->object_map == nullptr) {
-    snap_locker.unlock();
+    image_locker.unlock();
     owner_locker.unlock();
 
     copyup();
@@ -310,13 +342,13 @@ void CopyupRequest<I>::update_object_maps() {
   }
 
   auto cct = m_image_ctx->cct;
-  ldout(cct, 20) << "oid=" << m_oid << dendl;
+  ldout(cct, 20) << dendl;
 
   bool copy_on_read = m_pending_requests.empty();
   uint8_t head_object_map_state = OBJECT_EXISTS;
   if (copy_on_read && !m_snap_ids.empty() &&
       m_image_ctx->test_features(RBD_FEATURE_FAST_DIFF,
-                                 m_image_ctx->snap_lock)) {
+                                 m_image_ctx->image_lock)) {
     // HEAD is non-dirty since data is tied to first snapshot
     head_object_map_state = OBJECT_EXISTS_CLEAN;
   }
@@ -327,20 +359,18 @@ void CopyupRequest<I>::update_object_maps() {
     head_object_map_state = (*r_it)->get_pre_write_object_map_state();
   }
 
-  RWLock::WLocker object_map_locker(m_image_ctx->object_map_lock);
   if ((*m_image_ctx->object_map)[m_object_no] != head_object_map_state) {
     // (maybe) need to update the HEAD object map state
     m_snap_ids.push_back(CEPH_NOSNAP);
   }
-  object_map_locker.unlock();
-  snap_locker.unlock();
+  image_locker.unlock();
 
   ceph_assert(m_image_ctx->exclusive_lock->is_lock_owner());
   typename AsyncObjectThrottle<I>::ContextFactory context_factory(
     boost::lambda::bind(boost::lambda::new_ptr<C_UpdateObjectMap<I>>(),
     boost::lambda::_1, m_image_ctx, m_object_no, head_object_map_state,
     &m_snap_ids, m_first_snap_is_clean, m_trace, boost::lambda::_2));
-  auto ctx = util::create_context_callback<
+  auto ctx = librbd::util::create_context_callback<
     CopyupRequest<I>, &CopyupRequest<I>::handle_update_object_maps>(this);
   auto throttle = new AsyncObjectThrottle<I>(
     nullptr, *m_image_ctx, context_factory, ctx, nullptr, 0, m_snap_ids.size());
@@ -351,7 +381,7 @@ void CopyupRequest<I>::update_object_maps() {
 template <typename I>
 void CopyupRequest<I>::handle_update_object_maps(int r) {
   auto cct = m_image_ctx->cct;
-  ldout(cct, 20) << "oid=" << m_oid << ", r=" << r << dendl;
+  ldout(cct, 20) << "r=" << r << dendl;
 
   if (r < 0) {
     lderr(m_image_ctx->cct) << "failed to update object map: "
@@ -367,42 +397,57 @@ void CopyupRequest<I>::handle_update_object_maps(int r) {
 template <typename I>
 void CopyupRequest<I>::copyup() {
   auto cct = m_image_ctx->cct;
-  m_image_ctx->snap_lock.get_read();
+  m_image_ctx->image_lock.lock_shared();
   auto snapc = m_image_ctx->snapc;
-  m_image_ctx->snap_lock.put_read();
+  auto io_context = m_image_ctx->get_data_io_context();
+  m_image_ctx->image_lock.unlock_shared();
 
-  m_lock.Lock();
+  m_lock.lock();
   if (!m_copyup_required) {
-    m_lock.Unlock();
+    m_lock.unlock();
 
     ldout(cct, 20) << "skipping copyup" << dendl;
     finish(0);
     return;
   }
 
-  ldout(cct, 20) << "oid=" << m_oid << dendl;
+  ldout(cct, 20) << dendl;
 
-  bool copy_on_read = m_pending_requests.empty();
+  bool copy_on_read = m_pending_requests.empty() && !m_deep_copied;
   bool deep_copyup = !snapc.snaps.empty() && !m_copyup_is_zero;
   if (m_copyup_is_zero) {
     m_copyup_data.clear();
+    m_copyup_extent_map.clear();
   }
 
-  int r;
-  librados::ObjectWriteOperation copyup_op;
+  neorados::WriteOp copyup_op;
+  neorados::WriteOp write_op;
+  neorados::WriteOp* op;
   if (copy_on_read || deep_copyup) {
-    copyup_op.exec("rbd", "copyup", m_copyup_data);
-    ObjectRequest<I>::add_write_hint(*m_image_ctx, &copyup_op);
+    // copyup-op will use its own request issued to the initial object revision
+    op = &copyup_op;
     ++m_pending_copyups;
+  } else {
+    // copyup-op can be combined with the write-ops (if any)
+    op = &write_op;
   }
 
-  librados::ObjectWriteOperation write_op;
-  if (!copy_on_read) {
-    if (!deep_copyup) {
-      write_op.exec("rbd", "copyup", m_copyup_data);
-      ObjectRequest<I>::add_write_hint(*m_image_ctx, &write_op);
-    }
+  if (m_image_ctx->enable_sparse_copyup) {
+    cls_client::sparse_copyup(op, m_copyup_extent_map, m_copyup_data);
+  } else {
+    // convert the sparse read back into a standard (thick) read
+    Striper::StripedReadResult destriper;
+    destriper.add_partial_sparse_result(
+      cct, std::move(m_copyup_data), m_copyup_extent_map, 0,
+      {{0, m_image_ctx->layout.object_size}});
 
+    bufferlist thick_bl;
+    destriper.assemble_result(cct, thick_bl, false);
+    cls_client::copyup(op, thick_bl);
+  }
+  ObjectRequest<I>::add_write_hint(*m_image_ctx, op);
+
+  if (!copy_on_read) {
     // merge all pending write ops into this single RADOS op
     for (auto req : m_pending_requests) {
       ldout(cct, 20) << "add_copyup_ops " << req << dendl;
@@ -413,10 +458,10 @@ void CopyupRequest<I>::copyup() {
       ++m_pending_copyups;
     }
   }
-  m_lock.Unlock();
+  m_lock.unlock();
 
   // issue librados ops at the end to simplify test cases
-  std::vector<librados::snap_t> snaps;
+  auto object = neorados::Object{data_object_name(m_image_ctx, m_object_no)};
   if (copyup_op.size() > 0) {
     // send only the copyup request with a blank snapshot context so that
     // all snapshots are detected from the parent for this object.  If
@@ -424,13 +469,14 @@ void CopyupRequest<I>::copyup() {
     // actual modification.
     ldout(cct, 20) << "copyup with empty snapshot context" << dendl;
 
-    auto comp = util::create_rados_callback<
-      CopyupRequest<I>, &CopyupRequest<I>::handle_copyup>(this);
-    r = m_image_ctx->data_ctx.aio_operate(
-      m_oid, comp, &copyup_op, 0, snaps,
-      (m_trace.valid() ? m_trace.get_info() : nullptr));
-    ceph_assert(r == 0);
-    comp->release();
+    auto copyup_io_context = *io_context;
+    copyup_io_context.write_snap_context({});
+
+    m_image_ctx->rados_api.execute(
+      object, copyup_io_context, std::move(copyup_op),
+      librbd::asio::util::get_callback_adapter(
+        [this](int r) { handle_copyup(r); }), nullptr,
+        (this->m_trace.valid() ? this->m_trace.get_info() : nullptr));
   }
 
   if (write_op.size() > 0) {
@@ -441,14 +487,11 @@ void CopyupRequest<I>::copyup() {
                         "copyup + ops" : !deep_copyup ? "copyup" : "ops")
                    << " with current snapshot context" << dendl;
 
-    snaps.insert(snaps.end(), snapc.snaps.begin(), snapc.snaps.end());
-    auto comp = util::create_rados_callback<
-      CopyupRequest<I>, &CopyupRequest<I>::handle_copyup>(this);
-    r = m_image_ctx->data_ctx.aio_operate(
-      m_oid, comp, &write_op, snapc.seq, snaps,
-      (m_trace.valid() ? m_trace.get_info() : nullptr));
-    ceph_assert(r == 0);
-    comp->release();
+    m_image_ctx->rados_api.execute(
+      object, *io_context, std::move(write_op),
+      librbd::asio::util::get_callback_adapter(
+        [this](int r) { handle_copyup(r); }), nullptr,
+        (this->m_trace.valid() ? this->m_trace.get_info() : nullptr));
   }
 }
 
@@ -456,21 +499,28 @@ template <typename I>
 void CopyupRequest<I>::handle_copyup(int r) {
   auto cct = m_image_ctx->cct;
   unsigned pending_copyups;
+  int copyup_ret_val = r;
   {
-    Mutex::Locker locker(m_lock);
+    std::lock_guard locker{m_lock};
     ceph_assert(m_pending_copyups > 0);
     pending_copyups = --m_pending_copyups;
+    if (m_copyup_ret_val < 0) {
+      copyup_ret_val = m_copyup_ret_val;
+    } else if (r < 0) {
+      m_copyup_ret_val = r;
+    }
   }
 
-  ldout(cct, 20) << "oid=" << m_oid << ", " << "r=" << r << ", "
+  ldout(cct, 20) << "r=" << r << ", "
                  << "pending=" << pending_copyups << dendl;
 
-  if (r < 0 && r != -ENOENT) {
-    lderr(cct) << "failed to copyup object: " << cpp_strerror(r) << dendl;
-    complete_requests(false, r);
-  }
-
   if (pending_copyups == 0) {
+    if (copyup_ret_val < 0 && copyup_ret_val != -ENOENT) {
+      lderr(cct) << "failed to copyup object: " << cpp_strerror(copyup_ret_val)
+                 << dendl;
+      complete_requests(false, copyup_ret_val);
+    }
+
     finish(0);
   }
 }
@@ -478,7 +528,7 @@ void CopyupRequest<I>::handle_copyup(int r) {
 template <typename I>
 void CopyupRequest<I>::finish(int r) {
   auto cct = m_image_ctx->cct;
-  ldout(cct, 20) << "oid=" << m_oid << ", r=" << r << dendl;
+  ldout(cct, 20) << "r=" << r << dendl;
 
   complete_requests(true, r);
   delete this;
@@ -512,13 +562,13 @@ void CopyupRequest<I>::complete_requests(bool override_restart_retval, int r) {
 
 template <typename I>
 void CopyupRequest<I>::disable_append_requests() {
-  ceph_assert(m_lock.is_locked());
+  ceph_assert(ceph_mutex_is_locked(m_lock));
   m_append_request_permitted = false;
 }
 
 template <typename I>
 void CopyupRequest<I>::remove_from_list() {
-  Mutex::Locker copyup_list_locker(m_image_ctx->copyup_list_lock);
+  std::lock_guard copyup_list_locker{m_image_ctx->copyup_list_lock};
 
   auto it = m_image_ctx->copyup_list.find(m_object_no);
   if (it != m_image_ctx->copyup_list.end()) {
@@ -528,7 +578,7 @@ void CopyupRequest<I>::remove_from_list() {
 
 template <typename I>
 bool CopyupRequest<I>::is_copyup_required() {
-  ceph_assert(m_lock.is_locked());
+  ceph_assert(ceph_mutex_is_locked(m_lock));
 
   bool copy_on_read = m_pending_requests.empty();
   if (copy_on_read) {
@@ -550,13 +600,13 @@ bool CopyupRequest<I>::is_copyup_required() {
 
 template <typename I>
 bool CopyupRequest<I>::is_deep_copy() const {
-  ceph_assert(m_image_ctx->snap_lock.is_locked());
+  ceph_assert(ceph_mutex_is_locked(m_image_ctx->image_lock));
   return !m_image_ctx->migration_info.empty();
 }
 
 template <typename I>
 bool CopyupRequest<I>::is_update_object_map_required(int r) {
-  ceph_assert(m_image_ctx->snap_lock.is_locked());
+  ceph_assert(ceph_mutex_is_locked(m_image_ctx->image_lock));
 
   if (r < 0) {
     return false;
@@ -579,7 +629,7 @@ bool CopyupRequest<I>::is_update_object_map_required(int r) {
 
 template <typename I>
 void CopyupRequest<I>::compute_deep_copy_snap_ids() {
-  ceph_assert(m_image_ctx->snap_lock.is_locked());
+  ceph_assert(ceph_mutex_is_locked(m_image_ctx->image_lock));
 
   // don't copy ids for the snaps updated by object deep copy or
   // that don't overlap
@@ -589,8 +639,8 @@ void CopyupRequest<I>::compute_deep_copy_snap_ids() {
       deep_copied.insert(it.second.front());
     }
   }
+  ldout(m_image_ctx->cct, 15) << "deep_copied=" << deep_copied << dendl;
 
-  RWLock::RLocker parent_locker(m_image_ctx->parent_lock);
   std::copy_if(m_image_ctx->snaps.rbegin(), m_image_ctx->snaps.rend(),
                std::back_inserter(m_snap_ids),
                [this, cct=m_image_ctx->cct, &deep_copied](uint64_t snap_id) {
@@ -599,24 +649,122 @@ void CopyupRequest<I>::compute_deep_copy_snap_ids() {
         return false;
       }
 
-      uint64_t parent_overlap = 0;
-      int r = m_image_ctx->get_parent_overlap(snap_id, &parent_overlap);
+      uint64_t raw_overlap = 0;
+      uint64_t object_overlap = 0;
+      int r = m_image_ctx->get_parent_overlap(snap_id, &raw_overlap);
       if (r < 0) {
         ldout(cct, 5) << "failed getting parent overlap for snap_id: "
                       << snap_id << ": " << cpp_strerror(r) << dendl;
+      } else if (raw_overlap > 0) {
+        auto [parent_extents, area] = util::object_to_area_extents(
+            m_image_ctx, m_object_no, {{0, m_image_ctx->layout.object_size}});
+        object_overlap = m_image_ctx->prune_parent_extents(parent_extents, area,
+                                                           raw_overlap, false);
       }
-      if (parent_overlap == 0) {
-        return false;
-      }
-      std::vector<std::pair<uint64_t, uint64_t>> extents;
-      Striper::extent_to_file(cct, &m_image_ctx->layout,
-                              m_object_no, 0,
-                              m_image_ctx->layout.object_size,
-                              extents);
-      auto overlap = m_image_ctx->prune_parent_extents(
-          extents, parent_overlap);
-      return overlap > 0;
+      return object_overlap > 0;
     });
+}
+
+template <typename I>
+void CopyupRequest<I>::convert_copyup_extent_map() {
+  auto cct = m_image_ctx->cct;
+
+  Extents image_extent_map;
+  image_extent_map.swap(m_copyup_extent_map);
+  m_copyup_extent_map.reserve(image_extent_map.size());
+
+  // convert the image-extent extent map to object-extents
+  for (auto [image_offset, image_length] : image_extent_map) {
+    striper::LightweightObjectExtents object_extents;
+    util::area_to_object_extents(m_image_ctx, image_offset, image_length,
+                                 m_image_area, 0, &object_extents);
+    for (auto& object_extent : object_extents) {
+      m_copyup_extent_map.emplace_back(
+        object_extent.offset, object_extent.length);
+    }
+  }
+
+  ldout(cct, 20) << "image_extents=" << image_extent_map << ", "
+                 << "object_extents=" << m_copyup_extent_map << dendl;
+}
+
+template <typename I>
+int CopyupRequest<I>::prepare_copyup_data() {
+  ceph_assert(ceph_mutex_is_locked(m_image_ctx->image_lock));
+  auto cct = m_image_ctx->cct;
+
+  SnapshotSparseBufferlist snapshot_sparse_bufferlist;
+  auto& sparse_bufferlist = snapshot_sparse_bufferlist[0];
+
+  bool copy_on_read = m_pending_requests.empty();
+  bool maybe_deep_copyup = !m_image_ctx->snapc.snaps.empty();
+  if (copy_on_read || maybe_deep_copyup) {
+    // stand-alone copyup that will not be overwritten until HEAD revision
+    ldout(cct, 20) << "processing full copy-up" << dendl;
+
+    uint64_t buffer_offset = 0;
+    for (auto [object_offset, object_length] : m_copyup_extent_map) {
+      bufferlist sub_bl;
+      sub_bl.substr_of(m_copyup_data, buffer_offset, object_length);
+      buffer_offset += object_length;
+
+      sparse_bufferlist.insert(
+        object_offset, object_length,
+        {SPARSE_EXTENT_STATE_DATA, object_length, std::move(sub_bl)});
+    }
+  } else {
+    // copyup that will concurrently written to the HEAD revision with the
+    // associated write-ops so only process partial extents
+    uint64_t buffer_offset = 0;
+    for (auto [object_offset, object_length] : m_copyup_extent_map) {
+      interval_set<uint64_t> copyup_object_extents;
+      copyup_object_extents.insert(object_offset, object_length);
+
+      interval_set<uint64_t> intersection;
+      intersection.intersection_of(copyup_object_extents,
+                                   m_write_object_extents);
+
+      // extract only portions of the parent copyup data that have not
+      // been overwritten by write-ops
+      copyup_object_extents.subtract(intersection);
+      for (auto [copyup_offset, copyup_length] : copyup_object_extents) {
+        bufferlist sub_bl;
+        sub_bl.substr_of(
+          m_copyup_data, buffer_offset + (copyup_offset - object_offset),
+          copyup_length);
+        ceph_assert(sub_bl.length() == copyup_length);
+
+        sparse_bufferlist.insert(
+          copyup_offset, copyup_length,
+          {SPARSE_EXTENT_STATE_DATA, copyup_length, std::move(sub_bl)});
+      }
+      buffer_offset += object_length;
+    }
+
+    ldout(cct, 20) << "processing partial copy-up: " << sparse_bufferlist
+                   << dendl;
+  }
+
+  // Let dispatch layers have a chance to process the data
+  auto r = m_image_ctx->io_object_dispatcher->prepare_copyup(
+    m_object_no, &snapshot_sparse_bufferlist);
+  if (r < 0) {
+    return r;
+  }
+
+  // Convert sparse extents back to extent map
+  m_copyup_data.clear();
+  m_copyup_extent_map.clear();
+  m_copyup_extent_map.reserve(sparse_bufferlist.ext_count());
+  for (auto& extent : sparse_bufferlist) {
+    auto& sbe = extent.get_val();
+    if (sbe.state == SPARSE_EXTENT_STATE_DATA) {
+      m_copyup_extent_map.emplace_back(extent.get_off(), extent.get_len());
+      m_copyup_data.append(sbe.bl);
+    }
+  }
+
+  return 0;
 }
 
 } // namespace io

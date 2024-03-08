@@ -1,8 +1,6 @@
 overrides:
   ceph:
-    mon_bind_msgr2: false
-    mon_bind_addrvec: false
-    log-whitelist:
+    log-ignorelist:
     - scrub mismatch
     - ScrubResult
     - wrongly marked
@@ -14,7 +12,7 @@ overrides:
     conf:
       global:
         bluestore warn on legacy statfs: false
-        mon pg warn min per osd: 0
+        bluestore warn on no per pool omap: false
       mon:
         mon warn on osd down out interval zero: false
 
@@ -22,16 +20,14 @@ tasks:
 - mds_pre_upgrade:
 - print: "**** done mds pre-upgrade sequence"
 - install.upgrade:
+    # upgrade the single cluster node, which is running all the mon/mds/osd/mgr daemons
     mon.a:
-    mon.b:
-- print: "**** done install.upgrade both hosts"
+      branch: quincy
+- print: "**** done install.upgrade the host"
 - ceph.restart:
     daemons: [mon.*, mgr.*]
     mon-health-to-clog: false
     wait-for-healthy: false
-- exec:
-    mon.a:
-      - ceph config set global mon_warn_on_msgr2_not_enabled false
 - ceph.healthy:
 - ceph.restart:
     daemons: [osd.*]
@@ -44,13 +40,9 @@ tasks:
     wait-for-osds-up: true
 - exec:
     mon.a:
-    - ceph mon enable-msgr2
-    - ceph config rm global mon_warn_on_msgr2_not_enabled
-- exec:
-    mon.a:
     - ceph osd dump -f json-pretty
     - ceph versions
-    - ceph osd require-osd-release nautilus
-    #- ceph osd set-require-min-compat-client nautilus
+    - ceph osd require-osd-release quincy
+    - for f in `ceph osd pool ls` ; do ceph osd pool set $f pg_autoscale_mode off ; done
 - ceph.healthy:
 - print: "**** done ceph.restart"
