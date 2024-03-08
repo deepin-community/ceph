@@ -24,7 +24,6 @@
 #include <seastar/http/request.hh>
 #include <seastar/http/common.hh>
 #include <seastar/http/reply.hh>
-#include <seastar/core/future-util.hh>
 
 #include <unordered_map>
 
@@ -32,7 +31,7 @@ namespace seastar {
 
 namespace httpd {
 
-typedef const httpd::request& const_req;
+typedef const http::request& const_req;
 
 /**
  * handlers holds the logic for serving an incoming request.
@@ -46,12 +45,11 @@ public:
      * All handlers should implement this method.
      *  It fill the reply according to the request.
      * @param path the url path used in this call
-     * @param params optional parameter object
      * @param req the original request
      * @param rep the reply
      */
-    virtual future<std::unique_ptr<reply> > handle(const sstring& path,
-            std::unique_ptr<request> req, std::unique_ptr<reply> rep) = 0;
+    virtual future<std::unique_ptr<http::reply> > handle(const sstring& path,
+            std::unique_ptr<http::request> req, std::unique_ptr<http::reply> rep) = 0;
 
     virtual ~handler_base() = default;
 

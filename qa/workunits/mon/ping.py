@@ -1,10 +1,8 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 
 import json
 import shlex
 import subprocess
-
-import six
 
 
 class UnexpectedReturn(Exception):
@@ -12,7 +10,7 @@ class UnexpectedReturn(Exception):
         if isinstance(cmd, list):
             self.cmd = ' '.join(cmd)
         else:
-            assert isinstance(cmd, six.string_types) or isinstance(cmd, six.text_type), \
+            assert isinstance(cmd, str), \
                 'cmd needs to be either a list or a str'
             self.cmd = cmd
         self.cmd = str(self.cmd)
@@ -28,7 +26,7 @@ class UnexpectedReturn(Exception):
 def call(cmd):
     if isinstance(cmd, list):
         args = cmd
-    elif isinstance(cmd, six.string_types) or isinstance(cmd, six.text_type):
+    elif isinstance(cmd, str):
         args = shlex.split(cmd)
     else:
         assert False, 'cmd is not a string/unicode nor a list!'

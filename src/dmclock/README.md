@@ -5,6 +5,11 @@ distributed quality of service algorithm. See __mClock: Handling
 Throughput Variability for Hypervisor IO Scheduling__ by Gulati,
 Merchant, and Varman for a description of the algorithm.
 
+## Bugs and features
+
+There is a [dmclock project](https://tracker.ceph.com/projects/dmclock) through
+which bugs can be reported and features requested.
+
 ## Running cmake
 
 When running cmake, set the build type with either:

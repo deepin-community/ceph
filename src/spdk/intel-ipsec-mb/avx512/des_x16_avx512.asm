@@ -1,5 +1,5 @@
 ;;
-;; Copyright (c) 2017-2018, Intel Corporation
+;; Copyright (c) 2017-2019, Intel Corporation
 ;;
 ;; Redistribution and use in source and binary forms, with or without
 ;; modification, are permitted provided that the following conditions are met:
@@ -46,12 +46,12 @@
 ;;			-----------------------------------------------------------
 ;; Clobbers ZMM0-31 and K1 to K7
 
-%include "os.asm"
-%include "reg_sizes.asm"
+%include "include/os.asm"
+%include "include/reg_sizes.asm"
 %include "mb_mgr_datastruct.asm"
 %include "constants.asm"
 ;%define DO_DBGPRINT
-%include "dbgprint.asm"
+%include "include/dbgprint.asm"
 
 %ifdef LINUX
 %define arg1	rdi
@@ -136,6 +136,30 @@ endstruc
 ;;; MACROS
 ;;; ===========================================================================
 ;;; ===========================================================================
+
+;;; ===========================================================================
+;;; CLEAR TRANSPOSED KEY SCHEDULE (if SAFE_DATA is selected)
+;;; ===========================================================================
+%macro CLEAR_KEY_SCHEDULE 2
+%define %%ALG   %1      ; [in] DES or 3DES
+%define %%ZT    %2      ; [clobbered] temporary ZMM register
+
+%ifdef SAFE_DATA
+        vpxorq  %%ZT, %%ZT
+%assign rep_num (2048 / 64)
+%ifidn %%ALG, 3DES
+%assign rep_num (rep_num * 3)
+%endif
+
+%assign offset 0
+%rep rep_num
+        vmovdqa64       [rsp + _key_sched + offset], %%ZT
+%assign offset (offset + 64)
+%endrep
+
+%endif ; SAFE_DATA
+
+%endmacro
 
 ;;; ===========================================================================
 ;;; PERMUTE
@@ -940,7 +964,8 @@ endstruc
 ;;; IV0   [out] - r512; initialization vector
 ;;; IV1   [out] - r512; initialization vector
 ;;; T0-T27 [clobbered] - temporary r512
-%macro DES3_INIT 35
+;;; DIR   [in] - ENC/DEC (keys arranged in different order for enc/dec)
+%macro DES3_INIT 36
 %define %%STATE_KEYS %1
 %define %%STATE_IV   %2
 %define %%KS1  %3
@@ -976,9 +1001,15 @@ endstruc
 %define %%T25  %33
 %define %%T26  %34
 %define %%T27  %35
+%define %%DIR  %36
 
+%ifidn %%DIR, ENC
 %assign KEY_IDX 0
+%else
+%assign KEY_IDX 2
+%endif
 %assign KS_IDX  1
+
 %rep 3
         ;; set up the key schedule
         ;; - load first half of the keys & transpose
@@ -1015,7 +1046,11 @@ endstruc
 %assign IDX (IDX + 1)
 %endrep
 
+%ifidn %%DIR, ENC
 %assign KEY_IDX (KEY_IDX + 1)
+%else
+%assign KEY_IDX (KEY_IDX - 1)
+%endif
 %assign KS_IDX (KS_IDX + 1)
 %endrep                         ; KEY_IDX / KS_IDX
 
@@ -1271,6 +1306,13 @@ endstruc
 %endif
 %endrep
 
+%ifdef SAFE_DATA
+        ;; Clear copied IV's
+        vpxorq          %%T5, %%T5
+        vmovdqu64       [%%T_IV + (0*64)], %%T5
+        vmovdqu64       [%%T_IV + (1*64)], %%T5
+%endif
+
 %%_des_cfb_one_end:
 
 %endmacro
@@ -1473,7 +1515,7 @@ endstruc
         DES_INIT        STATE + _des_args_keys, STATE + _des_args_IV, rsp + _key_sched, ZIV0, ZIV1, ZW0, ZW1, ZW2, ZW3, ZW4, ZW5, ZW6, ZW7, ZW8, ZW9, ZW10, ZW11, ZW12, ZW13, ZW14, ZW15, ZTMP0, ZTMP1, ZTMP2, ZTMP3, ZTMP4, ZTMP5, ZTMP6, ZTMP7, ZTMP8, ZTMP9, ZTMP10, ZTMP11
 %else
         ;; 3DES
-        DES3_INIT        STATE + _des_args_keys, STATE + _des_args_IV, rsp + _key_sched, rsp + _key_sched2, rsp + _key_sched3, ZIV0, ZIV1, ZW0, ZW1, ZW2, ZW3, ZW4, ZW5, ZW6, ZW7, ZW8, ZW9, ZW10, ZW11, ZW12, ZW13, ZW14, ZW15, ZTMP0, ZTMP1, ZTMP2, ZTMP3, ZTMP4, ZTMP5, ZTMP6, ZTMP7, ZTMP8, ZTMP9, ZTMP10, ZTMP11
+        DES3_INIT        STATE + _des_args_keys, STATE + _des_args_IV, rsp + _key_sched, rsp + _key_sched2, rsp + _key_sched3, ZIV0, ZIV1, ZW0, ZW1, ZW2, ZW3, ZW4, ZW5, ZW6, ZW7, ZW8, ZW9, ZW10, ZW11, ZW12, ZW13, ZW14, ZW15, ZTMP0, ZTMP1, ZTMP2, ZTMP3, ZTMP4, ZTMP5, ZTMP6, ZTMP7, ZTMP8, ZTMP9, ZTMP10, ZTMP11, ENC
 %endif
         mov             [rsp + _size_save], SIZE
         and             SIZE, -64
@@ -1744,6 +1786,9 @@ endstruc
 %ifidn %%DES_DOCSIS, DOCSIS
         DES_CFB_ONE     ENC, rsp + _key_sched, ZW0, ZW1, ZW2, ZW3, ZW4, ZW5, ZW6, ZW7, ZW8, ZW9, ZW10, ZW11, ZW12, ZW13, ZW14, ZW15, ZTMP0, ZTMP1, ZTMP2, ZTMP3, ZTMP4, ZTMP5, ZTMP6, ZTMP7, ZTMP8, rsp + _tmp_in, rsp + _tmp_out, rsp + _tmp_iv, rsp + _tmp_mask
 %endif
+
+        CLEAR_KEY_SCHEDULE %%DES_DOCSIS, ZW0
+
         ;; restore stack pointer and registers
         mov             r12, [rsp + _gpr_save + 0*8]
         mov             r13, [rsp + _gpr_save + 1*8]
@@ -1778,7 +1823,7 @@ endstruc
         DES_INIT        STATE + _des_args_keys, STATE + _des_args_IV, rsp + _key_sched, ZIV0, ZIV1, ZW0, ZW1, ZW2, ZW3, ZW4, ZW5, ZW6, ZW7, ZW8, ZW9, ZW10, ZW11, ZW12, ZW13, ZW14, ZW15, ZTMP0, ZTMP1, ZTMP2, ZTMP3, ZTMP4, ZTMP5, ZTMP6, ZTMP7, ZTMP8, ZTMP9, ZTMP10, ZTMP11
 %else
         ;; 3DES
-        DES3_INIT       STATE + _des_args_keys, STATE + _des_args_IV, rsp + _key_sched, rsp + _key_sched2, rsp + _key_sched3, ZIV0, ZIV1, ZW0, ZW1, ZW2, ZW3, ZW4, ZW5, ZW6, ZW7, ZW8, ZW9, ZW10, ZW11, ZW12, ZW13, ZW14, ZW15, ZTMP0, ZTMP1, ZTMP2, ZTMP3, ZTMP4, ZTMP5, ZTMP6, ZTMP7, ZTMP8, ZTMP9, ZTMP10, ZTMP11
+        DES3_INIT       STATE + _des_args_keys, STATE + _des_args_IV, rsp + _key_sched, rsp + _key_sched2, rsp + _key_sched3, ZIV0, ZIV1, ZW0, ZW1, ZW2, ZW3, ZW4, ZW5, ZW6, ZW7, ZW8, ZW9, ZW10, ZW11, ZW12, ZW13, ZW14, ZW15, ZTMP0, ZTMP1, ZTMP2, ZTMP3, ZTMP4, ZTMP5, ZTMP6, ZTMP7, ZTMP8, ZTMP9, ZTMP10, ZTMP11, DEC
 %endif
 
         ;; CFB part for DOCSIS
@@ -2045,6 +2090,8 @@ endstruc
 
         ;; store IV and update pointers
         DES_FINISH      ZIV0, ZIV1, ZTMP0, ZTMP1, ZTMP2, ZTMP3, ZTMP4
+
+        CLEAR_KEY_SCHEDULE %%DES_DOCSIS, ZW0
 
         ;; restore stack pointer and registers
         mov             r12, [rsp + _gpr_save + 0*8]

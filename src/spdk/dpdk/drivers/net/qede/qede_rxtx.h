@@ -61,9 +61,16 @@
 #define QEDE_FW_RX_ALIGN_END	(1UL << QEDE_RX_ALIGN_SHIFT)
 #define QEDE_CEIL_TO_CACHE_LINE_SIZE(n) (((n) + (QEDE_FW_RX_ALIGN_END - 1)) & \
 					~(QEDE_FW_RX_ALIGN_END - 1))
-/* Note: QEDE_LLC_SNAP_HDR_LEN is optional */
-#define QEDE_ETH_OVERHEAD	(((2 * QEDE_VLAN_TAG_SIZE)) - (ETHER_CRC_LEN) \
-				+ (QEDE_LLC_SNAP_HDR_LEN))
+#define QEDE_FLOOR_TO_CACHE_LINE_SIZE(n) RTE_ALIGN_FLOOR(n, \
+							 QEDE_FW_RX_ALIGN_END)
+
+/* Note: QEDE_LLC_SNAP_HDR_LEN is optional,
+ * +2 is for padding in front of L2 header
+ */
+#define QEDE_ETH_OVERHEAD	(((2 * QEDE_VLAN_TAG_SIZE)) \
+				 + (QEDE_LLC_SNAP_HDR_LEN) + 2)
+
+#define QEDE_MAX_ETHER_HDR_LEN	(RTE_ETHER_HDR_LEN + QEDE_ETH_OVERHEAD)
 
 #define QEDE_RSS_OFFLOAD_ALL    (ETH_RSS_IPV4			|\
 				 ETH_RSS_NONFRAG_IPV4_TCP	|\
@@ -74,10 +81,8 @@
 				 ETH_RSS_VXLAN			|\
 				 ETH_RSS_GENEVE)
 
-#define for_each_rss(i)		for (i = 0; i < qdev->num_rx_queues; i++)
-#define for_each_tss(i)		for (i = 0; i < qdev->num_tx_queues; i++)
 #define QEDE_RXTX_MAX(qdev) \
-	(RTE_MAX(QEDE_RSS_COUNT(qdev), QEDE_TSS_COUNT(qdev)))
+	(RTE_MAX(qdev->num_rx_queues, qdev->num_tx_queues))
 
 /* Macros for non-tunnel packet types lkup table */
 #define QEDE_PKT_TYPE_UNKNOWN				0x0
@@ -142,14 +147,13 @@
 				   PKT_TX_TCP_CKSUM             | \
 				   PKT_TX_UDP_CKSUM             | \
 				   PKT_TX_OUTER_IP_CKSUM        | \
-				   PKT_TX_TCP_SEG)
+				   PKT_TX_TCP_SEG		| \
+				   PKT_TX_IPV4			| \
+				   PKT_TX_IPV6)
 
 #define QEDE_TX_OFFLOAD_MASK (QEDE_TX_CSUM_OFFLOAD_MASK | \
 			      PKT_TX_VLAN_PKT		| \
-			      PKT_TX_TUNNEL_VXLAN	| \
-			      PKT_TX_TUNNEL_GENEVE	| \
-			      PKT_TX_TUNNEL_MPLSINUDP   | \
-			      PKT_TX_TUNNEL_GRE)
+			      PKT_TX_TUNNEL_MASK)
 
 #define QEDE_TX_OFFLOAD_NOTSUP_MASK \
 	(PKT_TX_OFFLOAD_MASK ^ QEDE_TX_OFFLOAD_MASK)
@@ -173,6 +177,8 @@ struct qede_agg_info {
  * Structure associated with each RX queue.
  */
 struct qede_rx_queue {
+	/* Always keep qdev as first member */
+	struct qede_dev *qdev;
 	struct rte_mempool *mb_pool;
 	struct ecore_chain rx_bd_ring;
 	struct ecore_chain rx_comp_ring;
@@ -186,12 +192,13 @@ struct qede_rx_queue {
 	uint16_t queue_id;
 	uint16_t port_id;
 	uint16_t rx_buf_size;
+	uint16_t rx_alloc_count;
+	uint16_t unused;
 	uint64_t rcv_pkts;
 	uint64_t rx_segs;
 	uint64_t rx_hw_errors;
 	uint64_t rx_alloc_errors;
 	struct qede_agg_info tpa_info[ETH_TPA_MAX_AGGS_NUM];
-	struct qede_dev *qdev;
 	void *handle;
 };
 
@@ -209,6 +216,8 @@ union db_prod {
 };
 
 struct qede_tx_queue {
+	/* Always keep qdev as first member */
+	struct qede_dev *qdev;
 	struct ecore_chain tx_pbl;
 	struct qede_tx_entry *sw_tx_ring;
 	uint16_t nb_tx_desc;
@@ -223,7 +232,6 @@ struct qede_tx_queue {
 	uint16_t port_id;
 	uint64_t xmit_pkts;
 	bool is_legacy;
-	struct qede_dev *qdev;
 	void *handle;
 };
 
@@ -231,6 +239,18 @@ struct qede_fastpath {
 	struct ecore_sb_info *sb_info;
 	struct qede_rx_queue *rxq;
 	struct qede_tx_queue *txq;
+};
+
+/* This structure holds the inforation of fast path queues
+ * belonging to individual engines in CMT mode.
+ */
+struct qede_fastpath_cmt {
+	/* Always keep this a first element */
+	struct qede_dev *qdev;
+	/* fastpath info of engine 0 */
+	struct qede_fastpath *fp0;
+	/* fastpath info of engine 1 */
+	struct qede_fastpath *fp1;
 };
 
 /*
@@ -253,13 +273,21 @@ void qede_tx_queue_release(void *tx_queue);
 
 uint16_t qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts,
 			uint16_t nb_pkts);
+uint16_t qede_xmit_pkts_cmt(void *p_txq, struct rte_mbuf **tx_pkts,
+			    uint16_t nb_pkts);
+uint16_t qede_xmit_pkts_regular(void *p_txq, struct rte_mbuf **tx_pkts,
+				uint16_t nb_pkts);
 
 uint16_t qede_xmit_prep_pkts(void *p_txq, struct rte_mbuf **tx_pkts,
 			     uint16_t nb_pkts);
 
 uint16_t qede_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts,
 			uint16_t nb_pkts);
-
+uint16_t qede_recv_pkts_cmt(void *p_rxq, struct rte_mbuf **rx_pkts,
+			    uint16_t nb_pkts);
+uint16_t
+qede_recv_pkts_regular(void *p_rxq, struct rte_mbuf **rx_pkts,
+		       uint16_t nb_pkts);
 uint16_t qede_rxtx_pkts_dummy(void *p_rxq,
 			      struct rte_mbuf **pkts,
 			      uint16_t nb_pkts);
@@ -267,6 +295,10 @@ uint16_t qede_rxtx_pkts_dummy(void *p_rxq,
 int qede_start_queues(struct rte_eth_dev *eth_dev);
 
 void qede_stop_queues(struct rte_eth_dev *eth_dev);
+int qede_calc_rx_buf_size(struct rte_eth_dev *dev, uint16_t mbufsz,
+			  uint16_t max_frame_size);
+int
+qede_rx_descriptor_status(void *rxq, uint16_t offset);
 
 /* Fastpath resource alloc/dealloc helpers */
 int qede_alloc_fp_resc(struct qede_dev *qdev);

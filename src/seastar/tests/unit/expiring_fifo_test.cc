@@ -21,9 +21,10 @@
  */
 
 #include <seastar/core/thread.hh>
+#include <seastar/core/manual_clock.hh>
 #include <seastar/testing/test_case.hh>
-#include <seastar/core/future-util.hh>
 #include <seastar/core/expiring_fifo.hh>
+#include <seastar/util/later.hh>
 #include <boost/range/irange.hpp>
 
 using namespace seastar;
@@ -92,7 +93,7 @@ SEASTAR_TEST_CASE(test_expiry_operations) {
         BOOST_REQUIRE_EQUAL(fifo.front(), 1);
 
         manual_clock::advance(1s);
-        later().get();
+        yield().get();
 
         BOOST_REQUIRE(fifo.empty());
         BOOST_REQUIRE_EQUAL(fifo.size(), 0u);
@@ -107,7 +108,7 @@ SEASTAR_TEST_CASE(test_expiry_operations) {
         fifo.push_back(3);
 
         manual_clock::advance(1s);
-        later().get();
+        yield().get();
 
         BOOST_REQUIRE(!fifo.empty());
         BOOST_REQUIRE_EQUAL(fifo.size(), 2u);
@@ -129,7 +130,7 @@ SEASTAR_TEST_CASE(test_expiry_operations) {
         fifo.push_back(4, manual_clock::now() + 2s);
 
         manual_clock::advance(1s);
-        later().get();
+        yield().get();
 
         BOOST_REQUIRE(!fifo.empty());
         BOOST_REQUIRE_EQUAL(fifo.size(), 2u);
@@ -153,7 +154,7 @@ SEASTAR_TEST_CASE(test_expiry_operations) {
         fifo.push_back(4, manual_clock::now() + 1s);
 
         manual_clock::advance(1s);
-        later().get();
+        yield().get();
 
         BOOST_REQUIRE(!fifo.empty());
         BOOST_REQUIRE_EQUAL(fifo.size(), 1u);
@@ -176,7 +177,7 @@ SEASTAR_TEST_CASE(test_expiry_operations) {
         fifo.push_back(5);
 
         manual_clock::advance(1s);
-        later().get();
+        yield().get();
 
         BOOST_REQUIRE_EQUAL(fifo.size(), 2u);
         BOOST_REQUIRE_EQUAL(fifo.front(), 1);

@@ -3,6 +3,9 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+/* Define to 1 if you have the `memset_s()` function. */
+#cmakedefine HAVE_MEMSET_S
+
 /* fallocate(2) is supported */
 #cmakedefine CEPH_HAVE_FALLOCATE
 
@@ -39,24 +42,6 @@
 /* Define to 1 if you have the <execinfo.h> header file. */
 #cmakedefine HAVE_EXECINFO_H 1
 
-/* Define to 1 if the system has the type `__be16'. */
-#cmakedefine HAVE___BE16 1
-
-/* Define to 1 if the system has the type `__be32'. */
-#cmakedefine HAVE___BE32 1
-
-/* Define to 1 if the system has the type `__be64'. */
-#cmakedefine HAVE___BE64 1
-
-/* Define to 1 if the system has the type `__le16'. */
-#cmakedefine HAVE___LE16 1
-
-/* Define to 1 if the system has the type `__le32'. */
-#cmakedefine HAVE___LE32 1
-
-/* Define to 1 if the system has the type `__le64'. */
-#cmakedefine HAVE___LE64 1
-
 /* Define to 1 if the system has the type `__s16'. */
 #cmakedefine HAVE___S16 1
 
@@ -81,6 +66,12 @@
 /* Define to 1 if the system has the type `__u8'. */
 #cmakedefine HAVE___U8 1
 
+/* Define if the system has the type `in_addr_t' */
+#cmakedefine HAVE_IN_ADDR_T
+
+/* Define if you have suseconds_t */
+#cmakedefine HAVE_SUSECONDS_T
+
 /* Define if you have res_nquery */
 #cmakedefine HAVE_RES_NQUERY
 
@@ -93,6 +84,15 @@
 /* Defined if you have libaio */
 #cmakedefine HAVE_LIBAIO
 
+/* Defined if you have libdml */
+#cmakedefine HAVE_LIBDML
+
+/* Defined if you have libzbd */
+#cmakedefine HAVE_LIBZBD
+
+/* Defined if you have liburing */
+#cmakedefine HAVE_LIBURING
+
 /* Defind if you have POSIX AIO */
 #cmakedefine HAVE_POSIXAIO
 
@@ -101,6 +101,12 @@
 
 /* Define if you have fuse */
 #cmakedefine HAVE_LIBFUSE
+
+/* Define version major */
+#define CEPH_FUSE_MAJOR_VERSION @FUSE_MAJOR_VERSION@
+
+/* Define version minor */
+#define CEPH_FUSE_MINOR_VERSION @FUSE_MINOR_VERSION@
 
 /* Define to 1 if you have libxfs */
 #cmakedefine HAVE_LIBXFS 1
@@ -111,27 +117,12 @@
 /* DPDK conditional compilation */
 #cmakedefine HAVE_DPDK
 
-/* PMEM conditional compilation */
-#cmakedefine HAVE_PMEM
-
-/* Defined if LevelDB supports bloom filters */
-#cmakedefine HAVE_LEVELDB_FILTER_POLICY
+/* PMEM_DEVICE (OSD) conditional compilation */
+#cmakedefine HAVE_BLUESTORE_PMEM
 
 /* Define if you have tcmalloc */
 #cmakedefine HAVE_LIBTCMALLOC
-
-/* Define if have curl_multi_wait() */
-#cmakedefine HAVE_CURL_MULTI_WAIT 1
-
-/* Define if using NSS. */
-#cmakedefine USE_NSS
-
-/* Define if using OpenSSL. */
-#cmakedefine USE_OPENSSL
-
-/* Accelio conditional compilation */
-#cmakedefine HAVE_XIO
-
+#cmakedefine LIBTCMALLOC_MISSING_ALIGNED_ALLOC
 
 /* AsyncMessenger RDMA conditional compilation */
 #cmakedefine HAVE_RDMA
@@ -144,6 +135,9 @@
 
 /* define if cephfs enabled */
 #cmakedefine WITH_CEPHFS
+
+/* define if systemed is enabled */
+#cmakedefine WITH_SYSTEMD
 
 /*define if GSSAPI/KRB5 enabled */
 #cmakedefine HAVE_GSSAPI
@@ -160,15 +154,6 @@
 /* define if radosgw enabled */
 #cmakedefine WITH_RADOSGW
 
-/* define if radosgw enabled */
-#cmakedefine WITH_RADOSGW_FCGI_FRONTEND
-
-/* define if leveldb is enabled */
-#cmakedefine WITH_LEVELDB
-
-/* define if radosgw's beast frontend enabled */
-#cmakedefine WITH_RADOSGW_BEAST_FRONTEND
-
 /* define if radosgw has openssl support */
 #cmakedefine WITH_CURL_OPENSSL
 
@@ -180,6 +165,12 @@
 
 /* Define if you want to use LTTng */
 #cmakedefine WITH_LTTNG
+
+/* Define if you want to use Jaeger */
+#cmakedefine HAVE_JAEGER
+
+/* Define if you want to use EVENTTRACE */
+#cmakedefine WITH_EVENTTRACE
 
 /* Define if you want to OSD function instrumentation */
 #cmakedefine WITH_OSD_INSTRUMENT_FUNCTIONS
@@ -217,9 +208,6 @@
 /* Define to 1 if you have fdatasync. */
 #cmakedefine HAVE_FDATASYNC 1
 
-/* Defined if you have librocksdb enabled */
-#cmakedefine HAVE_LIBROCKSDB
-
 /* Define to 1 if you have the <valgrind/helgrind.h> header file. */
 #cmakedefine HAVE_VALGRIND_HELGRIND_H 1
 
@@ -256,11 +244,14 @@
 /* name_to_handle_at exists */
 #cmakedefine HAVE_NAME_TO_HANDLE_AT
 
-/* we have a recent yasm and are x86_64 */
-#cmakedefine HAVE_GOOD_YASM_ELF64 
+/* we have a recent nasm and are x86_64 */
+#cmakedefine HAVE_NASM_X64
 
-/* yasm can also build the isa-l */
-#cmakedefine HAVE_BETTER_YASM_ELF64
+/* nasm can also build the isa-l:avx512 */
+#cmakedefine HAVE_NASM_X64_AVX512
+
+/* Define if the erasure code isa-l plugin is compiled */
+#cmakedefine WITH_EC_ISA_PLUGIN
 
 /* Define to 1 if strerror_r returns char *. */
 #cmakedefine STRERROR_R_CHAR_P 1
@@ -273,6 +264,12 @@
 
 /* Define if the C compiler supports __PRETTY_FUNCTION__ */
 #cmakedefine HAVE_PRETTY_FUNC
+
+/* Define if the C compiler supports __attribute__((__symver__ (".."))) */
+#cmakedefine HAVE_ATTR_SYMVER
+
+/* Define if the C compiler supports __asm__(".symver ..") */
+#cmakedefine HAVE_ASM_SYMVER
 
 /* Have eventfd extension. */
 #cmakedefine HAVE_EVENTFD
@@ -302,7 +299,7 @@
 #cmakedefine HAVE_STATIC_CAST
 
 /* Version number of package */
-#cmakedefine VERSION "@VERSION@"
+#cmakedefine PROJECT_VERSION "@PROJECT_VERSION@"
 
 /* Defined if pthread_setname_np() is available */
 #cmakedefine HAVE_PTHREAD_SETNAME_NP 1
@@ -336,9 +333,6 @@
 /* Defined if getentropy() is available */
 #cmakedefine HAVE_GETENTROPY
 
-/* Defined if boost::context is available */
-#cmakedefine HAVE_BOOST_CONTEXT
-
 /* Defined if libradosstriper is enabled: */
 #cmakedefine WITH_LIBRADOSSTRIPER
 
@@ -351,6 +345,18 @@
 /* Defined if libedkafka is available for rgw kafka push endpoint */
 #cmakedefine WITH_RADOSGW_KAFKA_ENDPOINT
 
+/* Defined if lua packages can be installed by radosgw */
+#cmakedefine WITH_RADOSGW_LUA_PACKAGES
+
+/* Backend dbstore for Rados Gateway */
+#cmakedefine WITH_RADOSGW_DBSTORE
+
+/* Backend CORTX-Motr for Rados Gateway */
+#cmakedefine WITH_RADOSGW_MOTR
+
+/* Backend CORTX-DAOS for Rados Gateway */
+#cmakedefine WITH_RADOSGW_DAOS
+
 /* Defined if std::map::merge() is supported */
 #cmakedefine HAVE_STDLIB_MAP_SPLICING
 
@@ -362,5 +368,26 @@
 
 /* Define if unit tests are built. */
 #cmakedefine UNIT_TESTS_BUILT
+
+/* Define if RBD QCOW migration format is enabled */
+#cmakedefine WITH_RBD_MIGRATION_FORMAT_QCOW_V1
+
+/* Define if libcephsqlite is enabled */
+#cmakedefine WITH_LIBCEPHSQLITE
+
+/* Define if RWL is enabled */
+#cmakedefine WITH_RBD_RWL
+
+/* Define if PWL-SSD is enabled */
+#cmakedefine WITH_RBD_SSD_CACHE
+
+/* Define if libcryptsetup can be used (linux only) */
+#cmakedefine HAVE_LIBCRYPTSETUP
+
+/* Shared library extension, such as .so, .dll or .dylib */
+#cmakedefine CMAKE_SHARED_LIBRARY_SUFFIX "@CMAKE_SHARED_LIBRARY_SUFFIX@"
+
+/* libexec directory path */
+#cmakedefine CMAKE_INSTALL_LIBEXECDIR "@CMAKE_INSTALL_LIBEXECDIR@"
 
 #endif /* CONFIG_H */

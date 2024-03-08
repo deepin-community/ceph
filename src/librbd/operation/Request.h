@@ -6,7 +6,6 @@
 
 #include "librbd/AsyncRequest.h"
 #include "include/Context.h"
-#include "common/RWLock.h"
 #include "librbd/Utils.h"
 #include "librbd/Journal.h"
 
@@ -38,8 +37,7 @@ protected:
     ImageCtxT &image_ctx = this->m_image_ctx;
 
     ceph_assert(can_affect_io());
-    RWLock::RLocker owner_locker(image_ctx.owner_lock);
-    RWLock::RLocker snap_locker(image_ctx.snap_lock);
+    std::scoped_lock locker{image_ctx.owner_lock, image_ctx.image_lock};
     if (image_ctx.journal != nullptr) {
       if (image_ctx.journal->is_journal_replaying()) {
         Context *ctx = util::create_context_callback<T, MF>(request);

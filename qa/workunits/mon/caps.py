@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 
 from __future__ import print_function
 
@@ -10,8 +10,6 @@ import os
 import io
 import re
 
-import six
-
 from ceph_argparse import * # noqa
 
 keyring_base = '/tmp/cephtest-caps.keyring'
@@ -21,8 +19,7 @@ class UnexpectedReturn(Exception):
     if isinstance(cmd, list):
       self.cmd = ' '.join(cmd)
     else:
-      assert isinstance(cmd, str) or isinstance(cmd, six.text_type), \
-          'cmd needs to be either a list or a str'
+      assert isinstance(cmd, str), 'cmd needs to be either a list or a str'
       self.cmd = cmd
     self.cmd = str(self.cmd)
     self.ret = int(ret)
@@ -36,7 +33,7 @@ class UnexpectedReturn(Exception):
 def call(cmd):
   if isinstance(cmd, list):
     args = cmd
-  elif isinstance(cmd, str) or isinstance(cmd, six.text_type):
+  elif isinstance(cmd, str):
     args = shlex.split(cmd)
   else:
     assert False, 'cmd is not a string/unicode nor a list!'
@@ -64,15 +61,15 @@ def expect(cmd, expected_ret):
 
   return p
 
-def expect_to_file(cmd, expected_ret, out_file, mode='a'):
+def expect_to_file(cmd, expected_ret, out_file):
 
   # Let the exception be propagated to the caller
   p = expect(cmd, expected_ret)
   assert p.returncode == expected_ret, \
       'expected result doesn\'t match and no exception was thrown!'
 
-  with io.open(out_file, mode) as file:
-    file.write(six.text_type(p.stdout.read()))
+  with io.open(out_file, 'ab') as file:
+    file.write(p.stdout.read())
 
   return p
 
@@ -86,7 +83,7 @@ class Command:
     self.args = []
     for s in j['sig']:
       if not isinstance(s, dict):
-        assert isinstance(s, str) or isinstance(s,six.text_type), \
+        assert isinstance(s, str), \
             'malformatted signature cid {0}: {1}\n{2}'.format(cid,s,j)
         if len(self.sig) > 0:
           self.sig += ' '
@@ -343,9 +340,9 @@ def test_misc():
   expect_to_file(
       'ceph auth get-or-create client.caps mon \'allow command "auth caps"' \
           ' with entity="client.caps"\'', 0, k)
-  expect('ceph -n client.caps -k {kf} mon_status'.format(kf=k), errno.EACCES)
+  expect('ceph -n client.caps -k {kf} quorum_status'.format(kf=k), errno.EACCES)
   expect('ceph -n client.caps -k {kf} auth caps client.caps mon \'allow *\''.format(kf=k), 0)
-  expect('ceph -n client.caps -k {kf} mon_status'.format(kf=k), 0)
+  expect('ceph -n client.caps -k {kf} quorum_status'.format(kf=k), 0)
   destroy_keyring(k)
 
 def main():

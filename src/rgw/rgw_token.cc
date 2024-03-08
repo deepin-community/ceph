@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 /*
  * Ceph - scalable distributed file system
@@ -40,13 +40,15 @@ namespace {
   string access_key{""};
   string secret_key{""};
 
-  Formatter* formatter{nullptr};
+  Formatter* token_formatter{nullptr};
 
   bool verbose {false};
   bool do_encode {false};
   bool do_decode {false};
 
 }
+
+using namespace std;
 
 void usage()
 {
@@ -60,9 +62,8 @@ void usage()
 
 int main(int argc, char **argv)
 {
+  auto args = argv_to_vec(argc, argv);
   std::string val;
-  vector<const char*> args;
-  argv_to_vec(argc, (const char **)argv, args);
   if (args.empty()) {
     cerr << argv[0] << ": -h or --help for usage" << std::endl;
     exit(1);
@@ -72,7 +73,7 @@ int main(int argc, char **argv)
     exit(0);
   }
 
-  auto cct = global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT,
+  auto cct = global_init(nullptr, args, CEPH_ENTITY_TYPE_CLIENT,
 			 CODE_ENVIRONMENT_UTILITY, 0);
   common_init_finish(g_ceph_context);
 
@@ -121,13 +122,13 @@ int main(int argc, char **argv)
     return -EINVAL;
   }
 
-  formatter = new JSONFormatter(true /* pretty */);
+  token_formatter = new JSONFormatter(true /* pretty */);
 
   RGWToken token(type, access_key, secret_key);
   if (do_encode) {
-    token.encode_json(formatter);
+    token.encode_json(token_formatter);
     std::ostringstream os;
-    formatter->flush(os);
+    token_formatter->flush(os);
     string token_str = os.str();
     if (verbose) {
       std::cout << "expanded token: " << token_str << std::endl;

@@ -1,71 +1,76 @@
-=======================
- Installation (Manual)
-=======================
+.. _install-overview:
+
+===============
+Installing Ceph
+===============
+
+There are multiple ways to install Ceph.  
+
+Recommended methods
+~~~~~~~~~~~~~~~~~~~
+
+:ref:`Cephadm <cephadm_deploying_new_cluster>` installs and manages a Ceph
+cluster that uses containers and systemd and is tightly integrated with the CLI
+and dashboard GUI.
+
+* cephadm supports only Octopus and newer releases.
+* cephadm is fully integrated with the orchestration API and fully supports the
+  CLI and dashboard features that are used to manage cluster deployment.
+* cephadm requires container support (in the form of Podman or Docker) and
+  Python 3.
+
+`Rook <https://rook.io/>`_ deploys and manages Ceph clusters running
+in Kubernetes, while also enabling management of storage resources and
+provisioning via Kubernetes APIs. We recommend Rook as the way to run Ceph in
+Kubernetes or to connect an existing Ceph storage cluster to Kubernetes.
+
+* Rook supports only Nautilus and newer releases of Ceph.
+* Rook is the preferred method for running Ceph on Kubernetes, or for
+  connecting a Kubernetes cluster to an existing (external) Ceph
+  cluster.
+* Rook supports the orchestrator API. Management features in the CLI and
+  dashboard are fully supported.
+
+Other methods
+~~~~~~~~~~~~~
+
+`ceph-ansible <https://docs.ceph.com/ceph-ansible/>`_ deploys and manages
+Ceph clusters using Ansible.
+
+* ceph-ansible is widely deployed.
+* ceph-ansible is not integrated with the orchestrator APIs that were
+  introduced in Nautilus and Octopus, which means that the management features
+  and dashboard integration introduced in Nautilus and Octopus are not
+  available in Ceph clusters deployed by means of ceph-ansible.
 
 
-Get Software
-============
+`ceph-deploy <https://docs.ceph.com/projects/ceph-deploy/en/latest/>`_ is a
+tool that can be used to quickly deploy clusters. It is deprecated.
 
-There are several methods for getting Ceph software. The easiest and most common
-method is to `get packages`_ by adding repositories for use with package
-management tools such as the Advanced Package Tool (APT) or Yellowdog Updater,
-Modified (YUM). You may also retrieve pre-compiled packages from the Ceph
-repository. Finally, you can retrieve tarballs or clone the Ceph source code
-repository and build Ceph yourself.
+  .. IMPORTANT::
+
+   ceph-deploy is not actively maintained. It is not tested on versions of Ceph
+   newer than Nautilus. It does not support RHEL8, CentOS 8, or newer operating
+   systems.
+
+`ceph-salt <https://github.com/ceph/ceph-salt>`_ installs Ceph using Salt and cephadm.
+
+`jaas.ai/ceph-mon <https://jaas.ai/ceph-mon>`_ installs Ceph using Juju.
+
+`github.com/openstack/puppet-ceph <https://github.com/openstack/puppet-ceph>`_  installs Ceph via Puppet.
+
+Ceph can also be :ref:`installed manually <install-manual>`.
 
 
 .. toctree::
-   :maxdepth: 1
+   :hidden:
 
-	Get Packages <get-packages>
-	Get Tarballs <get-tarballs>
-	Clone Source <clone-source>
-	Build Ceph <build-ceph>
-    	Ceph Mirrors <mirrors>
+   index_manual
 
+Windows
+~~~~~~~
 
-Install Software
-================
+For Windows installations, consult this document:
+`Windows installation guide`_.
 
-Once you have the Ceph software (or added repositories), installing the software
-is easy. To install packages on each :term:`Ceph Node` in your cluster. You may
-use  ``ceph-deploy`` to install Ceph for your storage cluster, or use package
-management tools. You should install Yum Priorities for RHEL/CentOS and other
-distributions that use Yum if you intend to install the Ceph Object Gateway or
-QEMU.
-
-.. toctree::
-   :maxdepth: 1
-
-	Install ceph-deploy <install-ceph-deploy>
-    	Install Ceph Storage Cluster <install-storage-cluster>
-	Install Ceph Object Gateway <install-ceph-gateway>
-	Install Virtualization for Block <install-vm-cloud>
-
-
-Deploy a Cluster Manually
-=========================
-
-Once you have Ceph installed on your nodes, you can deploy a cluster manually.
-The manual procedure is primarily for exemplary purposes for those developing
-deployment scripts with Chef, Juju, Puppet, etc.
-
-.. toctree::
-
-	Manual Deployment <manual-deployment>
-	Manual Deployment on FreeBSD <manual-freebsd-deployment>
-
-Upgrade Software
-================
-
-As new versions of Ceph become available, you may upgrade your cluster to take
-advantage of new functionality. Read the upgrade documentation before you
-upgrade your cluster. Sometimes upgrading Ceph requires you to follow an upgrade
-sequence.
-
-.. toctree::
-   :maxdepth: 2
-
-   Upgrading Ceph <upgrading-ceph>
-
-.. _get packages: ../install/get-packages
+.. _Windows installation guide: ./windows-install

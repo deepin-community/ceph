@@ -3,6 +3,9 @@
 
 #pragma once
 
+#include <utility>
+#include "common/containers.h"
+
 // What and why
 // ============
 //
@@ -11,7 +14,17 @@
 // and make_recursive_mutex() factory methods, which take a string
 // naming the mutex for the purposes of the lockdep debug variant.
 
-#ifdef WITH_SEASTAR
+#if defined(WITH_SEASTAR) && !defined(WITH_ALIEN)
+#include <seastar/core/condition-variable.hh>
+
+#include "crimson/common/log.h"
+#include "include/ceph_assert.h"
+
+#ifndef NDEBUG
+#define FUT_DEBUG(FMT_MSG, ...) crimson::get_logger(ceph_subsys_).trace(FMT_MSG, ##__VA_ARGS__)
+#else
+#define FUT_DEBUG(FMT_MSG, ...)
+#endif
 
 namespace ceph {
   // an empty class satisfying the mutex concept
@@ -25,10 +38,35 @@ namespace ceph {
     void unlock_shared() {}
   };
 
+  struct dummy_shared_mutex : dummy_mutex {
+    void lock_shared() {}
+    void unlock_shared() {}
+  };
+
+  // this implementation assumes running within a seastar::thread
+  struct green_condition_variable : private seastar::condition_variable {
+    template <class LockT>
+    void wait(LockT&&) {
+      FUT_DEBUG("green_condition_variable::{}: before blocking", __func__);
+      seastar::condition_variable::wait().get();
+      FUT_DEBUG("green_condition_variable::{}: after blocking", __func__);
+    }
+
+    void notify_one() noexcept {
+      FUT_DEBUG("green_condition_variable::{}", __func__);
+      signal();
+    }
+
+    void notify_all() noexcept {
+      FUT_DEBUG("green_condition_variable::{}", __func__);
+      broadcast();
+    }
+  };
+
   using mutex = dummy_mutex;
   using recursive_mutex = dummy_mutex;
-  // in seastar, we should use a difference interface for enforcing the
-  // semantics of condition_variable
+  using shared_mutex = dummy_shared_mutex;
+  using condition_variable = green_condition_variable;
 
   template <typename ...Args>
   dummy_mutex make_mutex(Args&& ...args) {
@@ -40,11 +78,16 @@ namespace ceph {
     return {};
   }
 
+  template <typename ...Args>
+  shared_mutex make_shared_mutex(Args&& ...args) {
+    return {};
+  }
+
   #define ceph_mutex_is_locked(m) true
   #define ceph_mutex_is_locked_by_me(m) true
 }
 
-#else  // WITH_SEASTAR
+#else  // defined (WITH_SEASTAR) && !defined(WITH_ALIEN)
 //
 // For legacy Mutex users that passed recursive=true, use
 // ceph::make_recursive_mutex.  For legacy Mutex users that passed
@@ -55,6 +98,9 @@ namespace ceph {
 // ============================================================================
 // debug (lockdep-capable, various sanity checks and asserts)
 // ============================================================================
+//
+// Note: this is known to cause deadlocks on Windows because
+// of the winpthreads shared mutex implementation.
 
 #include "common/condition_variable_debug.h"
 #include "common/mutex_debug.h"
@@ -101,27 +147,39 @@ namespace ceph {
 
 #include <condition_variable>
 #include <mutex>
-#include <shared_mutex>
 
+// The winpthreads shared mutex implementation is broken.
+// We'll use boost::shared_mutex instead.
+// https://github.com/msys2/MINGW-packages/issues/3319
+#if __MINGW32__
+#include <boost/thread/shared_mutex.hpp>
+#else
+#include <shared_mutex>
+#endif
 
 namespace ceph {
 
   typedef std::mutex mutex;
   typedef std::recursive_mutex recursive_mutex;
   typedef std::condition_variable condition_variable;
+
+#if __MINGW32__
+  typedef boost::shared_mutex shared_mutex;
+#else
   typedef std::shared_mutex shared_mutex;
+#endif
 
   // discard arguments to make_mutex (they are for debugging only)
   template <typename ...Args>
-  std::mutex make_mutex(Args&& ...args) {
+  mutex make_mutex(Args&& ...args) {
     return {};
   }
   template <typename ...Args>
-  std::recursive_mutex make_recursive_mutex(Args&& ...args) {
+  recursive_mutex make_recursive_mutex(Args&& ...args) {
     return {};
   }
   template <typename ...Args>
-  std::shared_mutex make_shared_mutex(Args&& ...args) {
+  shared_mutex make_shared_mutex(Args&& ...args) {
     return {};
   }
 
@@ -140,3 +198,21 @@ namespace ceph {
 #endif	// CEPH_DEBUG_MUTEX
 
 #endif	// WITH_SEASTAR
+
+namespace ceph {
+
+template <class LockT,
+          class LockFactoryT>
+ceph::containers::tiny_vector<LockT> make_lock_container(
+  const std::size_t num_instances,
+  LockFactoryT&& lock_factory)
+{
+  return {
+    num_instances, [&](const std::size_t i, auto emplacer) {
+      // this will be called `num_instances` times
+      new (emplacer.data()) LockT {lock_factory(i)};
+    }
+  };
+}
+} // namespace ceph
+

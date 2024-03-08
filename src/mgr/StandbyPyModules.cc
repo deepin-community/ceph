@@ -20,11 +20,7 @@
 #include "mgr/MgrContext.h"
 #include "mgr/Gil.h"
 
-
-#include <boost/python.hpp>
-#include "include/ceph_assert.h"  // boost clobbers this
-
-// For ::config_prefix
+// For ::mgr_store_prefix
 #include "PyModuleRegistry.h"
 
 #define dout_context g_ceph_context
@@ -56,20 +52,20 @@ void StandbyPyModules::shutdown()
     auto module = i.second.get();
     const auto& name = i.first;
     dout(10) << "waiting for module " << name << " to shutdown" << dendl;
-    lock.Unlock();
+    lock.unlock();
     module->shutdown();
-    lock.Lock();
+    lock.lock();
     dout(10) << "module " << name << " shutdown" << dendl;
   }
 
   // For modules implementing serve(), finish the threads where we
   // were running that.
   for (auto &i : modules) {
-    lock.Unlock();
+    lock.unlock();
     dout(10) << "joining thread for module " << i.first << dendl;
     i.second->thread.join();
     dout(10) << "joined thread for module " << i.first << dendl;
-    lock.Lock();
+    lock.lock();
   }
 
   modules.clear();
@@ -83,7 +79,7 @@ void StandbyPyModules::start_one(PyModuleRef py_module)
 
   // Send all python calls down a Finisher to avoid blocking
   // C++ code, and avoid any potential lock cycles.
-  finisher.queue(new FunctionContext([this, standby_module, name](int) {
+  finisher.queue(new LambdaContext([this, standby_module, name](int) {
     int r = standby_module->load();
     if (r != 0) {
       derr << "Failed to run module in standby mode ('" << name << "')"
@@ -108,7 +104,7 @@ int StandbyPyModule::load()
   // with us in logging etc.
   auto pThisPtr = PyCapsule_New(this, nullptr, nullptr);
   ceph_assert(pThisPtr != nullptr);
-  auto pModuleName = PyString_FromString(get_name().c_str());
+  auto pModuleName = PyUnicode_FromString(get_name().c_str());
   ceph_assert(pModuleName != nullptr);
   auto pArgs = PyTuple_Pack(2, pModuleName, pThisPtr);
   Py_DECREF(pThisPtr);
@@ -118,7 +114,7 @@ int StandbyPyModule::load()
   Py_DECREF(pArgs);
   if (pClassInstance == nullptr) {
     derr << "Failed to construct class in '" << get_name() << "'" << dendl;
-    derr << handle_pyerror() << dendl;
+    derr << handle_pyerror(true, get_name(), "StandbyPyModule::load") << dendl;
     return -EINVAL;
   } else {
     dout(1) << "Constructed class from module: " << get_name() << dendl;
@@ -129,8 +125,7 @@ int StandbyPyModule::load()
 bool StandbyPyModule::get_config(const std::string &key,
                                  std::string *value) const
 {
-  const std::string global_key = PyModule::config_prefix
-    + get_name() + "/" + key;
+  const std::string global_key = "mgr/" + get_name() + "/" + key;
 
   dout(4) << __func__ << " key: " << global_key << dendl;
  
@@ -148,7 +143,7 @@ bool StandbyPyModule::get_store(const std::string &key,
                                 std::string *value) const
 {
 
-  const std::string global_key = PyModule::config_prefix
+  const std::string global_key = PyModule::mgr_store_prefix
     + get_name() + "/" + key;
 
   dout(4) << __func__ << " key: " << global_key << dendl;

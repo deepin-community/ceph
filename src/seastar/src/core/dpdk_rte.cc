@@ -30,26 +30,28 @@ namespace dpdk {
 
 bool eal::initialized = false;
 
-void eal::init(cpuset cpus, boost::program_options::variables_map opts)
+void eal::init(cpuset cpus, const std::string& argv0, const std::optional<std::string>& hugepages_path, bool dpdk_pmd)
 {
     if (initialized) {
         return;
     }
 
+    size_t cpu_count = cpus.count();
     std::stringstream mask;
-    mask << std::hex << cpus.to_ulong();
+    cpuset nibble = 0xF;
+    while (cpus.any()) {
+        mask << std::hex << (cpus & nibble).to_ulong();
+        cpus >>= 4;
+    }
 
-    // TODO: Inherit these from the app parameters - "opts"
+    std::string mask_str = mask.str();
+    std::reverse(mask_str.begin(), mask_str.end());
+
     std::vector<std::vector<char>> args {
-        string2vector(opts["argv0"].as<std::string>()),
-        string2vector("-c"), string2vector(mask.str()),
+        string2vector(argv0),
+        string2vector("-c"), string2vector(mask_str),
         string2vector("-n"), string2vector("1")
     };
-
-    compat::optional<std::string> hugepages_path;
-    if (opts.count("hugepages")) {
-        hugepages_path = opts["hugepages"].as<std::string>();
-    }
 
     // If "hugepages" is not provided and DPDK PMD drivers mode is requested -
     // use the default DPDK huge tables configuration.
@@ -62,13 +64,13 @@ void eal::init(cpuset cpus, boost::program_options::variables_map opts)
         // assume there is going to be a queue per-CPU. Plus we'll give a DPDK
         // 64MB for "other stuff".
         //
-        size_t size_MB = mem_size(cpus.count()) >> 20;
+        size_t size_MB = mem_size(cpu_count) >> 20;
         std::stringstream size_MB_str;
         size_MB_str << size_MB;
 
         args.push_back(string2vector("-m"));
         args.push_back(string2vector(size_MB_str.str()));
-    } else if (!opts.count("dpdk-pmd")) {
+    } else if (!dpdk_pmd) {
         args.push_back(string2vector("--no-huge"));
     }
 #ifdef HAVE_OSV

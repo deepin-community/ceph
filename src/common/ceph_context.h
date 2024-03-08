@@ -25,12 +25,16 @@
 #include <typeinfo>
 #include <typeindex>
 
+#include <boost/intrusive_ptr.hpp>
+
 #include "include/any.h"
+#include "include/common_fwd.h"
+#include "include/compat.h"
 
 #include "common/cmdparse.h"
 #include "common/code_environment.h"
 #include "msg/msg_types.h"
-#ifdef WITH_SEASTAR
+#if defined(WITH_SEASTAR) && !defined(WITH_ALIEN)
 #include "crimson/common/config_proxy.h"
 #include "crimson/common/perf_counters_collection.h"
 #else
@@ -43,22 +47,27 @@
 #include "crush/CrushLocation.h"
 
 class AdminSocket;
-class CephContextServiceThread;
-class CephContextHook;
-class CephContextObs;
 class CryptoHandler;
 class CryptoRandom;
 class MonMap;
+
+namespace ceph::common {
+  class CephContextServiceThread;
+  class CephContextObs;
+  class CephContextHook;
+}
 
 namespace ceph {
   class PluginRegistry;
   class HeartbeatMap;
   namespace logging {
     class Log;
+    class SubsystemMap;
   }
 }
 
-#ifdef WITH_SEASTAR
+#if defined(WITH_SEASTAR) && !defined(WITH_ALIEN)
+namespace crimson::common {
 class CephContext {
 public:
   CephContext();
@@ -67,6 +76,7 @@ public:
 	      int = 0)
     : CephContext{}
   {}
+  CephContext(CephContext&&) = default;
   ~CephContext();
 
   uint32_t get_module_type() const;
@@ -74,17 +84,25 @@ public:
     // everything crimson is experimental...
     return true;
   }
+  ceph::PluginRegistry* get_plugin_registry() {
+    return _plugin_registry;
+  }
   CryptoRandom* random() const;
   PerfCountersCollectionImpl* get_perfcounters_collection();
-  ceph::common::ConfigProxy& _conf;
-  ceph::common::PerfCountersCollection& _perf_counters_collection;
+  crimson::common::ConfigProxy& _conf;
+  crimson::common::PerfCountersCollection& _perf_counters_collection;
   CephContext* get();
   void put();
 private:
   std::unique_ptr<CryptoRandom> _crypto_random;
   unsigned nref;
+  ceph::PluginRegistry* _plugin_registry;
 };
+}
 #else
+#ifdef __cplusplus
+namespace ceph::common {
+#endif
 /* A CephContext represents the context held by a single library user.
  * There can be multiple CephContexts in the same process.
  *
@@ -97,17 +115,23 @@ public:
   CephContext(uint32_t module_type_,
               enum code_environment_t code_env=CODE_ENVIRONMENT_UTILITY,
               int init_flags_ = 0);
-
+  struct create_options {
+    enum code_environment_t code_env=CODE_ENVIRONMENT_UTILITY;
+    int init_flags = 0;
+    std::function<ceph::logging::Log* (const ceph::logging::SubsystemMap *)> create_log;
+  };
+  CephContext(uint32_t module_type_,
+	      const create_options& options);
   CephContext(const CephContext&) = delete;
   CephContext& operator =(const CephContext&) = delete;
   CephContext(CephContext&&) = delete;
   CephContext& operator =(CephContext&&) = delete;
 
   bool _finished = false;
+  ~CephContext();
 
   // ref count!
 private:
-  ~CephContext();
   std::atomic<unsigned> nref;
 public:
   CephContext *get() {
@@ -162,8 +186,14 @@ public:
   /**
    * process an admin socket command
    */
-  void do_command(std::string_view command, const cmdmap_t& cmdmap,
-		  std::string_view format, ceph::bufferlist *out);
+  int do_command(std::string_view command, const cmdmap_t& cmdmap,
+		 Formatter *f,
+		 std::ostream& errss,
+		 ceph::bufferlist *out);
+  int _do_command(std::string_view command, const cmdmap_t& cmdmap,
+		  Formatter *f,
+		  std::ostream& errss,
+		  ceph::bufferlist *out);
 
   static constexpr std::size_t largest_singleton = 8 * 72;
 
@@ -203,7 +233,7 @@ public:
   bool check_experimental_feature_enabled(const std::string& feature,
 					  std::ostream *message);
 
-  PluginRegistry *get_plugin_registry() {
+  ceph::PluginRegistry *get_plugin_registry() {
     return _plugin_registry;
   }
 
@@ -332,12 +362,12 @@ private:
   ceph::spinlock _feature_lock;
   std::set<std::string> _experimental_features;
 
-  PluginRegistry *_plugin_registry;
-
+  ceph::PluginRegistry* _plugin_registry;
+#ifdef CEPH_DEBUG_MUTEX
   md_config_obs_t *_lockdep_obs;
-
+#endif
 public:
-  CrushLocation crush_location;
+  TOPNSPC::crush::CrushLocation crush_location;
 private:
 
   enum {
@@ -373,6 +403,22 @@ private:
 
   friend class CephContextObs;
 };
+#ifdef __cplusplus
+}
+#endif
 #endif	// WITH_SEASTAR
 
+#if !(defined(WITH_SEASTAR) && !defined(WITH_ALIEN)) && defined(__cplusplus)
+namespace ceph::common {
+inline void intrusive_ptr_add_ref(CephContext* cct)
+{
+  cct->get();
+}
+
+inline void intrusive_ptr_release(CephContext* cct)
+{
+  cct->put();
+}
+}
+#endif // !(defined(WITH_SEASTAR) && !defined(WITH_ALIEN)) && defined(__cplusplus)
 #endif

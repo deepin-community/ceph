@@ -1,4 +1,4 @@
-#! /usr/bin/env python
+#! /usr/bin/env python3
 
 import requests
 import time
@@ -89,6 +89,7 @@ for method, endpoint, args in screenplay:
         headers=headers,
         verify=False,
         auth=auth)
+    assert request is not None
     print(request.text)
     if request.status_code != 200 or 'error' in request.json():
         print('ERROR: %s request for URL "%s" failed' % (method, url))

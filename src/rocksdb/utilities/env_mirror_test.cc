@@ -1,3 +1,4 @@
+// Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 //  Copyright (c) 2015, Red Hat, Inc.  All rights reserved.
 //  This source code is licensed under both the GPLv2 (found in the
 //  COPYING file in the root directory) and Apache 2.0 License
@@ -6,15 +7,16 @@
 #ifndef ROCKSDB_LITE
 
 #include "rocksdb/utilities/env_mirror.h"
-#include "env/mock_env.h"
-#include "util/testharness.h"
 
-namespace rocksdb {
+#include "env/mock_env.h"
+#include "test_util/testharness.h"
+
+namespace ROCKSDB_NAMESPACE {
 
 class EnvMirrorTest : public testing::Test {
  public:
   Env* default_;
-  MockEnv* a_, *b_;
+  MockEnv *a_, *b_;
   EnvMirror* env_;
   const EnvOptions soptions_;
 
@@ -96,8 +98,9 @@ TEST_F(EnvMirrorTest, Basics) {
   ASSERT_TRUE(
       !env_->NewSequentialFile("/dir/non_existent", &seq_file, soptions_).ok());
   ASSERT_TRUE(!seq_file);
-  ASSERT_TRUE(!env_->NewRandomAccessFile("/dir/non_existent", &rand_file,
-                                         soptions_).ok());
+  ASSERT_TRUE(
+      !env_->NewRandomAccessFile("/dir/non_existent", &rand_file, soptions_)
+           .ok());
   ASSERT_TRUE(!rand_file);
 
   // Check that deleting works.
@@ -204,9 +207,10 @@ TEST_F(EnvMirrorTest, LargeWrite) {
   delete[] scratch;
 }
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
 
 int main(int argc, char** argv) {
+  ROCKSDB_NAMESPACE::port::InstallStackTraceHandler();
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }

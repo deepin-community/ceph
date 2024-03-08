@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 
-import * as _ from 'lodash';
+import _ from 'lodash';
 
 import { CephSharedModule } from './ceph-shared.module';
 import { PgCategory } from './pg-category.model';
@@ -52,9 +52,9 @@ export class PgCategoryService {
     );
   }
 
-  private getPgStatesFromText(pgStatesText) {
+  private getPgStatesFromText(pgStatesText: string) {
     const pgStates = pgStatesText
-      .replace(/[^a-z]+/g, ' ')
+      .replace(/[^a-z_]+/g, ' ')
       .trim()
       .split(' ');
 

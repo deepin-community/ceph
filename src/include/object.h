@@ -15,11 +15,13 @@
 #ifndef CEPH_OBJECT_H
 #define CEPH_OBJECT_H
 
-#include <stdint.h>
-#include <stdio.h>
-
-#include <iosfwd>
+#include <cstdint>
+#include <cstdio>
 #include <iomanip>
+#include <iosfwd>
+#include <string>
+#include <string>
+#include <string_view>
 
 #include "include/rados.h"
 #include "include/unordered_map.h"
@@ -27,18 +29,19 @@
 #include "hash.h"
 #include "encoding.h"
 #include "ceph_hash.h"
-#include "cmp.h"
-
-using namespace std;
 
 struct object_t {
-  string name;
+  std::string name;
 
   object_t() {}
   // cppcheck-suppress noExplicitConstructor
   object_t(const char *s) : name(s) {}
   // cppcheck-suppress noExplicitConstructor
-  object_t(const string& s) : name(s) {}
+  object_t(const std::string& s) : name(s) {}
+  object_t(std::string&& s) : name(std::move(s)) {}
+  object_t(std::string_view s) : name(s) {}
+
+  auto operator<=>(const object_t&) const noexcept = default;
 
   void swap(object_t& o) {
     name.swap(o.name);
@@ -46,48 +49,30 @@ struct object_t {
   void clear() {
     name.clear();
   }
-  
-  void encode(bufferlist &bl) const {
+
+  void encode(ceph::buffer::list &bl) const {
     using ceph::encode;
     encode(name, bl);
   }
-  void decode(bufferlist::const_iterator &bl) {
+  void decode(ceph::buffer::list::const_iterator &bl) {
     using ceph::decode;
     decode(name, bl);
   }
 };
 WRITE_CLASS_ENCODER(object_t)
 
-inline bool operator==(const object_t& l, const object_t& r) {
-  return l.name == r.name;
-}
-inline bool operator!=(const object_t& l, const object_t& r) {
-  return l.name != r.name;
-}
-inline bool operator>(const object_t& l, const object_t& r) {
-  return l.name > r.name;
-}
-inline bool operator<(const object_t& l, const object_t& r) {
-  return l.name < r.name;
-}
-inline bool operator>=(const object_t& l, const object_t& r) { 
-  return l.name >= r.name;
-}
-inline bool operator<=(const object_t& l, const object_t& r) {
-  return l.name <= r.name;
-}
-inline ostream& operator<<(ostream& out, const object_t& o) {
+inline std::ostream& operator<<(std::ostream& out, const object_t& o) {
   return out << o.name;
 }
 
 namespace std {
-  template<> struct hash<object_t> {
-    size_t operator()(const object_t& r) const { 
-      //static hash<string> H;
-      //return H(r.name);
-      return ceph_str_hash_linux(r.name.c_str(), r.name.length());
-    }
-  };
+template<> struct hash<object_t> {
+  size_t operator()(const object_t& r) const {
+    //static hash<string> H;
+    //return H(r.name);
+    return ceph_str_hash_linux(r.name.c_str(), r.name.length());
+  }
+};
 } // namespace std
 
 
@@ -120,11 +105,17 @@ struct snapid_t {
   snapid_t(uint64_t v=0) : val(v) {}
   snapid_t operator+=(snapid_t o) { val += o.val; return *this; }
   snapid_t operator++() { ++val; return *this; }
-  operator uint64_t() const { return val; }  
+  operator uint64_t() const { return val; }
 };
 
-inline void encode(snapid_t i, bufferlist &bl) { encode(i.val, bl); }
-inline void decode(snapid_t &i, bufferlist::const_iterator &p) { decode(i.val, p); }
+inline void encode(snapid_t i, ceph::buffer::list &bl) {
+  using ceph::encode;
+  encode(i.val, bl);
+}
+inline void decode(snapid_t &i, ceph::buffer::list::const_iterator &p) {
+  using ceph::decode;
+  decode(i.val, p);
+}
 
 template<>
 struct denc_traits<snapid_t> {
@@ -135,21 +126,21 @@ struct denc_traits<snapid_t> {
   static void bound_encode(const snapid_t& o, size_t& p) {
     denc(o.val, p);
   }
-  static void encode(const snapid_t &o, buffer::list::contiguous_appender& p) {
+  static void encode(const snapid_t &o, ceph::buffer::list::contiguous_appender& p) {
     denc(o.val, p);
   }
-  static void decode(snapid_t& o, buffer::ptr::const_iterator &p) {
+  static void decode(snapid_t& o, ceph::buffer::ptr::const_iterator &p) {
     denc(o.val, p);
   }
 };
 
-inline ostream& operator<<(ostream& out, const snapid_t& s) {
+inline std::ostream& operator<<(std::ostream& out, const snapid_t& s) {
   if (s == CEPH_NOSNAP)
     return out << "head";
   else if (s == CEPH_SNAPDIR)
     return out << "snapdir";
   else
-    return out << hex << s.val << dec;
+    return out << std::hex << s.val << std::dec;
 }
 
 
@@ -160,6 +151,8 @@ struct sobject_t {
   sobject_t() : snap(0) {}
   sobject_t(object_t o, snapid_t s) : oid(o), snap(s) {}
 
+  auto operator<=>(const sobject_t&) const noexcept = default;
+
   void swap(sobject_t& o) {
     oid.swap(o.oid);
     snapid_t t = snap;
@@ -167,12 +160,12 @@ struct sobject_t {
     o.snap = t;
   }
 
-  void encode(bufferlist& bl) const {
+  void encode(ceph::buffer::list& bl) const {
     using ceph::encode;
     encode(oid, bl);
     encode(snap, bl);
   }
-  void decode(bufferlist::const_iterator& bl) {
+  void decode(ceph::buffer::list::const_iterator& bl) {
     using ceph::decode;
     decode(oid, bl);
     decode(snap, bl);
@@ -180,35 +173,17 @@ struct sobject_t {
 };
 WRITE_CLASS_ENCODER(sobject_t)
 
-inline bool operator==(const sobject_t &l, const sobject_t &r) {
-  return l.oid == r.oid && l.snap == r.snap;
-}
-inline bool operator!=(const sobject_t &l, const sobject_t &r) {
-  return l.oid != r.oid || l.snap != r.snap;
-}
-inline bool operator>(const sobject_t &l, const sobject_t &r) {
-  return l.oid > r.oid || (l.oid == r.oid && l.snap > r.snap);
-}
-inline bool operator<(const sobject_t &l, const sobject_t &r) {
-  return l.oid < r.oid || (l.oid == r.oid && l.snap < r.snap);
-}
-inline bool operator>=(const sobject_t &l, const sobject_t &r) {
-  return l.oid > r.oid || (l.oid == r.oid && l.snap >= r.snap);
-}
-inline bool operator<=(const sobject_t &l, const sobject_t &r) {
-  return l.oid < r.oid || (l.oid == r.oid && l.snap <= r.snap);
-}
-inline ostream& operator<<(ostream& out, const sobject_t &o) {
+inline std::ostream& operator<<(std::ostream& out, const sobject_t &o) {
   return out << o.oid << "/" << o.snap;
 }
 namespace std {
-  template<> struct hash<sobject_t> {
-    size_t operator()(const sobject_t &r) const {
-      static hash<object_t> H;
-      static rjhash<uint64_t> I;
-      return H(r.oid) ^ I(r.snap);
-    }
-  };
+template<> struct hash<sobject_t> {
+  size_t operator()(const sobject_t &r) const {
+    static hash<object_t> H;
+    static rjhash<uint64_t> I;
+    return H(r.oid) ^ I(r.snap);
+  }
+};
 } // namespace std
 
 #endif

@@ -23,12 +23,14 @@
 #pragma once
 
 #include <seastar/core/future.hh>
-#include <seastar/core/expiring_fifo.hh>
+#include <seastar/core/abortable_fifo.hh>
+#include <seastar/core/abort_on_expiry.hh>
+#include <seastar/core/timed_out_error.hh>
+
+namespace seastar {
 
 /// \addtogroup future-module
 /// @{
-
-namespace seastar {
 
 /// Changes the clock used by shared_future<> and shared_promise<> when passed as the first template parameter.
 template<typename Clock>
@@ -104,26 +106,49 @@ public:
     using promise_type = typename future_option_traits<T...>::template parametrize<promise>::type;
     using value_tuple_type = typename future_option_traits<T...>::template parametrize<std::tuple>::type;
 private:
-    using future_state_type = typename future_option_traits<T...>::template parametrize<future_state>::type;
-    using promise_expiry = typename future_option_traits<T...>::template parametrize<promise_expiry>::type;
-
     /// \cond internal
-    class shared_state {
-        future_state_type _future_state;
-        expiring_fifo<promise_type, promise_expiry, clock> _peers;
+    class shared_state : public enable_lw_shared_from_this<shared_state> {
+        future_type _original_future;
+        struct entry {
+            promise_type pr;
+            std::optional<abort_on_expiry<clock>> timer;
+        };
+
+        struct entry_expiry {
+            void operator()(entry& e) noexcept {
+                if (e.timer) {
+                    e.pr.set_exception(std::make_exception_ptr(timed_out_error()));
+                } else {
+                    e.pr.set_exception(std::make_exception_ptr(abort_requested_exception()));
+                }
+            };
+        };
+
+        internal::abortable_fifo<entry, entry_expiry> _peers;
+
     public:
+        ~shared_state() {
+            // Don't warn if the shared future is exceptional. Any
+            // warnings will be reported by the futures returned by
+            // get_future.
+            if (_original_future.failed()) {
+                _original_future.ignore_ready_future();
+            }
+        }
+        explicit shared_state(future_type f) noexcept : _original_future(std::move(f)) { }
         void resolve(future_type&& f) noexcept {
-            _future_state = f.get_available_state();
-            if (_future_state.failed()) {
+            _original_future = std::move(f);
+            auto& state = _original_future._state;
+            if (_original_future.failed()) {
                 while (_peers) {
-                    _peers.front().set_exception(_future_state.get_exception());
+                    _peers.front().pr.set_exception(state.get_exception());
                     _peers.pop_front();
                 }
             } else {
                 while (_peers) {
-                    auto& p = _peers.front();
+                    auto& p = _peers.front().pr;
                     try {
-                        p.set_value(_future_state.get_value());
+                        p.set_value(state.get_value());
                     } catch (...) {
                         p.set_exception(std::current_exception());
                     }
@@ -132,48 +157,84 @@ private:
             }
         }
 
-        future_type get_future(time_point timeout = time_point::max()) {
-            if (!_future_state.available()) {
-                promise_type p;
-                auto f = p.get_future();
-                _peers.push_back(std::move(p), timeout);
-                return f;
-            } else if (_future_state.failed()) {
-                return future_type(exception_future_marker(), _future_state.get_exception());
-            } else {
-                try {
-                    return future_type(ready_future_marker(), _future_state.get_value());
-                } catch (...) {
-                    return future_type(exception_future_marker(), std::current_exception());
+        future_type get_future(time_point timeout = time_point::max()) noexcept {
+            // Note that some functions called below may throw,
+            // like pushing to _peers or copying _original_future's ready value.
+            // We'd rather terminate than propagate these errors similar to
+            // .then()'s failure to allocate a continuation as the caller cannot
+            // distinguish between an error returned by the original future to
+            // failing to perform `get_future` itself.
+            memory::scoped_critical_alloc_section _;
+            if (!_original_future.available()) {
+                entry& e = _peers.emplace_back();
+
+                auto f = e.pr.get_future();
+                if (timeout != time_point::max()) {
+                    e.timer.emplace(timeout);
+                    abort_source& as = e.timer->abort_source();
+                   _peers.make_back_abortable(as);
                 }
+                if (_original_future._state.valid()) {
+                    // _original_future's result is forwarded to each peer.
+                    (void)_original_future.then_wrapped([s = this->shared_from_this()] (future_type&& f) mutable {
+                        s->resolve(std::move(f));
+                    });
+                }
+                return f;
+            } else if (_original_future.failed()) {
+                return future_type(exception_future_marker(), std::exception_ptr(_original_future._state.get_exception()));
+            } else {
+                return future_type(ready_future_marker(), _original_future._state.get_value());
+            }
+        }
+
+        future_type get_future(abort_source& as) noexcept {
+            // Note that some functions called below may throw,
+            // like pushing to _peers or copying _original_future's ready value.
+            // We'd rather terminate than propagate these errors similar to
+            // .then()'s failure to allocate a continuation as the caller cannot
+            // distinguish between an error returned by the original future to
+            // failing to perform `get_future` itself.
+            memory::scoped_critical_alloc_section _;
+            if (!_original_future.available()) {
+                entry& e = _peers.emplace_back();
+
+                auto f = e.pr.get_future();
+                _peers.make_back_abortable(as);
+                if (_original_future._state.valid()) {
+                    // _original_future's result is forwarded to each peer.
+                    (void)_original_future.then_wrapped([s = this->shared_from_this()] (future_type&& f) mutable {
+                        s->resolve(std::move(f));
+                    });
+                }
+                return f;
+            } else if (_original_future.failed()) {
+                return future_type(exception_future_marker(), std::exception_ptr(_original_future._state.get_exception()));
+            } else {
+                return future_type(ready_future_marker(), _original_future._state.get_value());
             }
         }
 
         bool available() const noexcept {
-            return _future_state.available();
+            return _original_future.available();
         }
 
         bool failed() const noexcept {
-            return _future_state.failed();
+            return _original_future.failed();
         }
     };
     /// \endcond
     lw_shared_ptr<shared_state> _state;
 public:
     /// \brief Forwards the result of future \c f into this shared_future.
-    shared_future(future_type&& f)
-        : _state(make_lw_shared<shared_state>())
-    {
-        f.then_wrapped([s = _state] (future_type&& f) mutable {
-            s->resolve(std::move(f));
-        });
-    }
+    shared_future(future_type f)
+        : _state(make_lw_shared<shared_state>(std::move(f))) { }
 
-    shared_future() = default;
-    shared_future(const shared_future&) = default;
-    shared_future& operator=(const shared_future&) = default;
-    shared_future(shared_future&&) = default;
-    shared_future& operator=(shared_future&&) = default;
+    shared_future() = default; // noexcept, based on the respective lw_shared_ptr constructor
+    shared_future(const shared_future&) = default; // noexcept, based on the respective lw_shared_ptr constructor
+    shared_future& operator=(const shared_future&) = default; // noexcept, based on respective constructor
+    shared_future(shared_future&&) = default; // noexcept, based on the respective lw_shared_ptr constructor
+    shared_future& operator=(shared_future&&) = default; // noexcept, based on the respective constructor
 
     /// \brief Creates a new \c future which will resolve with the result of this shared_future
     ///
@@ -181,8 +242,18 @@ public:
     /// if this shared_future doesn't resolve before timeout is reached.
     ///
     /// This object must be in a valid state.
-    future_type get_future(time_point timeout = time_point::max()) const {
+    future_type get_future(time_point timeout = time_point::max()) const noexcept {
         return _state->get_future(timeout);
+    }
+
+    /// \brief Creates a new \c future which will resolve with the result of this shared_future
+    ///
+    /// \param as abort source. The returned future will resolve with \ref abort_requested_exception
+    /// if this shared_future doesn't resolve before aborted.
+    ///
+    /// This object must be in a valid state.
+    future_type get_future(abort_source& as) const noexcept {
+        return _state->get_future(as);
     }
 
     /// \brief Returns true if the future is available (ready or failed)
@@ -200,12 +271,12 @@ public:
     }
 
     /// \brief Equivalent to \ref get_future()
-    operator future_type() const {
+    operator future_type() const noexcept {
         return get_future();
     }
 
     /// \brief Returns true if the instance is in valid state
-    bool valid() const {
+    bool valid() const noexcept {
         return bool(_state);
     }
 };
@@ -224,23 +295,30 @@ public:
     using clock = typename shared_future_type::clock;
     using time_point = typename shared_future_type::time_point;
     using value_tuple_type = typename shared_future_type::value_tuple_type;
-    using future_state_type = typename shared_future_type::future_state_type;
 private:
     promise_type _promise;
     shared_future_type _shared_future;
-    static constexpr bool copy_noexcept = future_state_type::copy_noexcept;
+    static constexpr bool copy_noexcept = future_type::copy_noexcept;
 public:
     shared_promise(const shared_promise&) = delete;
-    shared_promise(shared_promise&&) = default;
-    shared_promise& operator=(shared_promise&&) = default;
+    shared_promise(shared_promise&&) = default; // noexcept, based on the respective promise and shared_future constructors
+    shared_promise& operator=(shared_promise&&) = default; // noexcept, based on the respective promise and shared_future constructors
     shared_promise() : _promise(), _shared_future(_promise.get_future()) {
     }
 
     /// \brief Gets new future associated with this promise.
     /// If the promise is not resolved before timeout the returned future will resolve with \ref timed_out_error.
     /// This instance doesn't have to be kept alive until the returned future resolves.
-    future_type get_shared_future(time_point timeout = time_point::max()) const {
+    future_type get_shared_future(time_point timeout = time_point::max()) const noexcept {
         return _shared_future.get_future(timeout);
+    }
+
+    /// \brief Gets new future associated with this promise.
+    /// If the promise is not resolved before abort source is triggered the returned future will
+    /// resolve with \ref abort_requests_exception.
+    /// This instance doesn't have to be kept alive until the returned future resolves.
+    future_type get_shared_future(abort_source& as) const noexcept {
+        return _shared_future.get_future(as);
     }
 
     /// \brief Sets the shared_promise's value (as tuple; by copying), same as normal promise

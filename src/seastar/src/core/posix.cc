@@ -21,7 +21,9 @@
 
 #include <seastar/core/posix.hh>
 #include <seastar/core/align.hh>
+#include <seastar/util/critical_alloc_section.hh>
 #include <sys/mman.h>
+#include <sys/inotify.h>
 
 namespace seastar {
 
@@ -35,6 +37,25 @@ file_desc::temporary(sstring directory) {
     int r = ::unlink(templat.data());
     throw_system_error_on(r == -1); // leaks created file, but what can we do?
     return file_desc(fd);
+}
+
+file_desc
+file_desc::inotify_init(int flags) {
+    int fd = ::inotify_init1(flags);
+    throw_system_error_on(fd == -1, "could not create inotify instance");
+    return file_desc(fd);
+}
+
+sstring file_desc::fdinfo() const noexcept {
+    memory::scoped_critical_alloc_section _;
+    auto path = fmt::format("/proc/self/fd/{}", _fd);
+    temporary_buffer<char> buf(64);
+    auto ret = ::readlink(path.c_str(), buf.get_write(), buf.size());
+    if (ret > 0) {
+        return sstring(buf.get(), ret);
+    } else {
+        return fmt::format("error({})", errno);
+    }
 }
 
 void mmap_deleter::operator()(void* ptr) const {
@@ -64,6 +85,8 @@ posix_thread::posix_thread(attr a, std::function<void ()> func)
     if (r) {
         throw std::system_error(r, std::system_category());
     }
+
+#ifndef SEASTAR_ASAN_ENABLED
     auto stack_size = a._stack_size.size;
     if (!stack_size) {
         stack_size = 2 << 20;
@@ -80,6 +103,8 @@ posix_thread::posix_thread(attr a, std::function<void ()> func)
     if (r) {
         throw std::system_error(r, std::system_category());
     }
+#endif
+
     r = pthread_create(&_pthread, &pa,
                 &posix_thread::start_routine, _func.get());
     if (r) {
@@ -101,6 +126,20 @@ void posix_thread::join() {
     assert(_valid);
     pthread_join(_pthread, NULL);
     _valid = false;
+}
+
+std::set<unsigned> get_current_cpuset() {
+    cpu_set_t cs;
+    auto r = pthread_getaffinity_np(pthread_self(), sizeof(cs), &cs);
+    assert(r == 0);
+    std::set<unsigned> ret;
+    unsigned nr = CPU_COUNT(&cs);
+    for (int cpu = 0; cpu < CPU_SETSIZE && ret.size() < nr; cpu++) {
+        if (CPU_ISSET(cpu, &cs)) {
+            ret.insert(cpu);
+        }
+    }
+    return ret;
 }
 
 }

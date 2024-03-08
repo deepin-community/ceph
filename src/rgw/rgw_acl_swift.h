@@ -1,8 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef CEPH_RGW_ACL_SWIFT_H
-#define CEPH_RGW_ACL_SWIFT_H
+#pragma once
 
 #include <map>
 #include <vector>
@@ -13,9 +12,11 @@
 
 #include "rgw_acl.h"
 
+class RGWUserCtl;
+
 class RGWAccessControlPolicy_SWIFT : public RGWAccessControlPolicy
 {
-  int add_grants(RGWRados *store,
+  int add_grants(const DoutPrefixProvider *dpp, rgw::sal::Driver* driver,
                  const std::vector<std::string>& uids,
                  uint32_t perm);
 
@@ -25,7 +26,8 @@ public:
   }
   ~RGWAccessControlPolicy_SWIFT() override = default;
 
-  int create(RGWRados *store,
+  int create(const DoutPrefixProvider *dpp,
+	     rgw::sal::Driver* driver,
              const rgw_user& id,
              const std::string& name,
              const char* read_list,
@@ -43,13 +45,14 @@ public:
   }
   ~RGWAccessControlPolicy_SWIFTAcct() override {}
 
-  void add_grants(RGWRados *store,
+  void add_grants(const DoutPrefixProvider *dpp,
+		  rgw::sal::Driver* driver,
                   const std::vector<std::string>& uids,
                   uint32_t perm);
-  bool create(RGWRados *store,
+  bool create(const DoutPrefixProvider *dpp,
+	      rgw::sal::Driver* driver,
               const rgw_user& id,
               const std::string& name,
               const std::string& acl_str);
   boost::optional<std::string> to_str() const;
 };
-#endif

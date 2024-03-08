@@ -22,25 +22,26 @@
 #include <seastar/net/net.hh>
 #include <seastar/core/reactor.hh>
 #include <seastar/net/virtio.hh>
+#include <seastar/net/native-stack.hh>
 #include <iostream>
 
 using namespace seastar;
 using namespace net;
 
 void dump_arp_packets(l3_protocol& proto) {
-    proto.receive([] (packet p, ethernet_address from) {
+    // FIXME: ignored future
+    (void)proto.receive([] (packet p, ethernet_address from) {
         std::cout << "seen arp packet\n";
         return make_ready_future<>();
     }, [] (forward_hash& out_hash_data, packet& p, size_t off) {return false;});
 }
 
 int main(int ac, char** av) {
-    boost::program_options::variables_map opts;
-    opts.insert(std::make_pair("tap-device", boost::program_options::variable_value(std::string("tap0"), false)));
+    native_stack_options opts;
 
-    auto vnet = create_virtio_net_device(opts);
+    auto vnet = create_virtio_net_device(opts.virtio_opts, opts.lro);
     interface netif(std::move(vnet));
-    l3_protocol arp(&netif, eth_protocol_num::arp, []{ return compat::optional<l3_protocol::l3packet>(); });
+    l3_protocol arp(&netif, eth_protocol_num::arp, []{ return std::optional<l3_protocol::l3packet>(); });
     dump_arp_packets(arp);
     engine().run();
     return 0;

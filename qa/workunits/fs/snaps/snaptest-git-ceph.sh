@@ -2,15 +2,26 @@
 
 set -e
 
-ceph fs set cephfs allow_new_snaps true --yes-i-really-mean-it
-
-git clone git://git.ceph.com/ceph.git
+# try it again if the clone is slow and the second time
+retried=false
+trap -- 'retry' EXIT
+retry() {
+    rm -rf ceph
+    # double the timeout value
+    timeout 3600 git clone https://git.ceph.com/ceph.git
+}
+rm -rf ceph
+timeout 1800 git clone https://git.ceph.com/ceph.git
+trap - EXIT
 cd ceph
 
-versions=`seq 1 21`
+versions=`seq 1 90`
 
 for v in $versions
 do
+    if [ $v -eq 48 ]; then
+        continue
+    fi
     ver="v0.$v"
     echo $ver
     git reset --hard $ver
@@ -19,6 +30,9 @@ done
 
 for v in $versions
 do
+    if [ $v -eq 48 ]; then
+        continue
+    fi
     ver="v0.$v"
     echo checking $ver
     cd .snap/$ver
@@ -28,6 +42,9 @@ done
 
 for v in $versions
 do
+    if [ $v -eq 48 ]; then
+        continue
+    fi
     ver="v0.$v"
     rmdir .snap/$ver
 done

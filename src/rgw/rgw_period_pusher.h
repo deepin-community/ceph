@@ -1,16 +1,16 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef RGW_PERIOD_PUSHER_H
-#define RGW_PERIOD_PUSHER_H
+#pragma once
 
 #include <memory>
 #include <mutex>
 #include <vector>
 
+#include "common/async/yield_context.h"
 #include "rgw_realm_reloader.h"
+#include "rgw_sal_fwd.h"
 
-class RGWRados;
 class RGWPeriod;
 
 // RGWRealmNotify payload for push coordination
@@ -23,7 +23,7 @@ using RGWZonesNeedPeriod = RGWPeriod;
 class RGWPeriodPusher final : public RGWRealmWatcher::Watcher,
                               public RGWRealmReloader::Pauser {
  public:
-  explicit RGWPeriodPusher(RGWRados* store);
+  explicit RGWPeriodPusher(const DoutPrefixProvider *dpp, rgw::sal::Driver* driver, optional_yield y);
   ~RGWPeriodPusher() override;
 
   /// respond to realm notifications by pushing new periods to other zones
@@ -34,13 +34,13 @@ class RGWPeriodPusher final : public RGWRealmWatcher::Watcher,
   void pause() override;
 
   /// continue processing notifications with a new RGWRados instance
-  void resume(RGWRados* store) override;
+  void resume(rgw::sal::Driver* driver) override;
 
  private:
   void handle_notify(RGWZonesNeedPeriod&& period);
 
   CephContext *const cct;
-  RGWRados* store;
+  rgw::sal::Driver* driver;
 
   std::mutex mutex;
   epoch_t realm_epoch{0}; //< the current realm epoch being sent
@@ -52,5 +52,3 @@ class RGWPeriodPusher final : public RGWRealmWatcher::Watcher,
   class CRThread; //< contains thread, coroutine manager, http manager
   std::unique_ptr<CRThread> cr_thread; //< thread to run the push coroutines
 };
-
-#endif // RGW_PERIOD_PUSHER_H

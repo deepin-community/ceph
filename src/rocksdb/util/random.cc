@@ -8,19 +8,16 @@
 
 #include <stdint.h>
 #include <string.h>
+
 #include <thread>
 #include <utility>
 
 #include "port/likely.h"
 #include "util/thread_local.h"
 
-#ifdef ROCKSDB_SUPPORT_THREAD_LOCAL
-#define STORAGE_DECL static __thread
-#else
-#define STORAGE_DECL static
-#endif
+#define STORAGE_DECL static thread_local
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 Random* Random::GetTLSInstance() {
   STORAGE_DECL Random* tls_instance;
@@ -35,4 +32,31 @@ Random* Random::GetTLSInstance() {
   return rv;
 }
 
-}  // namespace rocksdb
+std::string Random::HumanReadableString(int len) {
+  std::string ret;
+  ret.resize(len);
+  for (int i = 0; i < len; ++i) {
+    ret[i] = static_cast<char>('a' + Uniform(26));
+  }
+  return ret;
+}
+
+std::string Random::RandomString(int len) {
+  std::string ret;
+  ret.resize(len);
+  for (int i = 0; i < len; i++) {
+    ret[i] = static_cast<char>(' ' + Uniform(95));  // ' ' .. '~'
+  }
+  return ret;
+}
+
+std::string Random::RandomBinaryString(int len) {
+  std::string ret;
+  ret.resize(len);
+  for (int i = 0; i < len; i++) {
+    ret[i] = static_cast<char>(Uniform(CHAR_MAX));
+  }
+  return ret;
+}
+
+}  // namespace ROCKSDB_NAMESPACE

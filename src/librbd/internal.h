@@ -14,14 +14,16 @@
 #include "include/rbd/librbd.hpp"
 #include "include/rbd_types.h"
 #include "cls/rbd/cls_rbd_types.h"
-#include "common/WorkQueue.h"
 #include "common/ceph_time.h"
 #include "librbd/Types.h"
 
 namespace librbd {
 
   struct ImageCtx;
-  namespace io { struct AioCompletion; }
+  namespace io {
+  struct AioCompletion;
+  enum class ImageArea;
+  }
 
   class NoOpProgressContext : public ProgressContext
   {
@@ -95,15 +97,6 @@ namespace librbd {
   int lock_break(ImageCtx *ictx, rbd_lock_mode_t lock_mode,
                  const std::string &lock_owner);
 
-  int snap_list(ImageCtx *ictx, std::vector<snap_info_t>& snaps);
-  int snap_exists(ImageCtx *ictx, const cls::rbd::SnapshotNamespace& snap_namespace,
-		  const char *snap_name, bool *exists);
-  int snap_get_limit(ImageCtx *ictx, uint64_t *limit);
-  int snap_set_limit(ImageCtx *ictx, uint64_t limit);
-  int snap_get_timestamp(ImageCtx *ictx, uint64_t snap_id, struct timespec *timestamp);
-  int snap_remove(ImageCtx *ictx, const char *snap_name, uint32_t flags, ProgressContext& pctx);
-  int snap_is_protected(ImageCtx *ictx, const char *snap_name,
-			bool *is_protected);
   int copy(ImageCtx *ictx, IoCtx& dest_md_ctx, const char *destname,
 	   ImageOptions& opts, ProgressContext &prog_ctx, size_t sparse_size);
   int copy(ImageCtx *src, ImageCtx *dest, ProgressContext &prog_ctx, size_t sparse_size);
@@ -121,8 +114,6 @@ namespace librbd {
   int break_lock(ImageCtx *ictx, const std::string& client,
 		 const std::string& cookie);
 
-  void trim_image(ImageCtx *ictx, uint64_t newsize, ProgressContext& prog_ctx);
-
   int read_header_bl(librados::IoCtx& io_ctx, const std::string& md_oid,
 		     ceph::bufferlist& header, uint64_t *ver);
   int read_header(librados::IoCtx& io_ctx, const std::string& md_oid,
@@ -132,19 +123,18 @@ namespace librbd {
   void image_info(const ImageCtx *ictx, image_info_t& info, size_t info_size);
   uint64_t oid_to_object_no(const std::string& oid,
 			    const std::string& object_prefix);
-  int clip_io(ImageCtx *ictx, uint64_t off, uint64_t *len);
+  int clip_io(ImageCtx* ictx, uint64_t off, uint64_t* len, io::ImageArea area);
   void init_rbd_header(struct rbd_obj_header_ondisk& ondisk,
 		       uint64_t size, int order, uint64_t bid);
 
   int64_t read_iterate(ImageCtx *ictx, uint64_t off, uint64_t len,
 		       int (*cb)(uint64_t, size_t, const char *, void *),
 		       void *arg);
-  void readahead(ImageCtx *ictx,
-                 const vector<pair<uint64_t,uint64_t> >& image_extents);
 
   int invalidate_cache(ImageCtx *ictx);
   int poll_io_events(ImageCtx *ictx, io::AioCompletion **comps, int numcomp);
-  int metadata_list(ImageCtx *ictx, const string &last, uint64_t max, map<string, bufferlist> *pairs);
+  int metadata_list(ImageCtx *ictx, const std::string &last, uint64_t max,
+		    std::map<std::string, bufferlist> *pairs);
   int metadata_get(ImageCtx *ictx, const std::string &key, std::string *value);
 
   int list_watchers(ImageCtx *ictx, std::list<librbd::image_watcher_t> &watchers);

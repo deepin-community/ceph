@@ -1,0 +1,58 @@
+Description: pybind/rbd: make cdef functions not propagate exceptions by default
+ Setting legacy_implicit_noexcept compiler directive to True will cause
+ Cython 3.0 to have the same semantics as Cython 0.x.
+Author: Mykola Golub <mgolub@suse.com>
+Date: Mon, 4 Dec 2023 09:38:56 +0000
+Bug: https://tracker.ceph.com/issues/62140
+Bug-Debian: https://bugs.debian.org/1056793
+Signed-off-by: Mykola Golub <mgolub@suse.com>
+Origin: upstream, https://github.com/ceph/ceph/commit/e3156050d0ce9b504ee40d30e98f49a860b7dde5.patch
+Last-Update: 2024-03-04
+
+diff --git a/src/pybind/rbd/setup.py b/src/pybind/rbd/setup.py
+index 1f20c3ed42f..eeb33c73d49 100755
+--- a/src/pybind/rbd/setup.py
++++ b/src/pybind/rbd/setup.py
+@@ -14,6 +14,7 @@ else:
+ from distutils.ccompiler import new_compiler
+ from distutils.errors import CompileError, LinkError
+ from itertools import filterfalse, takewhile
++from packaging import version
+ import distutils.sysconfig
+ 
+ 
+@@ -148,11 +149,22 @@ else:
+     sys.exit(1)
+ 
+ cmdclass = {}
++compiler_directives={'language_level': sys.version_info.major}
+ try:
+     from Cython.Build import cythonize
+     from Cython.Distutils import build_ext
++    from Cython import __version__ as cython_version
+ 
+     cmdclass = {'build_ext': build_ext}
++
++    # Needed for building with Cython 0.x and Cython 3 from the same file,
++    # preserving the same behavior.
++    # When Cython 0.x builds go away, replace this compiler directive with
++    # noexcept on rbd_callback_t and librbd_progress_fn_t (or consider doing
++    # something similar to except? -9000 on rbd_diff_iterate2() callback for
++    # progress callbacks to propagate exceptions).
++    if version.parse(cython_version) >= version.parse('3'):
++        compiler_directives['legacy_implicit_noexcept'] = True
+ except ImportError:
+     print("WARNING: Cython is not installed.")
+ 
+@@ -197,7 +209,7 @@ setup(
+                 **ext_args
+             )
+         ],
+-        compiler_directives={'language_level': sys.version_info.major},
++        compiler_directives=compiler_directives,
+         build_dir=os.environ.get("CYTHON_BUILD_DIR", None),
+         **cythonize_args
+     ),
+-- 
+2.39.2
+

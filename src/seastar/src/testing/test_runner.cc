@@ -22,7 +22,6 @@
 #include <iostream>
 
 #include <seastar/core/app-template.hh>
-#include <seastar/core/future-util.hh>
 #include <seastar/core/reactor.hh>
 #include <seastar/core/posix.hh>
 #include <seastar/testing/test_runner.hh>
@@ -39,11 +38,11 @@ test_runner::~test_runner() {
     finalize();
 }
 
-void
+bool
 test_runner::start(int ac, char** av) {
     bool expected = false;
     if (!_started.compare_exchange_strong(expected, true, std::memory_order_acquire)) {
-        return;
+        return true;
     }
 
     // Don't interfere with seastar signal handling
@@ -58,30 +57,71 @@ test_runner::start(int ac, char** av) {
         abort();
     }
 
-    _thread = std::make_unique<posix_thread>([this, ac, av]() mutable {
+    _st_args = std::make_unique<start_thread_args>(ac, av);
+    return true;
+}
+
+void test_runner::start_thread(int ac, char** av) {
+    auto init_outcome = std::make_shared<exchanger<bool>>();
+
+    namespace bpo = boost::program_options;
+    _thread = std::make_unique<posix_thread>([this, ac, av, init_outcome]() mutable {
         app_template app;
-        auto exit_code = app.run_deprecated(ac, av, [this] {
-            do_until([this] { return _done; }, [this] {
+        app.add_options()
+            ("random-seed", bpo::value<unsigned>(), "Random number generator seed")
+            ("fail-on-abandoned-failed-futures", bpo::value<bool>()->default_value(true), "Fail the test if there are any abandoned failed futures");
+        // We guarantee that only one thread is running.
+        // We only read this after that one thread is joined, so this is safe.
+        _exit_code = app.run(ac, av, [this, &app, init_outcome = init_outcome.get()] {
+            init_outcome->give(true);
+            auto init = [&app] {
+                auto conf_seed = app.configuration()["random-seed"];
+                auto seed = conf_seed.empty() ? std::random_device()():  conf_seed.as<unsigned>();
+                std::cout << "random-seed=" << seed << std::endl;
+                return smp::invoke_on_all([seed] {
+                    auto local_seed = seed + this_shard_id();
+                    local_random_engine.seed(local_seed);
+                });
+            };
+
+            return init().then([this] {
+              return do_until([this] { return _done; }, [this] {
                 // this will block the reactor briefly, but we don't care
                 try {
                     auto func = _task.take();
                     return func();
                 } catch (const stop_execution&) {
                     _done = true;
-                    engine().exit(0);
                     return make_ready_future<>();
                 }
-            }).or_terminate();
+              }).or_terminate();
+            }).then([&app] {
+                if (engine().abandoned_failed_futures()) {
+                    std::cerr << "*** " << engine().abandoned_failed_futures() << " abandoned failed future(s) detected" << std::endl;
+                    if (app.configuration()["fail-on-abandoned-failed-futures"].as<bool>()) {
+                        std::cerr << "Failing the test because fail was requested by --fail-on-abandoned-failed-futures" << std::endl;
+                        return 3;
+                    }
+                }
+                return 0;
+            });
         });
-
-        if (exit_code) {
-            exit(exit_code);
-        }
+        init_outcome->give(!_exit_code);
     });
+
+    if (!init_outcome->take()) {
+        throw std::runtime_error("error starting reactor thread");
+    }
 }
 
 void
 test_runner::run_sync(std::function<future<>()> task) {
+    if (_st_args) {
+        start_thread_args sa = *_st_args;
+        _st_args.reset();
+        start_thread(sa.ac, sa.av);
+    }
+
     exchanger<std::exception_ptr> e;
     _task.give([task = std::move(task), &e] {
         try {
@@ -104,12 +144,13 @@ test_runner::run_sync(std::function<future<>()> task) {
     }
 }
 
-void test_runner::finalize() {
+int test_runner::finalize() {
     if (_thread) {
         _task.interrupt(stop_execution());
         _thread->join();
         _thread = nullptr;
     }
+    return _exit_code;
 }
 
 test_runner& global_test_runner() {

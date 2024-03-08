@@ -25,12 +25,33 @@
 #include "ECMsgTypes.h"
 
 #include "PrimaryLogPG.h"
+#include "osd_tracer.h"
 
 #define dout_context cct
 #define dout_subsys ceph_subsys_osd
 #define DOUT_PREFIX_ARGS this
 #undef dout_prefix
 #define dout_prefix _prefix(_dout, this)
+
+using std::dec;
+using std::hex;
+using std::less;
+using std::list;
+using std::make_pair;
+using std::map;
+using std::pair;
+using std::ostream;
+using std::set;
+using std::string;
+using std::unique_ptr;
+using std::vector;
+
+using ceph::bufferhash;
+using ceph::bufferlist;
+using ceph::bufferptr;
+using ceph::ErasureCodeInterfaceRef;
+using ceph::Formatter;
+
 static ostream& _prefix(std::ostream *_dout, ECBackend *pgb) {
   return pgb->get_parent()->gen_dbg_prefix(*_dout);
 }
@@ -98,7 +119,7 @@ ostream &operator<<(ostream &lhs, const ECBackend::read_result_t &rhs)
   lhs << "read_result_t(r=" << rhs.r
       << ", errors=" << rhs.errors;
   if (rhs.attrs) {
-    lhs << ", attrs=" << rhs.attrs.get();
+    lhs << ", attrs=" << *(rhs.attrs);
   } else {
     lhs << ", noattrs";
   }
@@ -220,13 +241,11 @@ void ECBackend::_failed_push(const hobject_t &hoid,
   eversion_t v = recovery_ops[hoid].v;
   recovery_ops.erase(hoid);
 
-  list<pg_shard_t> fl;
+  set<pg_shard_t> fl;
   for (auto&& i : res.errors) {
-    fl.push_back(i.first);
+    fl.insert(i.first);
   }
-  get_parent()->failed_push(fl, hoid);
-  get_parent()->backfill_add_missing(hoid, v);
-  get_parent()->finish_degraded_object(hoid);
+  get_parent()->on_failed_pull(fl, hoid, v);
 }
 
 struct OnRecoveryReadComplete :
@@ -280,7 +299,7 @@ struct RecoveryMessages {
   map<pg_shard_t, vector<PushReplyOp> > push_replies;
   ObjectStore::Transaction t;
   RecoveryMessages() {}
-  ~RecoveryMessages(){}
+  ~RecoveryMessages() {}
 };
 
 void ECBackend::handle_recovery_push(
@@ -362,7 +381,7 @@ void ECBackend::handle_recovery_push(
     if ((get_parent()->pgb_is_primary())) {
       ceph_assert(recovery_ops.count(op.soid));
       ceph_assert(recovery_ops[op.soid].obc);
-      if (get_parent()->pg_is_repair())
+      if (get_parent()->pg_is_repair() || is_repair)
         get_parent()->inc_osd_stat_repaired();
       get_parent()->on_local_recover(
 	op.soid,
@@ -416,7 +435,7 @@ void ECBackend::handle_recovery_push_reply(
 void ECBackend::handle_recovery_read_complete(
   const hobject_t &hoid,
   boost::tuple<uint64_t, uint64_t, map<pg_shard_t, bufferlist> > &to_read,
-  boost::optional<map<string, bufferlist> > attrs,
+  std::optional<map<string, bufferlist, less<>> > attrs,
   RecoveryMessages *m)
 {
   dout(10) << __func__ << ": returned " << hoid << " "
@@ -438,7 +457,7 @@ void ECBackend::handle_recovery_read_complete(
   for(map<pg_shard_t, bufferlist>::iterator i = to_read.get<2>().begin();
       i != to_read.get<2>().end();
       ++i) {
-    from[i->first.shard].claim(i->second);
+    from[i->first.shard] = std::move(i->second);
   }
   dout(10) << __func__ << ": " << from << dendl;
   int r;
@@ -461,7 +480,7 @@ void ECBackend::handle_recovery_read_complete(
       }
       // Need to remove ECUtil::get_hinfo_key() since it should not leak out
       // of the backend (see bug #12983)
-      map<string, bufferlist> sanitized_attrs(op.xattrs);
+      map<string, bufferlist, less<>> sanitized_attrs(op.xattrs);
       sanitized_attrs.erase(ECUtil::get_hinfo_key());
       op.obc = get_parent()->get_obc(hoid, sanitized_attrs);
       ceph_assert(op.obc);
@@ -493,10 +512,15 @@ struct SendPushReplies : public Context {
     replies.swap(in);
   }
   void finish(int) override {
+    std::vector<std::pair<int, Message*>> messages;
+    messages.reserve(replies.size());
     for (map<int, MOSDPGPushReply*>::iterator i = replies.begin();
 	 i != replies.end();
 	 ++i) {
-      l->send_message_osd_cluster(i->first, i->second, epoch);
+      messages.push_back(std::make_pair(i->first, i->second));
+    }
+    if (!messages.empty()) {
+      l->send_message_osd_cluster(messages, epoch);
     }
     replies.clear();
   }
@@ -582,7 +606,16 @@ void ECBackend::continue_recovery_op(
       if (op.recovery_progress.first && op.obc) {
 	/* We've got the attrs and the hinfo, might as well use them */
 	op.hinfo = get_hash_info(op.hoid);
-	ceph_assert(op.hinfo);
+	if (!op.hinfo) {
+          derr << __func__ << ": " << op.hoid << " has inconsistent hinfo"
+               << dendl;
+          ceph_assert(recovery_ops.count(op.hoid));
+          eversion_t v = recovery_ops[op.hoid].v;
+          recovery_ops.erase(op.hoid);
+          get_parent()->on_failed_pull({get_parent()->whoami_shard()},
+                                       op.hoid, v);
+          return;
+        }
 	op.xattrs = op.obc->attr_cache;
 	encode(*(op.hinfo), op.xattrs[ECUtil::get_hinfo_key()]);
       }
@@ -805,7 +838,7 @@ bool ECBackend::_handle_message(
     return true;
   }
   case MSG_OSD_EC_READ: {
-    const MOSDECSubOpRead *op = static_cast<const MOSDECSubOpRead*>(_op->get_req());
+    auto op = _op->get_req<MOSDECSubOpRead>();
     MOSDECSubOpReadReply *reply = new MOSDECSubOpReadReply;
     reply->pgid = get_parent()->primary_spg_t();
     reply->map_epoch = get_osdmap_epoch();
@@ -813,7 +846,7 @@ bool ECBackend::_handle_message(
     handle_sub_read(op->op.from, op->op, &(reply->op), _op->pg_trace);
     reply->trace = _op->pg_trace;
     get_parent()->send_message_osd_cluster(
-      op->op.from.osd, reply, get_osdmap_epoch());
+      reply, _op->get_req()->get_connection());
     return true;
   }
   case MSG_OSD_EC_READ_REPLY: {
@@ -827,7 +860,7 @@ bool ECBackend::_handle_message(
     return true;
   }
   case MSG_OSD_PG_PUSH: {
-    const MOSDPGPush *op = static_cast<const MOSDPGPush *>(_op->get_req());
+    auto op = _op->get_req<MOSDPGPush>();
     RecoveryMessages rm;
     for (vector<PushOp>::const_iterator i = op->pushes.begin();
 	 i != op->pushes.end();
@@ -915,9 +948,11 @@ void ECBackend::handle_sub_write(
   ECSubWrite &op,
   const ZTracer::Trace &trace)
 {
-  if (msg)
+  if (msg) {
     msg->mark_event("sub_op_started");
+  }
   trace.event("handle_sub_write");
+
   if (!get_parent()->pgb_is_primary())
     get_parent()->update_stats(op.stats);
   ObjectStore::Transaction localt;
@@ -953,9 +988,10 @@ void ECBackend::handle_sub_write(
     }
   }
   get_parent()->log_operation(
-    op.log_entries,
+    std::move(op.log_entries),
     op.updated_hit_set_history,
     op.trim_to,
+    op.roll_forward_to,
     op.roll_forward_to,
     !op.backfill_or_async_recovery,
     localt,
@@ -1191,7 +1227,7 @@ void ECBackend::handle_sub_read_reply(
 	sinfo.aligned_offset_len_to_chunk(
 	  make_pair(req_iter->get<0>(), req_iter->get<1>()));
       ceph_assert(adjusted.first == j->first);
-      riter->get<2>()[from].claim(j->second);
+      riter->get<2>()[from] = std::move(j->second);
     }
   }
   for (auto i = op.attrs_read.begin();
@@ -1203,7 +1239,7 @@ void ECBackend::handle_sub_read_reply(
       dout(20) << __func__ << " to_read skipping" << dendl;
       continue;
     }
-    rop.complete[i->first].attrs = map<string, bufferlist>();
+    rop.complete[i->first].attrs.emplace();
     (*(rop.complete[i->first].attrs)).swap(i->second);
   }
   for (auto i = op.errors.begin();
@@ -1225,6 +1261,7 @@ void ECBackend::handle_sub_read_reply(
   ceph_assert(rop.in_progress.count(from));
   rop.in_progress.erase(from);
   unsigned is_complete = 0;
+  bool need_resend = false;
   // For redundant reads check for completion as each shard comes in,
   // or in a non-recovery read check for completion once all the shards read.
   if (rop.do_redundant_reads || rop.in_progress.empty()) {
@@ -1251,7 +1288,8 @@ void ECBackend::handle_sub_read_reply(
 	  if (!rop.do_redundant_reads) {
 	    int r = send_all_remaining_reads(iter->first, rop);
 	    if (r == 0) {
-	      // We added to in_progress and not incrementing is_complete
+	      // We changed the rop's to_read and not incrementing is_complete
+	      need_resend = true;
 	      continue;
 	    }
 	    // Couldn't read any additional shards so handle as completed with errors
@@ -1279,11 +1317,17 @@ void ECBackend::handle_sub_read_reply(
 	    rop.complete[iter->first].errors.clear();
 	  }
 	}
+	// avoid re-read for completed object as we may send remaining reads for uncopmpleted objects
+	rop.to_read.at(iter->first).need.clear();
+	rop.to_read.at(iter->first).want_attrs = false;
 	++is_complete;
       }
     }
   }
-  if (rop.in_progress.empty() || is_complete == rop.complete.size()) {
+  if (need_resend) {
+    do_read_op(rop);
+  } else if (rop.in_progress.empty() || 
+             is_complete == rop.complete.size()) {
     dout(20) << __func__ << " Complete: " << rop << dendl;
     rop.trace.event("ec read complete");
     complete_read_op(rop, m);
@@ -1387,9 +1431,25 @@ void ECBackend::filter_read_op(
   }
 
   if (op.in_progress.empty()) {
+    /* This case is odd.  filter_read_op gets called while processing
+     * an OSDMap.  Normal, non-recovery reads only happen from acting
+     * set osds.  For this op to have had a read source go down and
+     * there not be an interval change, it must be part of a pull during
+     * log-based recovery.
+     *
+     * This callback delays calling complete_read_op until later to avoid
+     * dealing with recovery while handling an OSDMap.  We assign a
+     * cost here of 1 because:
+     * 1) This should be very rare, and the operation itself was already
+     *    throttled.
+     * 2) It shouldn't result in IO, rather it should result in restarting
+     *    the pull on the affected objects and pushes from in-memory buffers
+     *    on any now complete unaffected objects.
+     */
     get_parent()->schedule_recovery_work(
       get_parent()->bless_unlocked_gencontext(
-	new FinishReadOp(this, op.tid)));
+        new FinishReadOp(this, op.tid)),
+      1);
   }
 }
 
@@ -1482,9 +1542,9 @@ void ECBackend::submit_transaction(
   const eversion_t &at_version,
   PGTransactionUPtr &&t,
   const eversion_t &trim_to,
-  const eversion_t &roll_forward_to,
-  const vector<pg_log_entry_t> &log_entries,
-  boost::optional<pg_hit_set_history_t> &hset_history,
+  const eversion_t &min_last_complete_ondisk,
+  vector<pg_log_entry_t>&& log_entries,
+  std::optional<pg_hit_set_history_t> &hset_history,
   Context *on_all_commit,
   ceph_tid_t tid,
   osd_reqid_t reqid,
@@ -1497,16 +1557,16 @@ void ECBackend::submit_transaction(
   op->delta_stats = delta_stats;
   op->version = at_version;
   op->trim_to = trim_to;
-  op->roll_forward_to = std::max(roll_forward_to, committed_to);
+  op->roll_forward_to = std::max(min_last_complete_ondisk, committed_to);
   op->log_entries = log_entries;
   std::swap(op->updated_hit_set_history, hset_history);
   op->on_all_commit = on_all_commit;
   op->tid = tid;
   op->reqid = reqid;
   op->client_op = client_op;
-  if (client_op)
+  if (client_op) {
     op->trace = client_op->pg_trace;
-  
+  }
   dout(10) << __func__ << ": op " << *op << " starting" << dendl;
   start_rmw(op, std::move(t));
 }
@@ -1743,6 +1803,8 @@ void ECBackend::do_read_op(ReadOp &op)
     }
   }
 
+  std::vector<std::pair<int, Message*>> m;
+  m.reserve(messages.size());
   for (map<pg_shard_t, ECSubRead>::iterator i = messages.begin();
        i != messages.end();
        ++i) {
@@ -1764,16 +1826,17 @@ void ECBackend::do_read_op(ReadOp &op)
       msg->trace.init("ec sub read", nullptr, &op.trace);
       msg->trace.keyval("shard", i->first.shard.id);
     }
-    get_parent()->send_message_osd_cluster(
-      i->first.osd,
-      msg,
-      get_osdmap_epoch());
+    m.push_back(std::make_pair(i->first.osd, msg));
   }
+  if (!m.empty()) {
+    get_parent()->send_message_osd_cluster(m, get_osdmap_epoch());
+  }
+
   dout(10) << __func__ << ": started " << op << dendl;
 }
 
 ECUtil::HashInfoRef ECBackend::get_hash_info(
-  const hobject_t &hoid, bool checks, const map<string,bufferptr> *attrs)
+  const hobject_t &hoid, bool create, const map<string,bufferptr,less<>> *attrs)
 {
   dout(10) << __func__ << ": Getting attr on " << hoid << dendl;
   ECUtil::HashInfoRef ref = unstable_hashinfo_registry.lookup(hoid);
@@ -1785,7 +1848,6 @@ ECUtil::HashInfoRef ECBackend::get_hash_info(
       ghobject_t(hoid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
       &st);
     ECUtil::HashInfo hinfo(ec_impl->get_chunk_count());
-    // XXX: What does it mean if there is no object on disk?
     if (r >= 0) {
       dout(10) << __func__ << ": found on disk, size " << st.st_size << dendl;
       bufferlist bl;
@@ -1815,7 +1877,7 @@ ECUtil::HashInfoRef ECBackend::get_hash_info(
 	  dout(0) << __func__ << ": Can't decode hinfo for " << hoid << dendl;
 	  return ECUtil::HashInfoRef();
         }
-	if (checks && hinfo.get_total_chunk_size() != (uint64_t)st.st_size) {
+	if (hinfo.get_total_chunk_size() != (uint64_t)st.st_size) {
 	  dout(0) << __func__ << ": Mismatch of total_chunk_size "
 			       << hinfo.get_total_chunk_size() << dendl;
 	  return ECUtil::HashInfoRef();
@@ -1823,6 +1885,10 @@ ECUtil::HashInfoRef ECBackend::get_hash_info(
       } else if (st.st_size > 0) { // If empty object and no hinfo, create it
 	return ECUtil::HashInfoRef();
       }
+    } else if (r != -ENOENT || !create) {
+      derr << __func__ << ": stat " << hoid << " failed: " << cpp_strerror(r)
+           << dendl;
+      return ECUtil::HashInfoRef();
     }
     ref = unstable_hashinfo_registry.lookup_or_create(hoid, hinfo);
   }
@@ -1837,7 +1903,7 @@ void ECBackend::start_rmw(Op *op, PGTransactionUPtr &&t)
     sinfo,
     std::move(t),
     [&](const hobject_t &i) {
-      ECUtil::HashInfoRef ref = get_hash_info(i, false);
+      ECUtil::HashInfoRef ref = get_hash_info(i, true);
       if (!ref) {
 	derr << __func__ << ": get_hash_info(" << i << ")"
 	     << " returned a null pointer and there is no "
@@ -1982,7 +2048,8 @@ bool ECBackend::try_reads_to_commit()
       &trans,
       &(op->temp_added),
       &(op->temp_cleared),
-      get_parent()->get_dpp());
+      get_parent()->get_dpp(),
+      get_osdmap()->require_osd_release);
   }
 
   dout(20) << __func__ << ": " << cache << dendl;
@@ -2018,6 +2085,8 @@ bool ECBackend::try_reads_to_commit()
   ObjectStore::Transaction empty;
   bool should_write_local = false;
   ECSubWrite local_write_op;
+  std::vector<std::pair<int, Message*>> messages;
+  messages.reserve(get_parent()->get_acting_recovery_backfill_shards().size());
   set<pg_shard_t> backfill_shards = get_parent()->get_backfill_shards();
   for (set<pg_shard_t>::const_iterator i =
 	 get_parent()->get_acting_recovery_backfill_shards().begin();
@@ -2066,10 +2135,14 @@ bool ECBackend::try_reads_to_commit()
       r->map_epoch = get_osdmap_epoch();
       r->min_epoch = get_parent()->get_interval_start_epoch();
       r->trace = trace;
-      get_parent()->send_message_osd_cluster(
-	i->osd, r, get_osdmap_epoch());
+      messages.push_back(std::make_pair(i->osd, r));
     }
   }
+
+  if (!messages.empty()) {
+    get_parent()->send_message_osd_cluster(messages, get_osdmap_epoch());
+  }
+
   if (should_write_local) {
     handle_sub_write(
       get_parent()->whoami_shard(),
@@ -2104,7 +2177,7 @@ bool ECBackend::try_finish_rmw()
   if (op->version > committed_to)
     committed_to = op->version;
 
-  if (get_osdmap()->require_osd_release >= CEPH_RELEASE_KRAKEN) {
+  if (get_osdmap()->require_osd_release >= ceph_release_t::kraken) {
     if (op->version > get_parent()->get_log().get_can_rollback_to() &&
 	waiting_reads.empty() &&
 	waiting_commit.empty()) {
@@ -2294,15 +2367,15 @@ struct CallClientContexts :
       pair<uint64_t, uint64_t> adjusted =
 	ec->sinfo.offset_len_to_stripe_bounds(
 	  make_pair(read.get<0>(), read.get<1>()));
-      ceph_assert(res.returned.front().get<0>() == adjusted.first &&
-	     res.returned.front().get<1>() == adjusted.second);
+      ceph_assert(res.returned.front().get<0>() == adjusted.first);
+      ceph_assert(res.returned.front().get<1>() == adjusted.second);
       map<int, bufferlist> to_decode;
       bufferlist bl;
       for (map<pg_shard_t, bufferlist>::iterator j =
 	     res.returned.front().get<2>().begin();
 	   j != res.returned.front().get<2>().end();
 	   ++j) {
-	to_decode[j->first.shard].claim(j->second);
+	to_decode[j->first.shard] = std::move(j->second);
       }
       int r = ECUtil::decode(
 	ec->sinfo,
@@ -2420,13 +2493,12 @@ int ECBackend::send_all_remaining_reads(
 	shards,
 	want_attrs,
 	c)));
-  do_read_op(rop);
   return 0;
 }
 
 int ECBackend::objects_get_attrs(
   const hobject_t &hoid,
-  map<string, bufferlist> *out)
+  map<string, bufferlist, less<>> *out)
 {
   int r = store->getattrs(
     ch,
@@ -2523,7 +2595,11 @@ int ECBackend::be_deep_scrub(
     return 0;
   } else {
     if (!get_parent()->get_pool().allows_ecoverwrites()) {
-      ceph_assert(hinfo->has_chunk_hash());
+      if (!hinfo->has_chunk_hash()) {
+        dout(0) << "_scan_list  " << poid << " got invalid hash info" << dendl;
+        o.ec_size_mismatch = true;
+        return 0;
+      }
       if (hinfo->get_total_chunk_size() != (unsigned)pos.data_pos) {
 	dout(0) << "_scan_list  " << poid << " got incorrect size on read 0x"
 		<< std::hex << pos

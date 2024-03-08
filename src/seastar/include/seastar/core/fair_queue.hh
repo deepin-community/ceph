@@ -21,66 +21,243 @@
  */
 #pragma once
 
-#include <seastar/core/future.hh>
-#include <seastar/core/semaphore.hh>
+#include <boost/intrusive/slist.hpp>
+#include <seastar/core/sstring.hh>
 #include <seastar/core/shared_ptr.hh>
-#include <seastar/core/print.hh>
 #include <seastar/core/circular_buffer.hh>
-#include <seastar/util/noncopyable_function.hh>
+#include <seastar/core/metrics_registration.hh>
+#include <seastar/util/shared_token_bucket.hh>
+#include <functional>
 #include <queue>
-#include <type_traits>
 #include <chrono>
 #include <unordered_set>
-#include <cmath>
+#include <optional>
+
+namespace bi = boost::intrusive;
 
 namespace seastar {
 
-/// \brief describes a request that passes through the fair queue
+/// \brief describes a request that passes through the \ref fair_queue.
+///
+/// A ticket is specified by a \c weight and a \c size. For example, one can specify a request of \c weight
+/// 1 and \c size 16kB. If the \ref fair_queue accepts one such request per second, it will sustain 1 IOPS
+/// at 16kB/s bandwidth.
 ///
 /// \related fair_queue
-struct fair_queue_request_descriptor {
-    unsigned weight = 1; ///< the weight of this request for capacity purposes (IOPS).
-    unsigned size = 1;        ///< the effective size of this request
+class fair_queue_ticket {
+    uint32_t _weight = 0; ///< the total weight of these requests for capacity purposes (IOPS).
+    uint32_t _size = 0;        ///< the total effective size of these requests
+public:
+    /// Constructs a fair_queue_ticket with a given \c weight and a given \c size
+    ///
+    /// \param weight the weight of the request
+    /// \param size the size of the request
+    fair_queue_ticket(uint32_t weight, uint32_t size) noexcept;
+    fair_queue_ticket() noexcept {}
+    fair_queue_ticket operator+(fair_queue_ticket desc) const noexcept;
+    fair_queue_ticket operator-(fair_queue_ticket desc) const noexcept;
+    /// Increase the quantity represented in this ticket by the amount represented by \c desc
+    /// \param desc another \ref fair_queue_ticket whose \c weight \c and size will be added to this one
+    fair_queue_ticket& operator+=(fair_queue_ticket desc) noexcept;
+    /// Decreases the quantity represented in this ticket by the amount represented by \c desc
+    /// \param desc another \ref fair_queue_ticket whose \c weight \c and size will be decremented from this one
+    fair_queue_ticket& operator-=(fair_queue_ticket desc) noexcept;
+    /// Checks if the tickets fully equals to another one
+    /// \param desc another \ref fair_queue_ticket to compare with
+    bool operator==(const fair_queue_ticket& desc) const noexcept;
+
+    /// \returns true if the fair_queue_ticket represents a non-zero quantity.
+    ///
+    /// For a fair_queue ticket to be non-zero, at least one of its represented quantities need to
+    /// be non-zero
+    explicit operator bool() const noexcept;
+    bool is_non_zero() const noexcept;
+
+    friend std::ostream& operator<<(std::ostream& os, fair_queue_ticket t);
+
+    /// \returns the normalized value of this \ref fair_queue_ticket along a base axis
+    ///
+    /// The normalization function itself is an implementation detail, but one can expect either weight or
+    /// size to have more or less relative importance depending on which of the dimensions in the
+    /// denominator is relatively higher. For example, given this request a, and two other requests
+    /// b and c, such that that c has the same \c weight but a higher \c size than b, one can expect
+    /// the \c size component of this request to play a larger role.
+    ///
+    /// It is legal for the numerator to have one of the quantities set to zero, in which case only
+    /// the other quantity is taken into consideration.
+    ///
+    /// It is however not legal for the axis to have any quantity set to zero.
+    /// \param axis another \ref fair_queue_ticket to be used as a a base vector against which to normalize this fair_queue_ticket.
+    float normalize(fair_queue_ticket axis) const noexcept;
+
+    /*
+     * For both dimentions checks if the first rover is ahead of the
+     * second and returns the difference. If behind returns zero.
+     */
+    friend fair_queue_ticket wrapping_difference(const fair_queue_ticket& a, const fair_queue_ticket& b) noexcept;
 };
 
 /// \addtogroup io-module
 /// @{
 
-/// \cond internal
-class priority_class {
-    struct request {
-        noncopyable_function<void()> func;
-        fair_queue_request_descriptor desc;
-    };
+class fair_queue_entry {
     friend class fair_queue;
-    uint32_t _shares = 0;
-    float _accumulated = 0;
-    circular_buffer<request> _queue;
-    bool _queued = false;
 
-    friend struct shared_ptr_no_esft<priority_class>;
-    explicit priority_class(uint32_t shares) : _shares(std::max(shares, 1u)) {}
+    fair_queue_ticket _ticket;
+    bi::slist_member_hook<> _hook;
 
-    void update_shares(uint32_t shares) {
-        _shares = (std::max(shares, 1u));
-    }
 public:
-    /// \brief return the current amount of shares for this priority class
-    uint32_t shares() const {
-        return _shares;
+    fair_queue_entry(fair_queue_ticket t) noexcept
+        : _ticket(std::move(t)) {}
+    using container_list_t = bi::slist<fair_queue_entry,
+            bi::constant_time_size<false>,
+            bi::cache_last<true>,
+            bi::member_hook<fair_queue_entry, bi::slist_member_hook<>, &fair_queue_entry::_hook>>;
+
+    fair_queue_ticket ticket() const noexcept { return _ticket; }
+};
+
+/// \brief Group of queues class
+///
+/// This is a fair group. It's attached by one or mode fair queues. On machines having the
+/// big* amount of shards, queues use the group to borrow/lend the needed capacity for
+/// requests dispatching.
+///
+/// * Big means that when all shards sumbit requests alltogether the disk is unable to
+/// dispatch them efficiently. The inability can be of two kinds -- either disk cannot
+/// cope with the number of arriving requests, or the total size of the data withing
+/// the given time frame exceeds the disk throughput.
+class fair_group {
+public:
+    using capacity_t = uint64_t;
+    using clock_type = std::chrono::steady_clock;
+
+    /*
+     * tldr; The math
+     *
+     *    Bw, Br -- write/read bandwidth (bytes per second)
+     *    Ow, Or -- write/read iops (ops per second)
+     *
+     *    xx_max -- their maximum values (configured)
+     *
+     * Throttling formula:
+     *
+     *    Bw/Bw_max + Br/Br_max + Ow/Ow_max + Or/Or_max <= K
+     *
+     * where K is the scalar value <= 1.0 (also configured)
+     *
+     * Bandwidth is bytes time derivatite, iops is ops time derivative, i.e.
+     * Bx = d(bx)/dt, Ox = d(ox)/dt. Then the formula turns into
+     *
+     *   d(bw/Bw_max + br/Br_max + ow/Ow_max + or/Or_max)/dt <= K
+     *
+     * Fair queue tickets are {w, s} weight-size pairs that are
+     *
+     *   s = read_base_count * br, for reads
+     *       Br_max/Bw_max * read_base_count * bw, for writes
+     *
+     *   w = read_base_count, for reads
+     *       Or_max/Ow_max * read_base_count, for writes
+     *
+     * Thus the formula turns into
+     *
+     *   d(sum(w/W + s/S))/dr <= K
+     *
+     * where {w, s} is the ticket value if a request and sum summarizes the
+     * ticket values from all the requests seen so far, {W, S} is the ticket
+     * value that corresonds to a virtual summary of Or_max requests of
+     * Br_max size total.
+     */
+
+    /*
+     * The normalization results in a float of the 2^-30 seconds order of
+     * magnitude. Not to invent float point atomic arithmetics, the result
+     * is converted to an integer by multiplying by a factor that's large
+     * enough to turn these values into a non-zero integer.
+     *
+     * Also, the rates in bytes/sec when adjusted by io-queue according to
+     * multipliers become too large to be stored in 32-bit ticket value.
+     * Thus the rate resolution is applied. The t.bucket is configured with a
+     * time period for which the speeds from F (in above formula) are taken.
+     */
+
+    static constexpr float fixed_point_factor = float(1 << 24);
+    using rate_resolution = std::milli;
+    using token_bucket_t = internal::shared_token_bucket<capacity_t, rate_resolution, internal::capped_release::yes>;
+
+private:
+
+    /*
+     * The dF/dt <= K limitation is managed by the modified token bucket
+     * algo where tokens are ticket.normalize(cost_capacity), the refill
+     * rate is K.
+     *
+     * The token bucket algo must have the limit on the number of tokens
+     * accumulated. Here it's configured so that it accumulates for the
+     * latency_goal duration.
+     *
+     * The replenish threshold is the minimal number of tokens to put back.
+     * It's reserved for future use to reduce the load on the replenish
+     * timestamp.
+     *
+     * The timestamp, in turn, is the time when the bucket was replenished
+     * last. Every time a shard tries to get tokens from bucket it first
+     * tries to convert the time that had passed since this timestamp
+     * into more tokens in the bucket.
+     */
+
+    const fair_queue_ticket _cost_capacity;
+    token_bucket_t _token_bucket;
+
+public:
+
+    // Convert internal capacity value back into the real token
+    static double capacity_tokens(capacity_t cap) noexcept {
+        return (double)cap / fixed_point_factor / token_bucket_t::rate_cast(std::chrono::seconds(1)).count();
+    }
+
+    auto capacity_duration(capacity_t cap) const noexcept {
+        return _token_bucket.duration_for(cap);
+    }
+
+    struct config {
+        sstring label = "";
+        /*
+         * There are two "min" values that can be configured. The former one
+         * is the minimal weight:size pair that the upper layer is going to
+         * submit. However, it can submit _larger_ values, and the fair queue
+         * must accept those as large as the latter pair (but it can accept
+         * even larger values, of course)
+         */
+        unsigned min_weight = 0;
+        unsigned min_size = 0;
+        unsigned limit_min_weight = 0;
+        unsigned limit_min_size = 0;
+        unsigned long weight_rate;
+        unsigned long size_rate;
+        float rate_factor = 1.0;
+        std::chrono::duration<double> rate_limit_duration = std::chrono::milliseconds(1);
+    };
+
+    explicit fair_group(config cfg);
+    fair_group(fair_group&&) = delete;
+
+    fair_queue_ticket cost_capacity() const noexcept { return _cost_capacity; }
+    capacity_t maximum_capacity() const noexcept { return _token_bucket.limit(); }
+    capacity_t grab_capacity(capacity_t cap) noexcept;
+    clock_type::time_point replenished_ts() const noexcept { return _token_bucket.replenished_ts(); }
+    void release_capacity(capacity_t cap) noexcept;
+    void replenish_capacity(clock_type::time_point now) noexcept;
+    void maybe_replenish_capacity(clock_type::time_point& local_ts) noexcept;
+
+    capacity_t capacity_deficiency(capacity_t from) const noexcept;
+    capacity_t ticket_capacity(fair_queue_ticket ticket) const noexcept;
+
+    std::chrono::duration<double> rate_limit_duration() const noexcept {
+        std::chrono::duration<double, rate_resolution> dur((double)_token_bucket.limit() / _token_bucket.rate());
+        return std::chrono::duration_cast<std::chrono::duration<double>>(dur);
     }
 };
-/// \endcond
-
-/// \brief Priority class, to be used with a given \ref fair_queue
-///
-/// An instance of this class is associated with a given \ref fair_queue. When registering
-/// a class, the caller will receive a \ref lw_shared_ptr to an object of this class. All its methods
-/// are private, so the only thing the caller is expected to do with it is to pass it later
-/// to the \ref fair_queue to identify a given class.
-///
-/// \related fair_queue
-using priority_class_ptr = lw_shared_ptr<priority_class>;
 
 /// \brief Fair queuing class
 ///
@@ -91,7 +268,7 @@ using priority_class_ptr = lw_shared_ptr<priority_class>;
 /// 1 share. Higher weights for a request will consume a proportionally higher amount of
 /// shares.
 ///
-/// The user of this interface is expected to register multiple \ref priority_class
+/// The user of this interface is expected to register multiple `priority_class_data`
 /// objects, which will each have a shares attribute.
 ///
 /// Internally, each priority class may keep a separate queue of requests.
@@ -108,175 +285,136 @@ public:
     /// \sets the operation parameters of a \ref fair_queue
     /// \related fair_queue
     struct config {
-        unsigned capacity = std::numeric_limits<unsigned>::max();
-        std::chrono::microseconds tau = std::chrono::milliseconds(100);
-        unsigned max_req_count = std::numeric_limits<unsigned>::max();
-        unsigned max_bytes_count = std::numeric_limits<unsigned>::max();
+        sstring label = "";
+        std::chrono::microseconds tau = std::chrono::milliseconds(5);
     };
-private:
-    friend priority_class;
 
+    using class_id = unsigned int;
+    class priority_class_data;
+    using capacity_t = fair_group::capacity_t;
+    using signed_capacity_t = std::make_signed<capacity_t>::type;
+
+private:
+    using clock_type = std::chrono::steady_clock;
+    using priority_class_ptr = priority_class_data*;
     struct class_compare {
-        bool operator() (const priority_class_ptr& lhs, const priority_class_ptr& rhs) const {
-            return lhs->_accumulated > rhs->_accumulated;
+        bool operator() (const priority_class_ptr& lhs, const priority_class_ptr & rhs) const noexcept;
+    };
+
+    class priority_queue : public std::priority_queue<priority_class_ptr, std::vector<priority_class_ptr>, class_compare> {
+        using super = std::priority_queue<priority_class_ptr, std::vector<priority_class_ptr>, class_compare>;
+    public:
+        void reserve(size_t len) {
+            c.reserve(len);
+        }
+
+        void assert_enough_capacity() const noexcept {
+            assert(c.size() < c.capacity());
         }
     };
 
     config _config;
+    fair_group& _group;
+    clock_type::time_point _group_replenish;
+    fair_queue_ticket _resources_executing;
+    fair_queue_ticket _resources_queued;
     unsigned _requests_executing = 0;
-    unsigned _req_count_executing = 0;
-    unsigned _bytes_count_executing = 0;
     unsigned _requests_queued = 0;
-    using clock_type = std::chrono::steady_clock::time_point;
-    clock_type _base;
-    using prioq = std::priority_queue<priority_class_ptr, std::vector<priority_class_ptr>, class_compare>;
-    prioq _handles;
-    std::unordered_set<priority_class_ptr> _all_classes;
+    priority_queue _handles;
+    std::vector<std::unique_ptr<priority_class_data>> _priority_classes;
+    size_t _nr_classes = 0;
+    capacity_t _last_accumulated = 0;
 
-    void push_priority_class(priority_class_ptr pc) {
-        if (!pc->_queued) {
-            _handles.push(pc);
-            pc->_queued = true;
-        }
-    }
+    /*
+     * When the shared capacity os over the local queue delays
+     * further dispatching untill better times
+     *
+     * \head  -- the value group head rover is expected to cross
+     * \cap   -- the capacity that's accounted on the group
+     *
+     * The last field is needed to "rearm" the wait in case
+     * queue decides that it wants to dispatch another capacity
+     * in the middle of the waiting
+     */
+    struct pending {
+        capacity_t head;
+        capacity_t cap;
 
-    priority_class_ptr pop_priority_class() {
-        assert(!_handles.empty());
-        auto h = _handles.top();
-        _handles.pop();
-        assert(h->_queued);
-        h->_queued = false;
-        return h;
-    }
+        pending(capacity_t t, capacity_t c) noexcept : head(t), cap(c) {}
+    };
 
-    float normalize_factor() const {
-        return std::numeric_limits<float>::min();
-    }
+    std::optional<pending> _pending;
 
-    void normalize_stats() {
-        auto time_delta = std::log(normalize_factor()) * _config.tau;
-        // time_delta is negative; and this may advance _base into the future
-        _base -= std::chrono::duration_cast<clock_type::duration>(time_delta);
-        for (auto& pc: _all_classes) {
-            pc->_accumulated *= normalize_factor();
-        }
-    }
+    void push_priority_class(priority_class_data& pc) noexcept;
+    void push_priority_class_from_idle(priority_class_data& pc) noexcept;
+    void pop_priority_class(priority_class_data& pc) noexcept;
+    void plug_priority_class(priority_class_data& pc) noexcept;
+    void unplug_priority_class(priority_class_data& pc) noexcept;
 
-    bool can_dispatch() const {
-        return _requests_queued &&
-               (_requests_executing < _config.capacity) &&
-               (_req_count_executing < _config.max_req_count) &&
-               (_bytes_count_executing < _config.max_bytes_count);
-    }
+    enum class grab_result { grabbed, cant_preempt, pending };
+    grab_result grab_capacity(const fair_queue_entry& ent) noexcept;
+    grab_result grab_pending_capacity(const fair_queue_entry& ent) noexcept;
 public:
     /// Constructs a fair queue with configuration parameters \c cfg.
     ///
     /// \param cfg an instance of the class \ref config
-    explicit fair_queue(config cfg)
-        : _config(std::move(cfg))
-        , _base(std::chrono::steady_clock::now())
-    {}
+    explicit fair_queue(fair_group& shared, config cfg);
+    fair_queue(fair_queue&&);
+    ~fair_queue();
 
-    /// Constructs a fair queue with a given \c capacity.
-    ///
-    /// \param capacity how many concurrent requests are allowed in this queue.
-    /// \param tau the queue exponential decay parameter, as in exp(-1/tau * t)
-    explicit fair_queue(unsigned capacity, std::chrono::microseconds tau = std::chrono::milliseconds(100))
-        : fair_queue(config{capacity, tau}) {}
+    sstring label() const noexcept { return _config.label; }
 
     /// Registers a priority class against this fair queue.
     ///
-    /// \param shares, how many shares to create this class with
-    priority_class_ptr register_priority_class(uint32_t shares) {
-        priority_class_ptr pclass = make_lw_shared<priority_class>(shares);
-        _all_classes.insert(pclass);
-        return pclass;
-    }
+    /// \param shares how many shares to create this class with
+    void register_priority_class(class_id c, uint32_t shares);
 
     /// Unregister a priority class.
     ///
     /// It is illegal to unregister a priority class that still have pending requests.
-    void unregister_priority_class(priority_class_ptr pclass) {
-        assert(pclass->_queue.empty());
-        _all_classes.erase(pclass);
-    }
+    void unregister_priority_class(class_id c);
+
+    void update_shares_for_class(class_id c, uint32_t new_shares);
 
     /// \return how many waiters are currently queued for all classes.
-    size_t waiters() const {
-        return _requests_queued;
-    }
+    [[deprecated("fair_queue users should not track individual requests, but resources (weight, size) passing through the queue")]]
+    size_t waiters() const;
 
     /// \return the number of requests currently executing
-    size_t requests_currently_executing() const {
-        return _requests_executing;
-    }
+    [[deprecated("fair_queue users should not track individual requests, but resources (weight, size) passing through the queue")]]
+    size_t requests_currently_executing() const;
 
-    /// Queue the function \c func through this class' \ref fair_queue, with weight \c weight
-    ///
-    /// It is expected that \c func doesn't throw. If it does throw, it will be just removed from
-    /// the queue and discarded.
+    /// \return how much resources (weight, size) are currently queued for all classes.
+    fair_queue_ticket resources_currently_waiting() const;
+
+    /// \return the amount of resources (weight, size) currently executing
+    fair_queue_ticket resources_currently_executing() const;
+
+    /// Queue the entry \c ent through this class' \ref fair_queue
     ///
     /// The user of this interface is supposed to call \ref notify_requests_finished when the
     /// request finishes executing - regardless of success or failure.
-    void queue(priority_class_ptr pc, fair_queue_request_descriptor desc, noncopyable_function<void()> func) {
-        // We need to return a future in this function on which the caller can wait.
-        // Since we don't know which queue we will use to execute the next request - if ours or
-        // someone else's, we need a separate promise at this point.
-        push_priority_class(pc);
-        pc->_queue.push_back(priority_class::request{std::move(func), std::move(desc)});
-        _requests_queued++;
-    }
+    void queue(class_id c, fair_queue_entry& ent) noexcept;
+
+    void plug_class(class_id c) noexcept;
+    void unplug_class(class_id c) noexcept;
 
     /// Notifies that ont request finished
-    /// \param desc an instance of \c fair_queue_request_descriptor structure describing the request that just finished.
-    void notify_requests_finished(fair_queue_request_descriptor& desc) {
-        _requests_executing--;
-        _req_count_executing -= desc.weight;
-        _bytes_count_executing -= desc.size;
-    }
+    /// \param desc an instance of \c fair_queue_ticket structure describing the request that just finished.
+    void notify_request_finished(fair_queue_ticket desc) noexcept;
+    void notify_request_cancelled(fair_queue_entry& ent) noexcept;
 
     /// Try to execute new requests if there is capacity left in the queue.
-    void dispatch_requests() {
-        while (can_dispatch()) {
-            priority_class_ptr h;
-            do {
-                h = pop_priority_class();
-            } while (h->_queue.empty());
+    void dispatch_requests(std::function<void(fair_queue_entry&)> cb);
 
-            auto req = std::move(h->_queue.front());
-            h->_queue.pop_front();
-            _requests_executing++;
-            _req_count_executing += req.desc.weight;
-            _bytes_count_executing += req.desc.size;
-            _requests_queued--;
+    clock_type::time_point next_pending_aio() const noexcept;
 
-            auto delta = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - _base);
-            auto req_cost  = (float(req.desc.weight) / _config.max_req_count + float(req.desc.size) / _config.max_bytes_count) / h->_shares;
-            auto cost  = expf(1.0f/_config.tau.count() * delta.count()) * req_cost;
-            float next_accumulated = h->_accumulated + cost;
-            while (std::isinf(next_accumulated)) {
-                normalize_stats();
-                // If we have renormalized, our time base will have changed. This should happen very infrequently
-                delta = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - _base);
-                cost  = expf(1.0f/_config.tau.count() * delta.count()) * req_cost;
-                next_accumulated = h->_accumulated + cost;
-            }
-            h->_accumulated = next_accumulated;
-
-            if (!h->_queue.empty()) {
-                push_priority_class(h);
-            }
-            req.func();
-        }
-    }
-
-    /// Updates the current shares of this priority class
-    ///
-    /// \param new_shares the new number of shares for this priority class
-    static void update_shares(priority_class_ptr pc, uint32_t new_shares) {
-        pc->update_shares(new_shares);
-    }
+    std::vector<seastar::metrics::impl::metric_definition_impl> metrics(class_id c);
 };
 /// @}
 
 }
+
+#if FMT_VERSION >= 90000
+template <> struct fmt::formatter<seastar::fair_queue_ticket> : fmt::ostream_formatter {};
+#endif

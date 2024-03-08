@@ -15,45 +15,56 @@
 #ifndef CEPH_MMONCOMMAND_H
 #define CEPH_MMONCOMMAND_H
 
-#include "common/cmdparse.h"
 #include "messages/PaxosServiceMessage.h"
 
 #include <vector>
 #include <string>
 
-class MMonCommand : public MessageInstance<MMonCommand, PaxosServiceMessage> {
-public:
-  friend factory;
+using ceph::common::cmdmap_from_json;
+using ceph::common::cmd_getval;
 
+class MMonCommand final : public PaxosServiceMessage {
+public:
+  // weird note: prior to octopus, MgrClient would leave fsid blank when
+  // sending commands to the mgr.  Starting with octopus, this is either
+  // populated with a valid fsid (tell command) or an MMgrCommand is sent
+  // instead.
   uuid_d fsid;
   std::vector<std::string> cmd;
 
-  MMonCommand() : MessageInstance(MSG_MON_COMMAND, 0) {}
+  MMonCommand() : PaxosServiceMessage{MSG_MON_COMMAND, 0} {}
   MMonCommand(const uuid_d &f)
-    : MessageInstance(MSG_MON_COMMAND, 0),
+    : PaxosServiceMessage{MSG_MON_COMMAND, 0},
       fsid(f)
   { }
 
-private:
-  ~MMonCommand() override {}
+  MMonCommand(const MMonCommand &other)
+    : PaxosServiceMessage(MSG_MON_COMMAND, 0),
+      fsid(other.fsid),
+      cmd(other.cmd) {
+    set_tid(other.get_tid());
+    set_data(other.get_data());
+  }
 
-public:  
+  ~MMonCommand() final {}
+
+public:
   std::string_view get_type_name() const override { return "mon_command"; }
-  void print(ostream& o) const override {
+  void print(std::ostream& o) const override {
     cmdmap_t cmdmap;
-    stringstream ss;
-    string prefix;
+    std::ostringstream ss;
+    std::string prefix;
     cmdmap_from_json(cmd, &cmdmap, ss);
-    cmd_getval(g_ceph_context, cmdmap, "prefix", prefix);
+    cmd_getval(cmdmap, "prefix", prefix);
     // Some config values contain sensitive data, so don't log them
     o << "mon_command(";
     if (prefix == "config set") {
-      string name;
-      cmd_getval(g_ceph_context, cmdmap, "name", name);
+      std::string name;
+      cmd_getval(cmdmap, "name", name);
       o << "[{prefix=" << prefix << ", name=" << name << "}]";
     } else if (prefix == "config-key set") {
-      string key;
-      cmd_getval(g_ceph_context, cmdmap, "key", key);
+      std::string key;
+      cmd_getval(cmdmap, "key", key);
       o << "[{prefix=" << prefix << ", key=" << key << "}]";
     } else {
       for (unsigned i=0; i<cmd.size(); i++) {
@@ -63,7 +74,7 @@ public:
     }
     o << " v " << version << ")";
   }
-  
+
   void encode_payload(uint64_t features) override {
     using ceph::encode;
     paxos_encode();
@@ -71,11 +82,16 @@ public:
     encode(cmd, payload);
   }
   void decode_payload() override {
+    using ceph::decode;
     auto p = payload.cbegin();
     paxos_decode(p);
     decode(fsid, p);
     decode(cmd, p);
   }
+
+private:
+  template<class T, typename... Args>
+  friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
 };
 
 #endif

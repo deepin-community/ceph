@@ -20,8 +20,8 @@
  */
 
 #include <seastar/core/app-template.hh>
-#include <seastar/core/future-util.hh>
-#include <seastar/core/reactor.hh>
+#include <seastar/core/seastar.hh>
+#include <seastar/core/timer.hh>
 #include <seastar/net/api.hh>
 #include <iostream>
 
@@ -40,7 +40,7 @@ public:
     void start(ipv4_addr server_addr) {
         std::cout << "Sending to " << server_addr << std::endl;
 
-        _chan = engine().net().make_udp_channel();
+        _chan = make_udp_channel();
 
         _stats_timer.set_callback([this] {
             std::cout << "Out: " << n_sent << " pps, \t";
@@ -52,7 +52,8 @@ public:
         });
         _stats_timer.arm_periodic(1s);
 
-        keep_doing([this, server_addr] {
+        // Run sender in background.
+        (void)keep_doing([this, server_addr] {
             return _chan.send(server_addr, "hello!\n")
                 .then_wrapped([this] (auto&& f) {
                     try {
@@ -64,7 +65,8 @@ public:
                 });
         });
 
-        keep_doing([this] {
+        // Run receiver in background.
+        (void)keep_doing([this] {
             return _chan.receive().then([this] (auto) {
                 n_received++;
             });

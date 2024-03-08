@@ -8,16 +8,15 @@
 #include <boost/scoped_ptr.hpp>
 #include <gtest/gtest.h>
 
-#include "common/Mutex.h"
 #include "common/Cond.h"
 #include "common/errno.h"
 #include "include/stringify.h"
 #include "include/Context.h"
 #include "os/bluestore/Allocator.h"
 
-typedef boost::mt11213b gen_type;
+using namespace std;
 
-#if GTEST_HAS_PARAM_TEST
+typedef boost::mt11213b gen_type;
 
 class AllocTest : public ::testing::TestWithParam<const char*> {
 
@@ -26,8 +25,9 @@ public:
   AllocTest(): alloc(0) { }
   void init_alloc(int64_t size, uint64_t min_alloc_size) {
     std::cout << "Creating alloc type " << string(GetParam()) << " \n";
-    alloc.reset(Allocator::create(g_ceph_context, string(GetParam()), size,
-				  min_alloc_size));
+    alloc.reset(Allocator::create(g_ceph_context, GetParam(), size,
+				  min_alloc_size,
+				  256*1048576, 100*256*1048576ull));
   }
 
   void init_close() {
@@ -48,6 +48,23 @@ TEST_P(AllocTest, test_alloc_init)
   blocks = 1024 * 2;
   init_alloc(blocks, 1);
   ASSERT_EQ(alloc->get_free(), (uint64_t) 0);
+}
+
+TEST_P(AllocTest, test_init_add_free)
+{
+  int64_t block_size = 1024;
+  int64_t capacity = 4 * 1024 * block_size;
+
+  {
+    init_alloc(capacity, block_size);
+
+    auto free = alloc->get_free();
+    alloc->init_add_free(block_size, 0);
+    ASSERT_EQ(free, alloc->get_free());
+
+    alloc->init_rm_free(block_size, 0);
+    ASSERT_EQ(free, alloc->get_free());
+  }
 }
 
 TEST_P(AllocTest, test_alloc_min_alloc)
@@ -230,6 +247,16 @@ TEST_P(AllocTest, test_alloc_non_aligned_len)
   EXPECT_EQ(want_size, alloc->allocate(want_size, alloc_unit, 0, &extents));
 }
 
+TEST_P(AllocTest, test_alloc_39334)
+{
+  uint64_t block = 0x4000;
+  uint64_t size = 0x5d00000000;
+
+  init_alloc(size, block);
+  alloc->init_add_free(0x4000, 0x5cffffc000);
+  EXPECT_EQ(size - block, alloc->get_free());
+}
+
 TEST_P(AllocTest, test_alloc_fragmentation)
 {
   uint64_t capacity = 4 * 1024 * 1024;
@@ -261,12 +288,10 @@ TEST_P(AllocTest, test_alloc_fragmentation)
 
   if (GetParam() == string("avl")) {
     // AVL allocator uses a different allocating strategy
-    cout << "skipping for AVL allocator";
-    return;
+    GTEST_SKIP() << "skipping for AVL allocator";
   } else if (GetParam() == string("hybrid")) {
     // AVL allocator uses a different allocating strategy
-    cout << "skipping for Hybrid allocator";
-    return;
+    GTEST_SKIP() << "skipping for Hybrid allocator";
   }
 
   for (size_t i = 0; i < allocated.size(); i += 2)
@@ -336,12 +361,14 @@ TEST_P(AllocTest, test_dump_fragmentation_score)
 	//allocate
 	want_size = ( rng() % one_alloc_max ) / alloc_unit * alloc_unit + alloc_unit;
 	tmp.clear();
-	uint64_t r = alloc->allocate(want_size, alloc_unit, 0, 0, &tmp);
-	for (auto& t: tmp) {
-	  if (t.length > 0)
-	    allocated.push_back(t);
-	}
-	allocated_cnt += r;
+        int64_t r = alloc->allocate(want_size, alloc_unit, 0, 0, &tmp);
+        if (r > 0) {
+          for (auto& t: tmp) {
+            if (t.length > 0)
+              allocated.push_back(t);
+          }
+          allocated_cnt += r;
+        }
       } else {
 	//free
 	ceph_assert(allocated.size() > 0);
@@ -361,7 +388,7 @@ TEST_P(AllocTest, test_dump_fragmentation_score)
       ceph_assert(len > 0);
       free_sum += len;
     };
-    alloc->dump(iterated_allocation);
+    alloc->foreach(iterated_allocation);
     EXPECT_GT(1, alloc->get_fragmentation_score());
     EXPECT_EQ(capacity, free_sum + allocated_cnt);
   }
@@ -400,9 +427,9 @@ TEST_P(AllocTest, test_alloc_bug_24598)
 
   EXPECT_EQ(static_cast<int64_t>(want_size),
 	    alloc->allocate(want_size, 0x100000, 0, 0, &tmp));
+  EXPECT_EQ(1u, tmp.size());
   EXPECT_EQ(0x4b00000u, tmp[0].offset);
   EXPECT_EQ(0x200000u, tmp[0].length);
-  EXPECT_EQ(1u, tmp.size());
 }
 
 //Verifies issue from
@@ -493,11 +520,48 @@ TEST_P(AllocTest, test_alloc_47883)
   EXPECT_EQ(got, 0x630000);
 }
 
-INSTANTIATE_TEST_CASE_P(
+TEST_P(AllocTest, test_alloc_50656_best_fit)
+{
+  uint64_t block = 0x1000;
+  uint64_t size = 0x3b9e400000;
+
+  init_alloc(size, block);
+
+  // too few free extents - causes best fit mode for avls
+  for (size_t i = 0; i < 0x10; i++) {
+    alloc->init_add_free(i * 2 * 0x100000, 0x100000);
+  }
+
+  alloc->init_add_free(0x1e1bd13000, 0x404000);
+
+  PExtentVector extents;
+  auto need = 0x400000;
+  auto got = alloc->allocate(need, 0x10000, 0, (int64_t)0, &extents);
+  EXPECT_GT(got, 0);
+  EXPECT_EQ(got, 0x400000);
+}
+
+TEST_P(AllocTest, test_alloc_50656_first_fit)
+{
+  uint64_t block = 0x1000;
+  uint64_t size = 0x3b9e400000;
+
+  init_alloc(size, block);
+
+  for (size_t i = 0; i < 0x10000; i += 2) {
+    alloc->init_add_free(i * 0x100000, 0x100000);
+  }
+
+  alloc->init_add_free(0x1e1bd13000, 0x404000);
+
+  PExtentVector extents;
+  auto need = 0x400000;
+  auto got = alloc->allocate(need, 0x10000, 0, (int64_t)0, &extents);
+  EXPECT_GT(got, 0);
+  EXPECT_EQ(got, 0x400000);
+}
+
+INSTANTIATE_TEST_SUITE_P(
   Allocator,
   AllocTest,
   ::testing::Values("stupid", "bitmap", "avl", "hybrid"));
-#else
-
-TEST(DummyTest, ValueParameterizedTestsAreNotSupportedOnThisPlatform) {}
-#endif

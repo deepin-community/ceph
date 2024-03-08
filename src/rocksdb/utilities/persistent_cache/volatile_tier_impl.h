@@ -38,7 +38,7 @@
 // implementation is not concurrent at this point though.
 //
 // The eviction algorithm is LRU
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 class VolatileCacheTier : public PersistentCacheTier {
  public:
@@ -74,9 +74,8 @@ class VolatileCacheTier : public PersistentCacheTier {
   // Cache data abstraction
   //
   struct CacheData : LRUElement<CacheData> {
-    explicit CacheData(CacheData&& rhs) ROCKSDB_NOEXCEPT
-        : key(std::move(rhs.key)),
-          value(std::move(rhs.value)) {}
+    explicit CacheData(CacheData&& rhs) noexcept
+        : key(std::move(rhs.key)), value(std::move(rhs.value)) {}
 
     explicit CacheData(const std::string& _key, const std::string& _value = "")
         : key(_key), value(_value) {}
@@ -124,8 +123,8 @@ class VolatileCacheTier : public PersistentCacheTier {
     }
   };
 
-  typedef EvictableHashTable<CacheData, CacheDataHash, CacheDataEqual>
-      IndexType;
+  using IndexType =
+      EvictableHashTable<CacheData, CacheDataHash, CacheDataEqual>;
 
   // Evict LRU tail
   bool Evict();
@@ -137,6 +136,6 @@ class VolatileCacheTier : public PersistentCacheTier {
   Statistics stats_;
 };
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
 
 #endif

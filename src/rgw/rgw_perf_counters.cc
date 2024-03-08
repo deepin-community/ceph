@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*- 
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 #include "rgw_perf_counters.h"
 #include "common/perf_counters.h"
@@ -36,6 +36,20 @@ int rgw_perf_start(CephContext *cct)
 
   plb.add_u64_counter(l_rgw_gc_retire, "gc_retire_object", "GC object retires");
 
+  plb.add_u64_counter(l_rgw_lc_expire_current, "lc_expire_current",
+		      "Lifecycle current expiration");
+  plb.add_u64_counter(l_rgw_lc_expire_noncurrent, "lc_expire_noncurrent",
+		      "Lifecycle non-current expiration");
+  plb.add_u64_counter(l_rgw_lc_expire_dm, "lc_expire_dm",
+		      "Lifecycle delete-marker expiration");
+  plb.add_u64_counter(l_rgw_lc_transition_current, "lc_transition_current",
+		      "Lifecycle current transition");
+  plb.add_u64_counter(l_rgw_lc_transition_noncurrent,
+		      "lc_transition_noncurrent",
+		      "Lifecycle non-current transition");
+  plb.add_u64_counter(l_rgw_lc_abort_mpu, "lc_abort_mpu",
+		      "Lifecycle abort multipart upload");
+
   plb.add_u64_counter(l_rgw_pubsub_event_triggered, "pubsub_event_triggered", "Pubsub events with at least one topic");
   plb.add_u64_counter(l_rgw_pubsub_event_lost, "pubsub_event_lost", "Pubsub events lost");
   plb.add_u64_counter(l_rgw_pubsub_store_ok, "pubsub_store_ok", "Pubsub events successfully stored");
@@ -45,6 +59,10 @@ int rgw_perf_start(CephContext *cct)
   plb.add_u64_counter(l_rgw_pubsub_push_failed, "pubsub_push_failed", "Pubsub events failed to be pushed to an endpoint");
   plb.add_u64(l_rgw_pubsub_push_pending, "pubsub_push_pending", "Pubsub events pending reply from endpoint");
   plb.add_u64_counter(l_rgw_pubsub_missing_conf, "pubsub_missing_conf", "Pubsub events could not be handled because of missing configuration");
+  
+  plb.add_u64_counter(l_rgw_lua_script_ok, "lua_script_ok", "Successfull executions of lua scripts");
+  plb.add_u64_counter(l_rgw_lua_script_fail, "lua_script_fail", "Failed executions of lua scripts");
+  plb.add_u64(l_rgw_lua_current_vms, "lua_current_vms", "Number of Lua VMs currently being executed");
   
   perfcounter = plb.create_perf_counters();
   cct->get_perfcounters_collection()->add(perfcounter);

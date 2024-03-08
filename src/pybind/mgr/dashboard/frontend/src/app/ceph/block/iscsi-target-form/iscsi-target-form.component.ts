@@ -1,21 +1,24 @@
 import { Component, OnInit } from '@angular/core';
-import { FormArray, FormControl, Validators } from '@angular/forms';
+import { UntypedFormArray, UntypedFormControl, Validators } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 
-import { I18n } from '@ngx-translate/i18n-polyfill';
-import * as _ from 'lodash';
-import { BsModalRef, BsModalService } from 'ngx-bootstrap/modal';
+import { NgbModalRef } from '@ng-bootstrap/ng-bootstrap';
+import _ from 'lodash';
 import { forkJoin } from 'rxjs';
 
-import { IscsiService } from '../../../shared/api/iscsi.service';
-import { RbdService } from '../../../shared/api/rbd.service';
-import { SelectMessages } from '../../../shared/components/select/select-messages.model';
-import { SelectOption } from '../../../shared/components/select/select-option.model';
-import { ActionLabelsI18n } from '../../../shared/constants/app.constants';
-import { CdFormGroup } from '../../../shared/forms/cd-form-group';
-import { CdValidators } from '../../../shared/forms/cd-validators';
-import { FinishedTask } from '../../../shared/models/finished-task';
-import { TaskWrapperService } from '../../../shared/services/task-wrapper.service';
+import { IscsiService } from '~/app/shared/api/iscsi.service';
+import { RbdService } from '~/app/shared/api/rbd.service';
+import { SelectMessages } from '~/app/shared/components/select/select-messages.model';
+import { SelectOption } from '~/app/shared/components/select/select-option.model';
+import { ActionLabelsI18n } from '~/app/shared/constants/app.constants';
+import { Icons } from '~/app/shared/enum/icons.enum';
+import { CdForm } from '~/app/shared/forms/cd-form';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
+import { CdValidators } from '~/app/shared/forms/cd-validators';
+import { CdTableFetchDataContext } from '~/app/shared/models/cd-table-fetch-data-context';
+import { FinishedTask } from '~/app/shared/models/finished-task';
+import { ModalService } from '~/app/shared/services/modal.service';
+import { TaskWrapperService } from '~/app/shared/services/task-wrapper.service';
 import { IscsiTargetImageSettingsModalComponent } from '../iscsi-target-image-settings-modal/iscsi-target-image-settings-modal.component';
 import { IscsiTargetIqnSettingsModalComponent } from '../iscsi-target-iqn-settings-modal/iscsi-target-iqn-settings-modal.component';
 
@@ -24,10 +27,10 @@ import { IscsiTargetIqnSettingsModalComponent } from '../iscsi-target-iqn-settin
   templateUrl: './iscsi-target-form.component.html',
   styleUrls: ['./iscsi-target-form.component.scss']
 })
-export class IscsiTargetFormComponent implements OnInit {
+export class IscsiTargetFormComponent extends CdForm implements OnInit {
   cephIscsiConfigVersion: number;
   targetForm: CdFormGroup;
-  modalRef: BsModalRef;
+  modalRef: NgbModalRef;
   api_version = 0;
   minimum_gateways = 1;
   target_default_controls: any;
@@ -38,6 +41,8 @@ export class IscsiTargetFormComponent implements OnInit {
   default_backstore: string;
   unsupported_rbd_features: any;
   required_rbd_features: any;
+
+  icons = Icons;
 
   isEdit = false;
   target_iqn: string;
@@ -52,30 +57,14 @@ export class IscsiTargetFormComponent implements OnInit {
 
   imagesSettings: any = {};
   messages = {
-    portals: new SelectMessages(
-      { noOptions: this.i18n('There are no portals available.') },
-      this.i18n
-    ),
-    images: new SelectMessages(
-      { noOptions: this.i18n('There are no images available.') },
-      this.i18n
-    ),
-    initiatorImage: new SelectMessages(
-      {
-        noOptions: this.i18n(
-          'There are no images available. Please make sure you add an image to the target.'
-        )
-      },
-      this.i18n
-    ),
-    groupInitiator: new SelectMessages(
-      {
-        noOptions: this.i18n(
-          'There are no initiators available. Please make sure you add an initiator to the target.'
-        )
-      },
-      this.i18n
-    )
+    portals: new SelectMessages({ noOptions: $localize`There are no portals available.` }),
+    images: new SelectMessages({ noOptions: $localize`There are no images available.` }),
+    initiatorImage: new SelectMessages({
+      noOptions: $localize`There are no images available. Please make sure you add an image to the target.`
+    }),
+    groupInitiator: new SelectMessages({
+      noOptions: $localize`There are no initiators available. Please make sure you add an initiator to the target.`
+    })
   };
 
   IQN_REGEX = /^iqn\.(19|20)\d\d-(0[1-9]|1[0-2])\.\D{2,3}(\.[A-Za-z0-9-]+)+(:[A-Za-z0-9-\.]+)*$/;
@@ -86,21 +75,25 @@ export class IscsiTargetFormComponent implements OnInit {
 
   constructor(
     private iscsiService: IscsiService,
-    private modalService: BsModalService,
+    private modalService: ModalService,
     private rbdService: RbdService,
     private router: Router,
     private route: ActivatedRoute,
-    private i18n: I18n,
     private taskWrapper: TaskWrapperService,
     public actionLabels: ActionLabelsI18n
   ) {
-    this.resource = this.i18n('target');
+    super();
+    this.resource = $localize`target`;
   }
 
   ngOnInit() {
+    const rbdListContext = new CdTableFetchDataContext(() => undefined);
+    /* limit -1 to specify all images */
+    rbdListContext.pageInfo.limit = -1;
     const promises: any[] = [
       this.iscsiService.listTargets(),
-      this.rbdService.list(),
+      /* tslint:disable:no-empty */
+      this.rbdService.list(rbdListContext.toParams()),
       this.iscsiService.portals(),
       this.iscsiService.settings(),
       this.iscsiService.version()
@@ -141,6 +134,10 @@ export class IscsiTargetFormComponent implements OnInit {
       this.imagesAll = _(data[1])
         .flatMap((pool) => pool.value)
         .filter((image) => {
+          // Namespaces are not supported by ceph-iscsi
+          if (image.namespace) {
+            return false;
+          }
           const imageId = `${image.pool_name}/${image.name}`;
           if (usedImages.indexOf(imageId) !== -1) {
             return false;
@@ -159,8 +156,8 @@ export class IscsiTargetFormComponent implements OnInit {
 
       // iscsiService.portals()
       const portals: SelectOption[] = [];
-      data[2].forEach((portal) => {
-        portal.ip_addresses.forEach((ip) => {
+      data[2].forEach((portal: Record<string, any>) => {
+        portal.ip_addresses.forEach((ip: string) => {
           portals.push(new SelectOption(false, portal.name + ':' + ip, ''));
         });
       });
@@ -175,53 +172,55 @@ export class IscsiTargetFormComponent implements OnInit {
       if (data[5]) {
         this.resolveModel(data[5]);
       }
+
+      this.loadingReady();
     });
   }
 
   createForm() {
     this.targetForm = new CdFormGroup({
-      target_iqn: new FormControl('iqn.2001-07.com.ceph:' + Date.now(), {
+      target_iqn: new UntypedFormControl('iqn.2001-07.com.ceph:' + Date.now(), {
         validators: [Validators.required, Validators.pattern(this.IQN_REGEX)]
       }),
-      target_controls: new FormControl({}),
-      portals: new FormControl([], {
+      target_controls: new UntypedFormControl({}),
+      portals: new UntypedFormControl([], {
         validators: [
-          CdValidators.custom('minGateways', (value) => {
+          CdValidators.custom('minGateways', (value: any[]) => {
             const gateways = _.uniq(value.map((elem) => elem.split(':')[0]));
             return gateways.length < Math.max(1, this.minimum_gateways);
           })
         ]
       }),
-      disks: new FormControl([], {
+      disks: new UntypedFormControl([], {
         validators: [
-          CdValidators.custom('dupLunId', (value) => {
+          CdValidators.custom('dupLunId', (value: any[]) => {
             const lunIds = this.getLunIds(value);
             return lunIds.length !== _.uniq(lunIds).length;
           }),
-          CdValidators.custom('dupWwn', (value) => {
+          CdValidators.custom('dupWwn', (value: any[]) => {
             const wwns = this.getWwns(value);
             return wwns.length !== _.uniq(wwns).length;
           })
         ]
       }),
-      initiators: new FormArray([]),
-      groups: new FormArray([]),
-      acl_enabled: new FormControl(false)
+      initiators: new UntypedFormArray([]),
+      groups: new UntypedFormArray([]),
+      acl_enabled: new UntypedFormControl(false)
     });
     // Target level authentication was introduced in ceph-iscsi config v11
     if (this.cephIscsiConfigVersion > 10) {
       const authFormGroup = new CdFormGroup({
-        user: new FormControl(''),
-        password: new FormControl(''),
-        mutual_user: new FormControl(''),
-        mutual_password: new FormControl('')
+        user: new UntypedFormControl(''),
+        password: new UntypedFormControl(''),
+        mutual_user: new UntypedFormControl(''),
+        mutual_password: new UntypedFormControl('')
       });
       this.setAuthValidator(authFormGroup);
       this.targetForm.addControl('auth', authFormGroup);
     }
   }
 
-  resolveModel(res) {
+  resolveModel(res: Record<string, any>) {
     this.targetForm.patchValue({
       target_iqn: res.target_iqn,
       target_controls: res.target_controls,
@@ -233,7 +232,7 @@ export class IscsiTargetFormComponent implements OnInit {
         auth: res.auth
       });
     }
-    const portals = [];
+    const portals: any[] = [];
     _.forEach(res.portals, (portal) => {
       const id = `${portal.host}:${portal.ip}`;
       portals.push(id);
@@ -242,7 +241,7 @@ export class IscsiTargetFormComponent implements OnInit {
       portals: portals
     });
 
-    const disks = [];
+    const disks: any[] = [];
     _.forEach(res.disks, (disk) => {
       const id = `${disk.pool}/${disk.image}`;
       disks.push(id);
@@ -270,12 +269,12 @@ export class IscsiTargetFormComponent implements OnInit {
       // updatedInitiatorSelector()
     });
 
-    _.forEach(res.groups, (group) => {
+    (res.groups as any[]).forEach((group: any, group_index: number) => {
       const fg = this.addGroup();
       group.disks = _.map(group.disks, (disk) => `${disk.pool}/${disk.image}`);
       fg.patchValue(group);
       _.forEach(group.members, (member) => {
-        this.onGroupMemberSelection({ option: new SelectOption(true, member, '') });
+        this.onGroupMemberSelection({ option: new SelectOption(true, member, '') }, group_index);
       });
     });
   }
@@ -286,7 +285,7 @@ export class IscsiTargetFormComponent implements OnInit {
 
   // Portals
   get portals() {
-    return this.targetForm.get('portals') as FormControl;
+    return this.targetForm.get('portals') as UntypedFormControl;
   }
 
   onPortalSelection() {
@@ -307,7 +306,7 @@ export class IscsiTargetFormComponent implements OnInit {
 
   // Images
   get disks() {
-    return this.targetForm.get('disks') as FormControl;
+    return this.targetForm.get('disks') as UntypedFormControl;
   }
 
   removeImage(index: number, image: string) {
@@ -322,14 +321,14 @@ export class IscsiTargetFormComponent implements OnInit {
     return false;
   }
 
-  removeImageRefs(name) {
+  removeImageRefs(name: string) {
     this.initiators.controls.forEach((element) => {
-      const newImages = element.value.luns.filter((item) => item !== name);
+      const newImages = element.value.luns.filter((item: string) => item !== name);
       element.get('luns').setValue(newImages);
     });
 
     this.groups.controls.forEach((element) => {
-      const newDisks = element.value.disks.filter((item) => item !== name);
+      const newDisks = element.value.disks.filter((item: string) => item !== name);
       element.get('disks').setValue(newDisks);
     });
 
@@ -341,7 +340,7 @@ export class IscsiTargetFormComponent implements OnInit {
     });
   }
 
-  getDefaultBackstore(imageId) {
+  getDefaultBackstore(imageId: string) {
     let result = this.default_backstore;
     const image = this.getImageById(imageId);
     if (!this.validFeatures(image, this.default_backstore)) {
@@ -356,17 +355,17 @@ export class IscsiTargetFormComponent implements OnInit {
     return result;
   }
 
-  isLunIdInUse(lunId, imageId) {
-    const images = this.disks.value.filter((currentImageId) => currentImageId !== imageId);
+  isLunIdInUse(lunId: string, imageId: string) {
+    const images = this.disks.value.filter((currentImageId: string) => currentImageId !== imageId);
     return this.getLunIds(images).includes(lunId);
   }
 
-  getLunIds(images) {
+  getLunIds(images: object) {
     return _.map(images, (image) => this.imagesSettings[image]['lun']);
   }
 
-  nextLunId(imageId) {
-    const images = this.disks.value.filter((currentImageId) => currentImageId !== imageId);
+  nextLunId(imageId: string) {
+    const images = this.disks.value.filter((currentImageId: string) => currentImageId !== imageId);
     const lunIdsInUse = this.getLunIds(images);
     let lunIdCandidate = 0;
     while (lunIdsInUse.includes(lunIdCandidate)) {
@@ -375,12 +374,12 @@ export class IscsiTargetFormComponent implements OnInit {
     return lunIdCandidate;
   }
 
-  getWwns(images) {
+  getWwns(images: object) {
     const wwns = _.map(images, (image) => this.imagesSettings[image]['wwn']);
     return wwns.filter((wwn) => _.isString(wwn) && wwn !== '');
   }
 
-  onImageSelection($event) {
+  onImageSelection($event: any) {
     const option = $event.option;
 
     if (option.selected) {
@@ -413,16 +412,16 @@ export class IscsiTargetFormComponent implements OnInit {
 
   // Initiators
   get initiators() {
-    return this.targetForm.get('initiators') as FormArray;
+    return this.targetForm.get('initiators') as UntypedFormArray;
   }
 
   addInitiator() {
     const fg = new CdFormGroup({
-      client_iqn: new FormControl('', {
+      client_iqn: new UntypedFormControl('', {
         validators: [
           Validators.required,
-          CdValidators.custom('notUnique', (client_iqn) => {
-            const flattened = this.initiators.controls.reduce(function(accumulator, currentValue) {
+          CdValidators.custom('notUnique', (client_iqn: string) => {
+            const flattened = this.initiators.controls.reduce(function (accumulator, currentValue) {
               return accumulator.concat(currentValue.value.client_iqn);
             }, []);
 
@@ -432,13 +431,13 @@ export class IscsiTargetFormComponent implements OnInit {
         ]
       }),
       auth: new CdFormGroup({
-        user: new FormControl(''),
-        password: new FormControl(''),
-        mutual_user: new FormControl(''),
-        mutual_password: new FormControl('')
+        user: new UntypedFormControl(''),
+        password: new UntypedFormControl(''),
+        mutual_user: new UntypedFormControl(''),
+        mutual_password: new UntypedFormControl('')
       }),
-      luns: new FormControl([]),
-      cdIsInGroup: new FormControl(false)
+      luns: new UntypedFormControl([]),
+      cdIsInGroup: new UntypedFormControl(false)
     });
 
     this.setAuthValidator(fg);
@@ -493,7 +492,7 @@ export class IscsiTargetFormComponent implements OnInit {
     );
   }
 
-  removeInitiator(index) {
+  removeInitiator(index: number) {
     const removed = this.initiators.value[index];
 
     this.initiators.removeAt(index);
@@ -504,7 +503,9 @@ export class IscsiTargetFormComponent implements OnInit {
     });
 
     this.groups.controls.forEach((element) => {
-      const newMembers = element.value.members.filter((item) => item !== removed.client_iqn);
+      const newMembers = element.value.members.filter(
+        (item: string) => item !== removed.client_iqn
+      );
       element.get('members').setValue(newMembers);
     });
 
@@ -537,12 +538,12 @@ export class IscsiTargetFormComponent implements OnInit {
     });
   }
 
-  removeInitiatorImage(initiator: any, lun_index: number, initiator_index: string, image: string) {
+  removeInitiatorImage(initiator: any, lun_index: number, initiator_index: number, image: string) {
     const luns = initiator.getValue('luns');
     luns.splice(lun_index, 1);
     initiator.patchValue({ luns: luns });
 
-    this.imagesInitiatorSelections[initiator_index].forEach((value) => {
+    this.imagesInitiatorSelections[initiator_index].forEach((value: Record<string, any>) => {
       if (value.name === image) {
         value.selected = false;
       }
@@ -553,14 +554,14 @@ export class IscsiTargetFormComponent implements OnInit {
 
   // Groups
   get groups() {
-    return this.targetForm.get('groups') as FormArray;
+    return this.targetForm.get('groups') as UntypedFormArray;
   }
 
   addGroup() {
     const fg = new CdFormGroup({
-      group_id: new FormControl('', { validators: [Validators.required] }),
-      members: new FormControl([]),
-      disks: new FormControl([])
+      group_id: new UntypedFormControl('', { validators: [Validators.required] }),
+      members: new UntypedFormControl([]),
+      disks: new UntypedFormControl([])
     });
 
     this.groups.push(fg);
@@ -580,45 +581,56 @@ export class IscsiTargetFormComponent implements OnInit {
     return fg;
   }
 
-  removeGroup(index) {
+  removeGroup(index: number) {
+    // Remove group and disk selections
     this.groups.removeAt(index);
+
+    // Free initiator from group
+    const selectedMembers = this.groupMembersSelections[index].filter((value) => value.selected);
+    selectedMembers.forEach((selection) => {
+      selection.selected = false;
+      this.onGroupMemberSelection({ option: selection }, index);
+    });
+
+    this.groupMembersSelections.splice(index, 1);
     this.groupDiskSelections.splice(index, 1);
   }
 
-  onGroupMemberSelection($event) {
+  onGroupMemberSelection($event: any, group_index: number) {
     const option = $event.option;
 
-    let initiator_index: number;
+    let luns: string[] = [];
+    if (!option.selected) {
+      const selectedDisks = this.groupDiskSelections[group_index].filter((value) => value.selected);
+      luns = selectedDisks.map((value) => value.name);
+    }
+
     this.initiators.controls.forEach((element, index) => {
       if (element.value.client_iqn === option.name) {
-        element.patchValue({ luns: [] });
+        element.patchValue({ luns: luns });
         element.get('cdIsInGroup').setValue(option.selected);
-        initiator_index = index;
-      }
-    });
 
-    // Members can only be at one group at a time, so when a member is selected
-    // in one group we need to disable its selection in other groups
-    _.forEach(this.groupMembersSelections, (group) => {
-      group[initiator_index].enabled = !option.selected;
+        // Members can only be at one group at a time, so when a member is selected
+        // in one group we need to disable its selection in other groups
+        _.forEach(this.groupMembersSelections, (group) => {
+          group[index].enabled = !option.selected;
+        });
+
+        this.imagesInitiatorSelections[index].forEach((image) => {
+          image.selected = luns.includes(image.name);
+        });
+      }
     });
   }
 
-  removeGroupInitiator(group, member_index, group_index) {
+  removeGroupInitiator(group: CdFormGroup, member_index: number, group_index: number) {
     const name = group.getValue('members')[member_index];
     group.getValue('members').splice(member_index, 1);
 
-    this.groupMembersSelections[group_index].forEach((value) => {
-      if (value.name === name) {
-        value.selected = false;
-      }
-    });
-    this.groupMembersSelections[group_index] = [...this.groupMembersSelections[group_index]];
-
-    this.onGroupMemberSelection({ option: new SelectOption(false, name, '') });
+    this.onGroupMemberSelection({ option: new SelectOption(false, name, '') }, group_index);
   }
 
-  removeGroupDisk(group, disk_index, group_index) {
+  removeGroupDisk(group: CdFormGroup, disk_index: number, group_index: number) {
     const name = group.getValue('disks')[disk_index];
     group.getValue('disks').splice(disk_index, 1);
 
@@ -633,7 +645,7 @@ export class IscsiTargetFormComponent implements OnInit {
   submit() {
     const formValue = _.cloneDeep(this.targetForm.value);
 
-    const request = {
+    const request: Record<string, any> = {
       target_iqn: this.targetForm.getValue('target_iqn'),
       target_controls: this.targetForm.getValue('target_controls'),
       acl_enabled: this.targetForm.getValue('acl_enabled'),
@@ -668,7 +680,7 @@ export class IscsiTargetFormComponent implements OnInit {
     }
 
     // Disks
-    formValue.disks.forEach((disk) => {
+    formValue.disks.forEach((disk: string) => {
       const imageSplit = disk.split('/');
       const backstore = this.imagesSettings[disk].backstore;
       request.disks.push({
@@ -682,7 +694,7 @@ export class IscsiTargetFormComponent implements OnInit {
     });
 
     // Portals
-    formValue.portals.forEach((portal) => {
+    formValue.portals.forEach((portal: string) => {
       const index = portal.indexOf(':');
       request.portals.push({
         host: portal.substring(0, index),
@@ -692,7 +704,7 @@ export class IscsiTargetFormComponent implements OnInit {
 
     // Clients
     if (request.acl_enabled) {
-      formValue.initiators.forEach((initiator) => {
+      formValue.initiators.forEach((initiator: Record<string, any>) => {
         if (!initiator.auth.user) {
           initiator.auth.user = '';
         }
@@ -707,8 +719,8 @@ export class IscsiTargetFormComponent implements OnInit {
         }
         delete initiator.cdIsInGroup;
 
-        const newLuns = [];
-        initiator.luns.forEach((lun) => {
+        const newLuns: any[] = [];
+        initiator.luns.forEach((lun: string) => {
           const imageSplit = lun.split('/');
           newLuns.push({
             pool: imageSplit[0],
@@ -723,9 +735,9 @@ export class IscsiTargetFormComponent implements OnInit {
 
     // Groups
     if (request.acl_enabled) {
-      formValue.groups.forEach((group) => {
-        const newDisks = [];
-        group.disks.forEach((disk) => {
+      formValue.groups.forEach((group: Record<string, any>) => {
+        const newDisks: any[] = [];
+        group.disks.forEach((disk: string) => {
           const imageSplit = disk.split('/');
           newDisks.push({
             pool: imageSplit[0],
@@ -757,13 +769,12 @@ export class IscsiTargetFormComponent implements OnInit {
       });
     }
 
-    wrapTask.subscribe(
-      undefined,
-      () => {
+    wrapTask.subscribe({
+      error: () => {
         this.targetForm.setErrors({ cdSubmitButton: true });
       },
-      () => this.router.navigate(['/block/iscsi/targets'])
-    );
+      complete: () => this.router.navigate(['/block/iscsi/targets'])
+    });
   }
 
   targetSettingsModal() {
@@ -773,10 +784,10 @@ export class IscsiTargetFormComponent implements OnInit {
       target_controls_limits: this.target_controls_limits
     };
 
-    this.modalRef = this.modalService.show(IscsiTargetIqnSettingsModalComponent, { initialState });
+    this.modalRef = this.modalService.show(IscsiTargetIqnSettingsModalComponent, initialState);
   }
 
-  imageSettingsModal(image) {
+  imageSettingsModal(image: string) {
     const initialState = {
       imagesSettings: this.imagesSettings,
       image: image,
@@ -787,27 +798,25 @@ export class IscsiTargetFormComponent implements OnInit {
       control: this.targetForm.get('disks')
     };
 
-    this.modalRef = this.modalService.show(IscsiTargetImageSettingsModalComponent, {
-      initialState
-    });
+    this.modalRef = this.modalService.show(IscsiTargetImageSettingsModalComponent, initialState);
   }
 
-  validFeatures(image, backstore) {
+  validFeatures(image: Record<string, any>, backstore: string) {
     const imageFeatures = image.features;
     const requiredFeatures = this.required_rbd_features[backstore];
     const unsupportedFeatures = this.unsupported_rbd_features[backstore];
-    // tslint:disable-next-line:no-bitwise
+    // eslint-disable-next-line no-bitwise
     const validRequiredFeatures = (imageFeatures & requiredFeatures) === requiredFeatures;
-    // tslint:disable-next-line:no-bitwise
+    // eslint-disable-next-line no-bitwise
     const validSupportedFeatures = (imageFeatures & unsupportedFeatures) === 0;
     return validRequiredFeatures && validSupportedFeatures;
   }
 
-  getImageById(imageId) {
+  getImageById(imageId: string) {
     return this.imagesAll.find((image) => imageId === `${image.pool_name}/${image.name}`);
   }
 
-  getValidBackstores(image) {
+  getValidBackstores(image: object) {
     return this.backstores.filter((backstore) => this.validFeatures(image, backstore));
   }
 }

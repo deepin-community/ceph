@@ -1,9 +1,12 @@
+from typing import Optional, TYPE_CHECKING
 import unittest
-from unittest import case
 import time
 import logging
 
-from teuthology.orchestra.run import CommandFailedError
+from teuthology.exceptions import CommandFailedError
+
+if TYPE_CHECKING:
+    from tasks.mgr.mgr_test_case import MgrCluster
 
 log = logging.getLogger(__name__)
 
@@ -21,9 +24,10 @@ class CephTestCase(unittest.TestCase):
     mounts = None
     fs = None
     recovery_fs = None
+    backup_fs = None
     ceph_cluster = None
     mds_cluster = None
-    mgr_cluster = None
+    mgr_cluster: Optional['MgrCluster'] = None
     ctx = None
 
     mon_manager = None
@@ -43,7 +47,7 @@ class CephTestCase(unittest.TestCase):
             if objectstore != "memstore":
                 # You certainly *could* run this on a real OSD, but you don't want to sit
                 # here for hours waiting for the test to fill up a 1TB drive!
-                raise case.SkipTest("Require `memstore` OSD backend (test " \
+                raise self.skipTest("Require `memstore` OSD backend (test " \
                         "would take too long on full sized OSDs")
 
     def tearDown(self):
@@ -82,8 +86,13 @@ class CephTestCase(unittest.TestCase):
        self._mon_configs_set.add((section, key))
        self.ceph_cluster.mon_manager.raw_cluster_cmd("config", "set", section, key, str(value))
 
+    def cluster_cmd(self, command: str):
+        assert self.ceph_cluster is not None
+        return self.ceph_cluster.mon_manager.raw_cluster_cmd(*(command.split(" ")))
+
+
     def assert_cluster_log(self, expected_pattern, invert_match=False,
-                           timeout=10, watch_channel=None):
+                           timeout=10, watch_channel=None, present=True):
         """
         Context manager.  Assert that during execution, or up to 5 seconds later,
         the Ceph cluster log emits a message matching the expected pattern.
@@ -93,6 +102,8 @@ class CephTestCase(unittest.TestCase):
         :param watch_channel: Specifies the channel to be watched. This can be
                               'cluster', 'audit', ...
         :type watch_channel: str
+        :param present: Assert the log entry is present (default: True) or not (False).
+        :type present: bool
         """
 
         ceph_manager = self.ceph_cluster.mon_manager
@@ -109,10 +120,13 @@ class CephTestCase(unittest.TestCase):
                 self.watcher_process = ceph_manager.run_ceph_w(watch_channel)
 
             def __exit__(self, exc_type, exc_val, exc_tb):
+                fail = False
                 if not self.watcher_process.finished:
                     # Check if we got an early match, wait a bit if we didn't
-                    if self.match():
+                    if present and self.match():
                         return
+                    elif not present and self.match():
+                        fail = True
                     else:
                         log.debug("No log hits yet, waiting...")
                         # Default monc tick interval is 10s, so wait that long and
@@ -125,9 +139,12 @@ class CephTestCase(unittest.TestCase):
                 except CommandFailedError:
                     pass
 
-                if not self.match():
-                    log.error("Log output: \n{0}\n".format(self.watcher_process.stdout.getvalue()))
-                    raise AssertionError("Expected log message not found: '{0}'".format(expected_pattern))
+                if present and not self.match():
+                    log.error(f"Log output: \n{self.watcher_process.stdout.getvalue()}\n")
+                    raise AssertionError(f"Expected log message found: '{expected_pattern}'")
+                elif fail or (not present and self.match()):
+                    log.error(f"Log output: \n{self.watcher_process.stdout.getvalue()}\n")
+                    raise AssertionError(f"Unexpected log message found: '{expected_pattern}'")
 
         return ContextManager()
 
@@ -152,6 +169,7 @@ class CephTestCase(unittest.TestCase):
             log.debug("Not found expected summary strings yet ({0})".format(summary_strings))
             return False
 
+        log.info(f"waiting {timeout}s for health warning matching {pattern}")
         self.wait_until_true(seen_health_warning, timeout)
 
     def wait_for_health_clear(self, timeout):
@@ -164,8 +182,7 @@ class CephTestCase(unittest.TestCase):
 
         self.wait_until_true(is_clear, timeout)
 
-    def wait_until_equal(self, get_fn, expect_val, timeout, reject_fn=None):
-        period = 5
+    def wait_until_equal(self, get_fn, expect_val, timeout, reject_fn=None, period=5):
         elapsed = 0
         while True:
             val = get_fn()
@@ -179,25 +196,29 @@ class CephTestCase(unittest.TestCase):
                         elapsed, expect_val, val
                     ))
                 else:
-                    log.debug("wait_until_equal: {0} != {1}, waiting...".format(val, expect_val))
+                    log.debug("wait_until_equal: {0} != {1}, waiting (timeout={2})...".format(val, expect_val, timeout))
                 time.sleep(period)
                 elapsed += period
 
         log.debug("wait_until_equal: success")
 
     @classmethod
-    def wait_until_true(cls, condition, timeout, period=5):
+    def wait_until_true(cls, condition, timeout, check_fn=None, period=5):
         elapsed = 0
+        retry_count = 0
         while True:
             if condition():
-                log.debug("wait_until_true: success in {0}s".format(elapsed))
+                log.debug("wait_until_true: success in {0}s and {1} retries".format(elapsed, retry_count))
                 return
             else:
                 if elapsed >= timeout:
-                    raise TestTimeoutError("Timed out after {0}s".format(elapsed))
+                    if check_fn and check_fn() and retry_count < 5:
+                        elapsed = 0
+                        retry_count += 1
+                        log.debug("wait_until_true: making progress, waiting (timeout={0} retry_count={1})...".format(timeout, retry_count))
+                    else:
+                        raise TestTimeoutError("Timed out after {0}s and {1} retries".format(elapsed, retry_count))
                 else:
-                    log.debug("wait_until_true: waiting...")
+                    log.debug("wait_until_true: waiting (timeout={0} retry_count={1})...".format(timeout, retry_count))
                 time.sleep(period)
                 elapsed += period
-
-

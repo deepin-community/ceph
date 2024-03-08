@@ -14,39 +14,39 @@
 
 #pragma once
 
+#include <boost/container/small_vector.hpp>
+#include <seastar/core/future.hh>
+#include <seastar/core/future-util.hh>
 #include <seastar/core/shared_ptr.hh>
 #include <seastar/core/sharded.hh>
 
+#include "msg/Connection.h"
+#include "msg/MessageRef.h"
 #include "msg/msg_types.h"
-#include "msg/Message.h"
 
-using peer_type_t = int;
-using auth_proto_t = int;
+#include "crimson/common/errorator.h"
+#include "crimson/common/local_shared_foreign_ptr.h"
 
-namespace ceph::net {
+class AuthConnectionMeta;
+
+namespace crimson::net {
 
 using msgr_tag_t = uint8_t;
+using stop_t = seastar::stop_iteration;
 
 class Connection;
-using ConnectionRef = seastar::shared_ptr<Connection>;
-// NOTE: ConnectionXRef should only be used in seastar world, because
-// lw_shared_ptr<> is not safe to be accessed by unpinned alien threads.
-using ConnectionXRef = seastar::lw_shared_ptr<seastar::foreign_ptr<ConnectionRef>>;
+using ConnectionLRef = seastar::shared_ptr<Connection>;
+using ConnectionFRef = seastar::foreign_ptr<ConnectionLRef>;
+using ConnectionRef = ::crimson::local_shared_foreign_ptr<ConnectionLRef>;
 
 class Dispatcher;
+class ChainedDispatchers;
+constexpr std::size_t NUM_DISPATCHERS = 4u;
+using dispatchers_t = boost::container::small_vector<Dispatcher*, NUM_DISPATCHERS>;
 
 class Messenger;
+using MessengerRef = seastar::shared_ptr<Messenger>;
 
-template <typename T, typename... Args>
-seastar::future<T*> create_sharded(Args... args) {
-  auto sharded_obj = seastar::make_lw_shared<seastar::sharded<T>>();
-  return sharded_obj->start(args...).then([sharded_obj]() {
-      auto ret = &sharded_obj->local();
-      seastar::engine().at_exit([sharded_obj]() {
-          return sharded_obj->stop().finally([sharded_obj] {});
-        });
-      return ret;
-    });
-}
+using MessageFRef = seastar::foreign_ptr<MessageURef>;
 
-} // namespace ceph::net
+} // namespace crimson::net

@@ -24,8 +24,8 @@ public:
     bool aborted = false;
     Context *onfinish = nullptr;
 
-    Mutex lock = {"ParallelPGMapper::Job::lock"};
-    Cond cond;
+    ceph::mutex lock = ceph::make_mutex("ParallelPGMapper::Job::lock");
+    ceph::condition_variable cond;
 
     Job(const OSDMap *om) : start(ceph_clock_now()), osdmap(om) {}
     virtual ~Job() {
@@ -33,20 +33,20 @@ public:
     }
 
     // child must implement either form of process
-    virtual void process(const vector<pg_t>& pgs) = 0;
+    virtual void process(const std::vector<pg_t>& pgs) = 0;
     virtual void process(int64_t poolid, unsigned ps_begin, unsigned ps_end) = 0;
     virtual void complete() = 0;
 
     void set_finish_event(Context *fin) {
-      lock.Lock();
+      lock.lock();
       if (shards == 0) {
 	// already done.
-	lock.Unlock();
+	lock.unlock();
 	fin->complete(0);
       } else {
 	// set finisher
 	onfinish = fin;
-	lock.Unlock();
+	lock.unlock();
       }
     }
     bool is_done() {
@@ -57,33 +57,29 @@ public:
       return finish - start;
     }
     void wait() {
-      std::lock_guard l(lock);
-      while (shards > 0) {
-	cond.Wait(lock);
-      }
+      std::unique_lock l(lock);
+      cond.wait(l, [this] { return shards == 0; });
     }
     bool wait_for(double duration) {
       utime_t until = start;
       until += duration;
-      std::lock_guard l(lock);
+      std::unique_lock l(lock);
       while (shards > 0) {
 	if (ceph_clock_now() >= until) {
 	  return false;
 	}
-	cond.Wait(lock);
+	cond.wait(l);
       }
       return true;
     }
     void abort() {
       Context *fin = nullptr;
       {
-	std::lock_guard l(lock);
+	std::unique_lock l(lock);
 	aborted = true;
 	fin = onfinish;
 	onfinish = nullptr;
-	while (shards > 0) {
-	  cond.Wait(lock);
-	}
+	cond.wait(l, [this] { return shards == 0; });
       }
       if (fin) {
 	fin->complete(-ECANCELED);
@@ -104,9 +100,9 @@ protected:
     Job *job;
     int64_t pool;
     unsigned begin, end;
-    vector<pg_t> pgs;
+    std::vector<pg_t> pgs;
 
-    Item(Job *j, vector<pg_t> pgs) : job(j), pgs(pgs) {}
+    Item(Job *j, std::vector<pg_t> pgs) : job(j), pgs(pgs) {}
     Item(Job *j, int64_t p, unsigned b, unsigned e)
       : job(j),
 	pool(p),
@@ -119,7 +115,11 @@ protected:
     ParallelPGMapper *m;
 
     WQ(ParallelPGMapper *m_, ThreadPool *tp)
-      : ThreadPool::WorkQueue<Item>("ParallelPGMapper::WQ", 0, 0, tp),
+      : ThreadPool::WorkQueue<Item>(
+	"ParallelPGMapper::WQ",
+	ceph::make_timespan(m_->cct->_conf->threadpool_default_timeout),
+	ceph::timespan::zero(),
+	tp),
         m(m_) {}
 
     bool _enqueue(Item *i) override {
@@ -162,7 +162,7 @@ public:
   void queue(
     Job *job,
     unsigned pgs_per_item,
-    const vector<pg_t>& input_pgs);
+    const std::vector<pg_t>& input_pgs);
 
   void drain() {
     wq.drain();
@@ -279,7 +279,7 @@ private:
       : Job(osdmap), mapping(m) {
       mapping->_start(*osdmap);
     }
-    void process(const vector<pg_t>& pgs) override {}
+    void process(const std::vector<pg_t>& pgs) override {}
     void process(int64_t pool, unsigned ps_begin, unsigned ps_end) override {
       mapping->_update_range(*osdmap, pool, ps_begin, ps_end);
     }
@@ -287,6 +287,9 @@ private:
       mapping->_finish(*osdmap);
     }
   };
+  friend class OSDMapTest;
+  // for testing only
+  void update(const OSDMap& map);
 
 public:
   void get(pg_t pgid,
@@ -306,7 +309,7 @@ public:
     auto p = pools.find(pgid.pool());
     ceph_assert(p != pools.end());
     ceph_assert(pgid.ps() < p->second.pg_num);
-    vector<int> acting;
+    std::vector<int> acting;
     p->second.get(pgid.ps(), nullptr, nullptr, &acting, acting_primary);
     if (p->second.erasure) {
       for (uint8_t i = 0; i < acting.size(); ++i) {
@@ -322,12 +325,11 @@ public:
     }
   }
 
-  const mempool::osdmap_mapping::vector<pg_t>& get_osd_acting_pgs(unsigned osd) {
+  const mempool::osdmap_mapping::vector<pg_t>& get_osd_acting_pgs(unsigned osd) { 
     ceph_assert(osd < acting_rmap.size());
     return acting_rmap[osd];
   }
 
-  void update(const OSDMap& map);
   void update(const OSDMap& map, pg_t pgid);
 
   std::unique_ptr<MappingJob> start_update(

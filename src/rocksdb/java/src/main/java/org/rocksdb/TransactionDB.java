@@ -6,7 +6,6 @@
 package org.rocksdb;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -83,8 +82,8 @@ public class TransactionDB extends RocksDB
     for (int i = 0; i < columnFamilyDescriptors.size(); i++) {
       final ColumnFamilyDescriptor cfDescriptor = columnFamilyDescriptors
           .get(i);
-      cfNames[i] = cfDescriptor.columnFamilyName();
-      cfOptionHandles[i] = cfDescriptor.columnFamilyOptions().nativeHandle_;
+      cfNames[i] = cfDescriptor.getName();
+      cfOptionHandles[i] = cfDescriptor.getOptions().nativeHandle_;
     }
 
     final long[] handles = open(dbOptions.nativeHandle_,

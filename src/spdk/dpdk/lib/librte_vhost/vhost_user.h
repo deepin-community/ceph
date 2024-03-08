@@ -22,7 +22,8 @@
 					 (1ULL << VHOST_USER_PROTOCOL_F_SLAVE_REQ) | \
 					 (1ULL << VHOST_USER_PROTOCOL_F_CRYPTO_SESSION) | \
 					 (1ULL << VHOST_USER_PROTOCOL_F_SLAVE_SEND_FD) | \
-					 (1ULL << VHOST_USER_PROTOCOL_F_HOST_NOTIFIER))
+					 (1ULL << VHOST_USER_PROTOCOL_F_HOST_NOTIFIER) | \
+					 (1ULL << VHOST_USER_PROTOCOL_F_PAGEFAULT))
 
 typedef enum VhostUserRequest {
 	VHOST_USER_NONE = 0,
@@ -50,12 +51,18 @@ typedef enum VhostUserRequest {
 	VHOST_USER_IOTLB_MSG = 22,
 	VHOST_USER_CRYPTO_CREATE_SESS = 26,
 	VHOST_USER_CRYPTO_CLOSE_SESS = 27,
-	VHOST_USER_MAX = 28
+	VHOST_USER_POSTCOPY_ADVISE = 28,
+	VHOST_USER_POSTCOPY_LISTEN = 29,
+	VHOST_USER_POSTCOPY_END = 30,
+	VHOST_USER_GET_INFLIGHT_FD = 31,
+	VHOST_USER_SET_INFLIGHT_FD = 32,
+	VHOST_USER_MAX = 33
 } VhostUserRequest;
 
 typedef enum VhostUserSlaveRequest {
 	VHOST_USER_SLAVE_NONE = 0,
 	VHOST_USER_SLAVE_IOTLB_MSG = 1,
+	VHOST_USER_SLAVE_CONFIG_CHANGE_MSG = 2,
 	VHOST_USER_SLAVE_VRING_HOST_NOTIFIER_MSG = 3,
 	VHOST_USER_SLAVE_MAX
 } VhostUserSlaveRequest;
@@ -108,6 +115,13 @@ typedef struct VhostUserVringArea {
 	uint64_t offset;
 } VhostUserVringArea;
 
+typedef struct VhostUserInflight {
+	uint64_t mmap_size;
+	uint64_t mmap_offset;
+	uint16_t num_queues;
+	uint16_t queue_size;
+} VhostUserInflight;
+
 typedef struct VhostUserMsg {
 	union {
 		uint32_t master; /* a VhostUserRequest value */
@@ -130,9 +144,11 @@ typedef struct VhostUserMsg {
 		struct vhost_iotlb_msg iotlb;
 		VhostUserCryptoSessionParam crypto_session;
 		VhostUserVringArea area;
+		VhostUserInflight inflight;
 	} payload;
 	int fds[VHOST_MEMORY_MAX_NREGIONS];
-} __attribute((packed)) VhostUserMsg;
+	int fd_num;
+} __rte_packed VhostUserMsg;
 
 #define VHOST_USER_HDR_SIZE offsetof(VhostUserMsg, payload.u64)
 
@@ -143,10 +159,10 @@ typedef struct VhostUserMsg {
 /* vhost_user.c */
 int vhost_user_msg_handler(int vid, int fd);
 int vhost_user_iotlb_miss(struct virtio_net *dev, uint64_t iova, uint8_t perm);
-int vhost_user_host_notifier_ctrl(int vid, bool enable);
 
 /* socket.c */
-int read_fd_message(int sockfd, char *buf, int buflen, int *fds, int fd_num);
+int read_fd_message(int sockfd, char *buf, int buflen, int *fds, int max_fds,
+		int *fd_num);
 int send_fd_message(int sockfd, char *buf, int buflen, int *fds, int fd_num);
 
 #endif

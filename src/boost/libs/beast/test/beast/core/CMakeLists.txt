@@ -33,7 +33,6 @@ add_executable (tests-beast-core
     bind_handler.cpp
     buffer_traits.cpp
     buffered_read_stream.cpp
-    buffers_adapter.cpp
     buffers_adaptor.cpp
     buffers_cat.cpp
     buffers_prefix.cpp
@@ -62,7 +61,6 @@ add_executable (tests-beast-core
     static_string.cpp
     stream_traits.cpp
     string.cpp
-    string_param.cpp
     tcp_stream.cpp
 )
 
@@ -74,3 +72,10 @@ target_link_libraries(tests-beast-core
     )
 
 set_property(TARGET tests-beast-core PROPERTY FOLDER "tests")
+
+#
+# Individual tests
+#
+build_individual_tests(tests-beast-core
+        EXCLUDE _detail_static_const close_socket zlib make_strand prepare_buffers
+        LIBS lib-asio lib-asio-ssl lib-beast lib-test)

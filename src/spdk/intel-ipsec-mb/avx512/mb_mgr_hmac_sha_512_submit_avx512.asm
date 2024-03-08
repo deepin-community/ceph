@@ -32,11 +32,11 @@
 ;;
 ;; Clobbers ZMM0-31
 
-%include "os.asm"
+%include "include/os.asm"
 %include "job_aes_hmac.asm"
 %include "mb_mgr_datastruct.asm"
-%include "reg_sizes.asm"
-%include "memcpy.asm"
+%include "include/reg_sizes.asm"
+%include "include/memcpy.asm"
 
 extern sha512_x8_avx512
 
@@ -299,28 +299,101 @@ end_loop:
 
 	mov	p, [job_rax + _auth_tag_output]
 
-	; below is the code for both SHA512 & SHA384. SHA512=32 bytes and SHA384=24 bytes
+        vzeroupper
+
+%if (SHA_X_DIGEST_SIZE != 384)
+        cmp     qword [job_rax + _auth_tag_output_len_in_bytes], 32
+        jne     copy_full_digest
+%else
+        cmp     qword [job_rax + _auth_tag_output_len_in_bytes], 24
+        jne     copy_full_digest
+%endif
+
+	;; copy 32 bytes for SHA512 / 24 bytes for SHA384
 	mov	QWORD(tmp),  [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 0*SHA512_DIGEST_ROW_SIZE]
 	mov	QWORD(tmp2), [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 1*SHA512_DIGEST_ROW_SIZE]
 	mov	QWORD(tmp3), [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 2*SHA512_DIGEST_ROW_SIZE]
 %if (SHA_X_DIGEST_SIZE != 384)
 	mov	QWORD(tmp4), [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 3*SHA512_DIGEST_ROW_SIZE]
 %endif
-
 	bswap	QWORD(tmp)
 	bswap	QWORD(tmp2)
 	bswap	QWORD(tmp3)
 %if (SHA_X_DIGEST_SIZE != 384)
 	bswap	QWORD(tmp4)
 %endif
-
 	mov	[p + 0*8], QWORD(tmp)
 	mov	[p + 1*8], QWORD(tmp2)
 	mov	[p + 2*8], QWORD(tmp3)
 %if (SHA_X_DIGEST_SIZE != 384)
 	mov	[p + 3*8], QWORD(tmp4)
 %endif
-        vzeroupper
+        jmp     clear_ret
+
+copy_full_digest:
+	;; copy 64 bytes for SHA512 / 48 bytes for SHA384
+	mov	QWORD(tmp),  [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 0*SHA512_DIGEST_ROW_SIZE]
+	mov	QWORD(tmp2), [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 1*SHA512_DIGEST_ROW_SIZE]
+	mov	QWORD(tmp3), [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 2*SHA512_DIGEST_ROW_SIZE]
+	mov	QWORD(tmp4), [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 3*SHA512_DIGEST_ROW_SIZE]
+	bswap	QWORD(tmp)
+	bswap	QWORD(tmp2)
+	bswap	QWORD(tmp3)
+	bswap	QWORD(tmp4)
+	mov	[p + 0*8], QWORD(tmp)
+	mov	[p + 1*8], QWORD(tmp2)
+	mov	[p + 2*8], QWORD(tmp3)
+	mov	[p + 3*8], QWORD(tmp4)
+
+	mov	QWORD(tmp),  [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 4*SHA512_DIGEST_ROW_SIZE]
+	mov	QWORD(tmp2), [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 5*SHA512_DIGEST_ROW_SIZE]
+%if (SHA_X_DIGEST_SIZE != 384)
+	mov	QWORD(tmp3), [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 6*SHA512_DIGEST_ROW_SIZE]
+	mov	QWORD(tmp4), [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 7*SHA512_DIGEST_ROW_SIZE]
+%endif
+	bswap	QWORD(tmp)
+	bswap	QWORD(tmp2)
+%if (SHA_X_DIGEST_SIZE != 384)
+	bswap	QWORD(tmp3)
+	bswap	QWORD(tmp4)
+%endif
+	mov	[p + 4*8], QWORD(tmp)
+	mov	[p + 5*8], QWORD(tmp2)
+%if (SHA_X_DIGEST_SIZE != 384)
+	mov	[p + 6*8], QWORD(tmp3)
+	mov	[p + 7*8], QWORD(tmp4)
+%endif
+
+clear_ret:
+
+%ifdef SAFE_DATA
+        ;; Clear digest (48B/64B), outer_block (48B/64B) and extra_block (128B) of returned job
+%assign J 0
+%rep 6
+        mov     qword [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + J*SHA512_DIGEST_ROW_SIZE], 0
+%assign J (J+1)
+%endrep
+%if (SHA_X_DIGEST_SIZE != 384)
+        mov     qword [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 6*SHA256_DIGEST_ROW_SIZE], 0
+        mov     qword [state + _args_digest_sha512 + SHA512_DIGEST_WORD_SIZE*idx + 7*SHA256_DIGEST_ROW_SIZE], 0
+%endif
+
+        vpxorq  zmm0, zmm0
+        imul	lane_data, idx, _SHA512_LANE_DATA_size
+        lea	lane_data, [state + _ldata_sha512 + lane_data]
+        ;; Clear first 128 bytes of extra_block
+        vmovdqu64 [lane_data + _extra_block], zmm0
+        vmovdqu64 [lane_data + _extra_block + 64], zmm0
+
+        ;; Clear first 48 bytes (SHA-384) or 64 bytes (SHA-512) of outer_block
+%if (SHA_X_DIGEST_SIZE == 384)
+        vmovdqu64 [lane_data + _outer_block], ymm0
+        vmovdqa64 [lane_data + _outer_block + 32], xmm0
+%else
+        vmovdqu64 [lane_data + _outer_block], zmm0
+%endif
+%endif ;; SAFE_DATA
+
 return:
 	mov	rbx, [rsp + _gpr_save + 8*0]
 	mov	rbp, [rsp + _gpr_save + 8*1]

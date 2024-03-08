@@ -28,50 +28,33 @@
 #include <seastar/net/byteorder.hh>
 #include <seastar/net/socket_defs.hh>
 #include <seastar/net/packet.hh>
-#include <seastar/core/print.hh>
+#include <seastar/core/internal/api-level.hh>
 #include <seastar/core/temporary_buffer.hh>
 #include <seastar/core/iostream.hh>
 #include <seastar/util/std-compat.hh>
+#include <seastar/util/program-options.hh>
 #include <sys/types.h>
 
 namespace seastar {
 
-static inline
-bool is_ip_unspecified(ipv4_addr &addr) {
-    return addr.ip == 0;
-}
-
-static inline
-bool is_port_unspecified(ipv4_addr &addr) {
-    return addr.port == 0;
-}
-
-static inline
-std::ostream& operator<<(std::ostream &os, ipv4_addr addr) {
-    fmt_print(os, "{:d}.{:d}.{:d}.{:d}",
-            (addr.ip >> 24) & 0xff,
-            (addr.ip >> 16) & 0xff,
-            (addr.ip >> 8) & 0xff,
-            (addr.ip) & 0xff);
-    return os << ":" << addr.port;
-}
-
-static inline
-socket_address make_ipv4_address(ipv4_addr addr) {
-    socket_address sa;
-    sa.u.in.sin_family = AF_INET;
-    sa.u.in.sin_port = htons(addr.port);
-    sa.u.in.sin_addr.s_addr = htonl(addr.ip);
-    return sa;
+inline
+bool is_ip_unspecified(const ipv4_addr& addr) noexcept {
+    return addr.is_ip_unspecified();
 }
 
 inline
-socket_address make_ipv4_address(uint32_t ip, uint16_t port) {
-    socket_address sa;
-    sa.u.in.sin_family = AF_INET;
-    sa.u.in.sin_port = htons(port);
-    sa.u.in.sin_addr.s_addr = htonl(ip);
-    return sa;
+bool is_port_unspecified(const ipv4_addr& addr) noexcept {
+    return addr.is_port_unspecified();
+}
+
+inline
+socket_address make_ipv4_address(const ipv4_addr& addr) noexcept {
+    return socket_address(addr);
+}
+
+inline
+socket_address make_ipv4_address(uint32_t ip, uint16_t port) noexcept {
+    return make_ipv4_address(ipv4_addr(ip, port));
 }
 
 namespace net {
@@ -89,11 +72,12 @@ struct sctp_keepalive_params {
     unsigned count; // spp_pathmaxrt
 };
 
-using keepalive_params = compat::variant<tcp_keepalive_params, sctp_keepalive_params>;
+using keepalive_params = std::variant<tcp_keepalive_params, sctp_keepalive_params>;
 
 /// \cond internal
 class connected_socket_impl;
 class socket_impl;
+
 class server_socket_impl;
 class udp_channel_impl;
 class get_impl;
@@ -102,8 +86,8 @@ class get_impl;
 class udp_datagram_impl {
 public:
     virtual ~udp_datagram_impl() {};
-    virtual ipv4_addr get_src() = 0;
-    virtual ipv4_addr get_dst() = 0;
+    virtual socket_address get_src() = 0;
+    virtual socket_address get_dst() = 0;
     virtual uint16_t get_dst_port() = 0;
     virtual packet& get_data() = 0;
 };
@@ -112,9 +96,9 @@ class udp_datagram final {
 private:
     std::unique_ptr<udp_datagram_impl> _impl;
 public:
-    udp_datagram(std::unique_ptr<udp_datagram_impl>&& impl) : _impl(std::move(impl)) {};
-    ipv4_addr get_src() { return _impl->get_src(); }
-    ipv4_addr get_dst() { return _impl->get_dst(); }
+    udp_datagram(std::unique_ptr<udp_datagram_impl>&& impl) noexcept : _impl(std::move(impl)) {};
+    socket_address get_src() { return _impl->get_src(); }
+    socket_address get_dst() { return _impl->get_dst(); }
     uint16_t get_dst_port() { return _impl->get_dst_port(); }
     packet& get_data() { return _impl->get_data(); }
 };
@@ -123,16 +107,18 @@ class udp_channel {
 private:
     std::unique_ptr<udp_channel_impl> _impl;
 public:
-    udp_channel();
-    udp_channel(std::unique_ptr<udp_channel_impl>);
+    udp_channel() noexcept;
+    udp_channel(std::unique_ptr<udp_channel_impl>) noexcept;
     ~udp_channel();
 
-    udp_channel(udp_channel&&);
-    udp_channel& operator=(udp_channel&&);
+    udp_channel(udp_channel&&) noexcept;
+    udp_channel& operator=(udp_channel&&) noexcept;
+
+    socket_address local_address() const;
 
     future<udp_datagram> receive();
-    future<> send(ipv4_addr dst, const char* msg);
-    future<> send(ipv4_addr dst, packet p);
+    future<> send(const socket_address& dst, const char* msg);
+    future<> send(const socket_address& dst, packet p);
     bool is_closed() const;
     /// Causes a pending receive() to complete (possibly with an exception)
     void shutdown_input();
@@ -146,10 +132,37 @@ public:
     void close();
 };
 
+class network_interface_impl;
+
 } /* namespace net */
 
 /// \addtogroup networking-module
 /// @{
+
+/// Configuration for buffered connected_socket input operations
+///
+/// This structure allows tuning of buffered input operations done via
+/// connected_socket. It is a hint to the implementation and may be
+/// ignored (e.g. the zero-copy native stack does not allocate buffers,
+/// so it ignores buffer-size parameters).
+struct connected_socket_input_stream_config final {
+    /// Initial buffer size to use for input buffering
+    unsigned buffer_size = 8192;
+    /// Minimum buffer size to use for input buffering. The system will decrease
+    /// buffer sizes if it sees a tendency towards small requests, but will not go
+    /// below this buffer size.
+    unsigned min_buffer_size = 512;
+    /// Maximum buffer size to use for input buffering. The system will increase
+    /// buffer sizes if it sees a tendency towards large requests, but will not go
+    /// above this buffer size.
+    unsigned max_buffer_size = 128 * 1024;
+};
+
+/// Distinguished name
+struct session_dn {
+    sstring subject;
+    sstring issuer;
+};
 
 /// A TCP (or other stream-based protocol) connection.
 ///
@@ -160,11 +173,11 @@ class connected_socket {
     std::unique_ptr<net::connected_socket_impl> _csi;
 public:
     /// Constructs a \c connected_socket not corresponding to a connection
-    connected_socket();
+    connected_socket() noexcept;
     ~connected_socket();
 
     /// \cond internal
-    explicit connected_socket(std::unique_ptr<net::connected_socket_impl> csi);
+    explicit connected_socket(std::unique_ptr<net::connected_socket_impl> csi) noexcept;
     /// \endcond
     /// Moves a \c connected_socket object.
     connected_socket(connected_socket&& cs) noexcept;
@@ -172,8 +185,10 @@ public:
     connected_socket& operator=(connected_socket&& cs) noexcept;
     /// Gets the input stream.
     ///
+    /// \param csisc Configuration for the input_stream returned
+    ///
     /// Gets an object returning data sent from the remote endpoint.
-    input_stream<char> input();
+    input_stream<char> input(connected_socket_input_stream_config csisc = {});
     /// Gets the output stream.
     ///
     /// Gets an object that sends data to the remote endpoint.
@@ -194,6 +209,16 @@ public:
     void set_keepalive_parameters(const net::keepalive_params& p);
     /// Get TCP keepalive parameters
     net::keepalive_params get_keepalive_parameters() const;
+    /// Sets custom socket options. Based on setsockopt function.
+    /// Linux users should refer to protocol-specific manuals
+    /// to see available options, e.g. tcp(7), ip(7), etc.
+    void set_sockopt(int level, int optname, const void* data, size_t len);
+    /// Gets custom socket options. Based on getsockopt function.
+    /// Linux users should refer to protocol-specific manuals
+    /// to see available options, e.g. tcp(7), ip(7), etc.
+    int get_sockopt(int level, int optname, void* data, size_t len) const;
+    /// Local address of the socket
+    socket_address local_address() const noexcept;
 
     /// Disables output to the socket.
     ///
@@ -208,6 +233,29 @@ public:
     /// This is useful to abort operations on a socket that is not making
     /// progress due to a peer failure.
     void shutdown_input();
+    /// Check whether the \c connected_socket is initialized.
+    ///
+    /// \return true if this \c connected_socket socket_address is bound initialized
+    /// false otherwise.
+    ///
+    /// \see connect(socket_address sa)
+    /// \see connect(socket_address sa, socket_address local, transport proto)
+    explicit operator bool() const noexcept {
+        return static_cast<bool>(_csi);
+    }
+    /// Waits for the peer of this socket to disconnect
+    ///
+    /// \return future that resolves when the peer closes connection or shuts it down
+    /// for writing or when local socket is called \ref shutdown_input().
+    ///
+    /// Note, that when the returned future is resolved for whatever reason socket
+    /// may still be readable from, so the caller may want to wait for both events
+    /// -- this one and EOF from read.
+    ///
+    /// Calling it several times per socket is not allowed (undefined behavior)
+    ///
+    /// \see poll(2) about POLLRDHUP for more details
+    future<> wait_input_shutdown();
 };
 /// @}
 
@@ -221,10 +269,11 @@ public:
 class socket {
     std::unique_ptr<net::socket_impl> _si;
 public:
+    socket() noexcept = default;
     ~socket();
 
     /// \cond internal
-    explicit socket(std::unique_ptr<net::socket_impl> si);
+    explicit socket(std::unique_ptr<net::socket_impl> si) noexcept;
     /// \endcond
     /// Moves a \c seastar::socket object.
     socket(socket&&) noexcept;
@@ -234,7 +283,13 @@ public:
     /// Attempts to establish the connection.
     ///
     /// \return a \ref connected_socket representing the connection.
-    future<connected_socket> connect(socket_address sa, socket_address local = socket_address(::sockaddr_in{AF_INET, INADDR_ANY, {0}}), transport proto = transport::TCP);
+    future<connected_socket> connect(socket_address sa, socket_address local = {}, transport proto = transport::TCP);
+
+    /// Sets SO_REUSEADDR option (enable reuseaddr option on a socket)
+    void set_reuseaddr(bool reuseaddr);
+    /// Gets O_REUSEADDR option
+    /// \return whether the reuseaddr option is enabled or not
+    bool get_reuseaddr() const;
     /// Stops any in-flight connection attempt.
     ///
     /// Cancels the connection attempt if it's still in progress, and
@@ -246,6 +301,12 @@ public:
 
 /// \addtogroup networking-module
 /// @{
+
+/// The result of an server_socket::accept() call
+struct accept_result {
+    connected_socket connection;  ///< The newly-accepted connection
+    socket_address remote_address;  ///< The address of the peer that connected to us
+};
 
 /// A listening socket, waiting to accept incoming network connections.
 class server_socket {
@@ -261,12 +322,14 @@ public:
         // to a specific shard in a server given it knows how many shards server has by choosing
         // src port number accordingly.
         port,
+        // This algorithm distributes all new connections to listen_options::fixed_cpu shard only.
+        fixed,
         default_ = connection_distribution
     };
-    /// Constructs a \c server_socket not corresponding to a connection
-    server_socket();
+    /// Constructs a \c server_socket without being bound to any address
+    server_socket() noexcept;
     /// \cond internal
-    explicit server_socket(std::unique_ptr<net::server_socket_impl> ssi);
+    explicit server_socket(std::unique_ptr<net::server_socket_impl> ssi) noexcept;
     /// \endcond
     /// Moves a \c server_socket object.
     server_socket(server_socket&& ss) noexcept;
@@ -276,25 +339,76 @@ public:
 
     /// Accepts the next connection to successfully connect to this socket.
     ///
-    /// \return a \ref connected_socket representing the connection, and
-    ///         a \ref socket_address describing the remote endpoint.
+    /// \return an accept_result representing the connection and
+    ///         the socket_address of the remote endpoint.
     ///
     /// \see listen(socket_address sa)
     /// \see listen(socket_address sa, listen_options opts)
-    future<connected_socket, socket_address> accept();
+    future<accept_result> accept();
 
     /// Stops any \ref accept() in progress.
     ///
     /// Current and future \ref accept() calls will terminate immediately
     /// with an error.
     void abort_accept();
+
+    /// Local bound address
+    ///
+    /// \return the local bound address if the \c server_socket is listening,
+    /// an empty address constructed with \c socket_address() otherwise.
+    ///
+    /// \see listen(socket_address sa)
+    /// \see listen(socket_address sa, listen_options opts)
+    socket_address local_address() const noexcept;
+
+    /// Check whether the \c server_socket is listening on any address.
+    ///
+    /// \return true if this \c socket_address is bound to an address,
+    /// false if it is just created with the default constructor.
+    ///
+    /// \see listen(socket_address sa)
+    /// \see listen(socket_address sa, listen_options opts)
+    explicit operator bool() const noexcept {
+        return static_cast<bool>(_ssi);
+    }
 };
+
 /// @}
 
 struct listen_options {
     bool reuse_address = false;
     server_socket::load_balancing_algorithm lba = server_socket::load_balancing_algorithm::default_;
     transport proto = transport::TCP;
+    int listen_backlog = 100;
+    unsigned fixed_cpu = 0u;
+    void set_fixed_cpu(unsigned cpu) {
+        lba = server_socket::load_balancing_algorithm::fixed;
+        fixed_cpu = cpu;
+    }
+};
+
+class network_interface {
+private:
+    shared_ptr<net::network_interface_impl> _impl;
+public:
+    network_interface() = delete;
+    network_interface(shared_ptr<net::network_interface_impl>) noexcept;
+    network_interface(network_interface&&) noexcept;
+
+    network_interface& operator=(network_interface&&) noexcept;
+
+    uint32_t index() const;
+    uint32_t mtu() const;
+
+    const sstring& name() const;
+    const sstring& display_name() const;
+    const std::vector<net::inet_address>& addresses() const;
+    const std::vector<uint8_t> hardware_address() const;
+
+    bool is_loopback() const;
+    bool is_virtual() const;
+    bool is_up() const;
+    bool supports_ipv6() const;
 };
 
 class network_stack {
@@ -302,17 +416,35 @@ public:
     virtual ~network_stack() {}
     virtual server_socket listen(socket_address sa, listen_options opts) = 0;
     // FIXME: local parameter assumes ipv4 for now, fix when adding other AF
-    future<connected_socket> connect(socket_address sa, socket_address local = socket_address(::sockaddr_in{AF_INET, INADDR_ANY, {0}}), transport proto = transport::TCP) {
-        return do_with(socket(), [sa, local, proto](::seastar::socket& s) {
-            return s.connect(sa, local, proto);
-        });
-    }
+    future<connected_socket> connect(socket_address sa, socket_address = {}, transport proto = transport::TCP);
     virtual ::seastar::socket socket() = 0;
-    virtual net::udp_channel make_udp_channel(ipv4_addr addr = {}) = 0;
+    virtual net::udp_channel make_udp_channel(const socket_address& = {}) = 0;
     virtual future<> initialize() {
         return make_ready_future();
     }
     virtual bool has_per_core_namespace() = 0;
+    // NOTE: this is not a correct query approach.
+    // This question should be per NIC, but we have no such
+    // abstraction, so for now this is "stack-wide"
+    virtual bool supports_ipv6() const {
+        return false;
+    }
+
+    /** 
+     * Returns available network interfaces. This represents a 
+     * snapshot of interfaces available at call time, hence the
+     * return by value.
+     */
+    virtual std::vector<network_interface> network_interfaces();
+};
+
+struct network_stack_entry {
+    using factory_func = noncopyable_function<future<std::unique_ptr<network_stack>> (const program_options::option_group&)>;
+
+    sstring name;
+    std::unique_ptr<program_options::option_group> opts;
+    factory_func factory;
+    bool is_default;
 };
 
 }

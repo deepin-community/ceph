@@ -1,7 +1,8 @@
 Intel(R) Intelligent Storage Acceleration Library
 =================================================
 
-[![Build Status](https://travis-ci.org/01org/isa-l.svg?branch=master)](https://travis-ci.org/01org/isa-l)
+[![Build Status](https://travis-ci.org/intel/isa-l.svg?branch=master)](https://travis-ci.org/intel/isa-l)
+[![Package on conda-forge](https://img.shields.io/conda/v/conda-forge/isa-l.svg)](https://anaconda.org/conda-forge/isa-l)
 
 ISA-L is a collection of optimized low-level functions targeting storage
 applications.  ISA-L includes:
@@ -16,10 +17,11 @@ applications.  ISA-L includes:
 * De-compression - Fast inflate-compatible data compression.
 
 Also see:
-* [ISA-L for updates](https://github.com/01org/isa-l).
-* For crypto functions see [isa-l_crypto on github](https://github.com/01org/isa-l_crypto).
-* The [github wiki](https://github.com/01org/isa-l/wiki).
-* ISA-L [mailing list](https://lists.01.org/mailman/listinfo/isal).
+* [ISA-L for updates](https://github.com/intel/isa-l).
+* For crypto functions see [isa-l_crypto on github](https://github.com/intel/isa-l_crypto).
+* The [github wiki](https://github.com/intel/isa-l/wiki) including a list of
+  [distros/ports](https://github.com/intel/isa-l/wiki/Ports--Repos) offering binary packages.
+* ISA-L [mailing list](https://lists.01.org/hyperkitty/list/isal@lists.01.org/).
 * [Contributing](CONTRIBUTING.md).
 
 Building ISA-L
@@ -27,10 +29,20 @@ Building ISA-L
 
 ### Prerequisites
 
-* yasm version 1.2.0 or later or nasm v2.11.01 or later.
-* gcc, clang, icc or VC compiler.
-* GNU 'make' or 'nmake' (Windows).
-* Building with autotools requires autoconf/automake packages.
+* Make: GNU 'make' or 'nmake' (Windows).
+* Optional: Building with autotools requires autoconf/automake packages.
+
+x86_64:
+* Assembler: nasm v2.11.01 or later (nasm v2.13 or better suggested for building in AVX512 support)
+  or yasm version 1.2.0 or later.
+* Compiler: gcc, clang, icc or VC compiler.
+
+aarch64:
+* Assembler: gas v2.24 or later.
+* Compiler: gcc v4.7 or later.
+
+other:
+* Compiler: Portable base functions are available that build with most C compilers.
 
 ### Autotools
 To build and install the library with autotools it is usually sufficient to run:
@@ -50,6 +62,8 @@ On Windows use nmake to build dll and static lib:
 
     nmake -f Makefile.nmake
 
+or see [details on setting up environment here](doc/build.md).
+
 ### Other make targets
 Other targets include:
 * `make check` : create and run tests
@@ -57,3 +71,4 @@ Other targets include:
 * `make perfs` : create included performance tests
 * `make ex`    : build examples
 * `make other` : build other utilities such as compression file tests
+* `make doc`   : build API manual

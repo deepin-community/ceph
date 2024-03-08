@@ -28,8 +28,7 @@
 #include <seastar/core/abort_source.hh>
 #include <seastar/core/future.hh>
 #include <seastar/core/lowres_clock.hh>
-#include <seastar/core/reactor.hh>
-#include <seastar/core/shared_ptr.hh>
+#include <seastar/core/timer.hh>
 
 namespace seastar {
 
@@ -57,7 +56,7 @@ future<> sleep(std::chrono::duration<Rep, Period> dur) {
 }
 
 /// exception that is thrown when application is in process of been stopped
-class sleep_aborted : public std::exception {
+class sleep_aborted : public abort_requested_exception {
 public:
     /// Reports the exception reason.
     virtual const char* what() const noexcept {

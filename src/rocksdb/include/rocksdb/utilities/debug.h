@@ -10,7 +10,7 @@
 #include "rocksdb/db.h"
 #include "rocksdb/types.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 // Data associated with a particular version of a key. A database may internally
 // store multiple versions of a same user key due to snapshots, compaction not
@@ -25,9 +25,8 @@ struct KeyVersion {
   std::string user_key;
   std::string value;
   SequenceNumber sequence;
-  // TODO(ajkr): we should provide a helper function that converts the int to a
-  // string describing the type for easier debugging.
   int type;
+  std::string GetTypeName() const;
 };
 
 // Returns listing of all versions of keys in the provided user key range.
@@ -40,6 +39,10 @@ Status GetAllKeyVersions(DB* db, Slice begin_key, Slice end_key,
                          size_t max_num_ikeys,
                          std::vector<KeyVersion>* key_versions);
 
-}  // namespace rocksdb
+Status GetAllKeyVersions(DB* db, ColumnFamilyHandle* cfh, Slice begin_key,
+                         Slice end_key, size_t max_num_ikeys,
+                         std::vector<KeyVersion>* key_versions);
+
+}  // namespace ROCKSDB_NAMESPACE
 
 #endif  // ROCKSDB_LITE

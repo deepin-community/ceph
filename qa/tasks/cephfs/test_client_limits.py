@@ -6,12 +6,12 @@ exceed the limits of how many caps/inodes they should hold.
 
 import logging
 from textwrap import dedent
-from unittest import SkipTest
-from teuthology.orchestra.run import CommandFailedError
 from tasks.ceph_test_case import TestTimeoutError
 from tasks.cephfs.cephfs_test_case import CephFSTestCase, needs_trimming
 from tasks.cephfs.fuse_mount import FuseMount
+from teuthology.exceptions import CommandFailedError
 import os
+from io import StringIO
 
 
 log = logging.getLogger(__name__)
@@ -27,7 +27,6 @@ CAP_RECALL_MIN = 100
 
 
 class TestClientLimits(CephFSTestCase):
-    REQUIRE_KCLIENT_REMOTE = True
     CLIENTS_REQUIRED = 2
 
     def _test_client_pin(self, use_subdir, open_files):
@@ -40,13 +39,18 @@ class TestClientLimits(CephFSTestCase):
         :param use_subdir: whether to put test files in a subdir or use root
         """
 
-        self.config_set('mds', 'mds_cache_memory_limit', "1K")
+        # Set MDS cache memory limit to a low value that will make the MDS to
+        # ask the client to trim the caps.
+        cache_memory_limit = "1K"
+
+        self.config_set('mds', 'mds_cache_memory_limit', cache_memory_limit)
         self.config_set('mds', 'mds_recall_max_caps', int(open_files/2))
         self.config_set('mds', 'mds_recall_warning_threshold', open_files)
 
-        mds_min_caps_per_client = int(self.config_get('mds.a', "mds_min_caps_per_client"))
+        mds_min_caps_per_client = int(self.config_get('mds', "mds_min_caps_per_client"))
         self.config_set('mds', 'mds_min_caps_working_set', mds_min_caps_per_client)
-        mds_recall_warning_decay_rate = float(self.config_get('mds.a', "mds_recall_warning_decay_rate"))
+        mds_max_caps_per_client = int(self.config_get('mds', "mds_max_caps_per_client"))
+        mds_recall_warning_decay_rate = float(self.config_get('mds', "mds_recall_warning_decay_rate"))
         self.assertGreaterEqual(open_files, mds_min_caps_per_client)
 
         mount_a_client_id = self.mount_a.get_global_id()
@@ -73,18 +77,15 @@ class TestClientLimits(CephFSTestCase):
         # When the client closes the files, it should retain only as many caps as allowed
         # under the SESSION_RECALL policy
         log.info("Terminating process holding files open")
-        open_proc.stdin.close()
-        try:
-            open_proc.wait()
-        except CommandFailedError:
-            # We killed it, so it raises an error
-            pass
+        self.mount_a._kill_background(open_proc)
 
         # The remaining caps should comply with the numbers sent from MDS in SESSION_RECALL message,
         # which depend on the caps outstanding, cache size and overall ratio
         def expected_caps():
             num_caps = self.get_session(mount_a_client_id)['num_caps']
             if num_caps <= mds_min_caps_per_client:
+                return True
+            elif num_caps <= mds_max_caps_per_client:
                 return True
             else:
                 return False
@@ -120,8 +121,8 @@ class TestClientLimits(CephFSTestCase):
         self.config_set('mds', 'mds_recall_warning_threshold', open_files)
         self.config_set('mds', 'mds_min_caps_working_set', open_files*2)
 
-        mds_min_caps_per_client = int(self.config_get('mds.a', "mds_min_caps_per_client"))
-        mds_recall_warning_decay_rate = float(self.config_get('mds.a', "mds_recall_warning_decay_rate"))
+        mds_min_caps_per_client = int(self.config_get('mds', "mds_min_caps_per_client"))
+        mds_recall_warning_decay_rate = float(self.config_get('mds', "mds_recall_warning_decay_rate"))
         self.assertGreaterEqual(open_files, mds_min_caps_per_client)
 
         mount_a_client_id = self.mount_a.get_global_id()
@@ -157,28 +158,48 @@ class TestClientLimits(CephFSTestCase):
         a fraction of second (0.5) by default when throttling condition is met.
         """
 
-        max_caps_per_client = 500
-        cap_acquisition_throttle = 250
+        subdir_count = 4
+        files_per_dir = 25
 
-        self.config_set('mds', 'mds_max_caps_per_client', max_caps_per_client)
-        self.config_set('mds', 'mds_session_cap_acquisition_throttle', cap_acquisition_throttle)
+        # throttle in a way so that two dir reads are already hitting it.
+        throttle_value = (files_per_dir * 3) // 2
 
-        # Create 1500 files split across 6 directories, 250 each.
-        for i in range(1, 7):
-            self.mount_a.create_n_files("dir{0}/file".format(i), cap_acquisition_throttle, sync=True)
+        # activate throttling logic by setting max per client to a low value
+        self.config_set('mds', 'mds_max_caps_per_client', 1)
+        self.config_set('mds', 'mds_session_cap_acquisition_throttle', throttle_value)
+
+        # Create files split across {subdir_count} directories, {per_dir_count} in each dir
+        for i in range(1, subdir_count+1):
+            self.mount_a.create_n_files("dir{0}/file".format(i), files_per_dir, sync=True)
 
         mount_a_client_id = self.mount_a.get_global_id()
 
-        # recursive readdir
-        self.mount_a.run_shell_payload("find | wc")
-
-        # validate cap_acquisition decay counter after readdir to exceed throttle count i.e 250
-        cap_acquisition_value = self.get_session(mount_a_client_id)['cap_acquisition']['value']
-        self.assertGreaterEqual(cap_acquisition_value, cap_acquisition_throttle)
+        # recursive readdir. macOs wants an explicit directory for `find`.
+        proc = self.mount_a.run_shell_payload("find . | wc", stderr=StringIO())
+        # return code may be None if the command got interrupted
+        self.assertTrue(proc.returncode is None or proc.returncode == 0, proc.stderr.getvalue())
 
         # validate the throttle condition to be hit atleast once
         cap_acquisition_throttle_hit_count = self.perf_dump()['mds_server']['cap_acquisition_throttle']
         self.assertGreaterEqual(cap_acquisition_throttle_hit_count, 1)
+
+        # validate cap_acquisition decay counter after readdir to NOT exceed the throttle value
+        # plus one batch that could have been taken immediately before querying
+        # assuming the batch is equal to the per dir file count.
+        cap_acquisition_value = self.get_session(mount_a_client_id)['cap_acquisition']['value']
+        self.assertLessEqual(cap_acquisition_value, files_per_dir + throttle_value)
+
+        # make sure that the throttle was reported in the events
+        def historic_ops_have_event(expected_event):
+            ops_dump = self.fs.rank_tell(['dump_historic_ops'])
+            # reverse the events and the ops assuming that later ops would be throttled
+            for op in reversed(ops_dump['ops']):
+                for ev in reversed(op.get('type_data', {}).get('events', [])):
+                    if ev['event'] == expected_event:
+                        return True
+            return False
+
+        self.assertTrue(historic_ops_have_event('cap_acquisition_throttle'))
 
     def test_client_release_bug(self):
         """
@@ -189,12 +210,11 @@ class TestClientLimits(CephFSTestCase):
 
         # The debug hook to inject the failure only exists in the fuse client
         if not isinstance(self.mount_a, FuseMount):
-            raise SkipTest("Require FUSE client to inject client release failure")
+            self.skipTest("Require FUSE client to inject client release failure")
 
         self.set_conf('client.{0}'.format(self.mount_a.client_id), 'client inject release failure', 'true')
         self.mount_a.teardown()
-        self.mount_a.mount()
-        self.mount_a.wait_until_mounted()
+        self.mount_a.mount_wait()
         mount_a_client_id = self.mount_a.get_global_id()
 
         # Client A creates a file.  He will hold the write caps on the file, and later (simulated bug) fail
@@ -220,6 +240,55 @@ class TestClientLimits(CephFSTestCase):
         self.fs.mds_asok(['session', 'evict', "%s" % mount_a_client_id])
         rproc.wait()
 
+    def test_client_blocklisted_oldest_tid(self):
+        """
+        that a client is blocklisted when its encoded session metadata exceeds the
+        configured threshold (due to ever growing `completed_requests` caused due
+        to an unidentified bug (in the client or the MDS)).
+        """
+
+        # num of requests client issues
+        max_requests = 10000
+
+        # The debug hook to inject the failure only exists in the fuse client
+        if not isinstance(self.mount_a, FuseMount):
+            self.skipTest("Require FUSE client to inject client release failure")
+
+        self.config_set('client', 'client inject fixed oldest tid', 'true')
+        self.mount_a.teardown()
+        self.mount_a.mount_wait()
+
+        self.config_set('mds', 'mds_max_completed_requests', max_requests);
+
+        # Create lots of files
+        self.mount_a.create_n_files("testdir/file1", max_requests + 100)
+
+        # Create a few files synchronously. This makes sure previous requests are completed
+        self.mount_a.create_n_files("testdir/file2", 5, True)
+
+        # Wait for the health warnings. Assume mds can handle 10 request per second at least
+        self.wait_for_health("MDS_CLIENT_OLDEST_TID", max_requests // 10, check_in_detail=str(self.mount_a.client_id))
+
+        # set the threshold low so that it has a high probability of
+        # hitting.
+        self.config_set('mds', 'mds_session_metadata_threshold', 5000);
+
+        # Create lot many files synchronously. This would hit the session metadata threshold
+        # causing the client to get blocklisted.
+        with self.assertRaises(CommandFailedError):
+            self.mount_a.create_n_files("testdir/file2", 100000, True)
+
+        self.mds_cluster.is_addr_blocklisted(self.mount_a.get_global_addr())
+        # the mds should bump up the relevant perf counter
+        pd = self.perf_dump()
+        self.assertGreater(pd['mds_sessions']['mdthresh_evicted'], 0)
+
+        # reset the config
+        self.config_set('client', 'client inject fixed oldest tid', 'false')
+
+        self.mount_a.kill_cleanup()
+        self.mount_a.mount_wait()
+
     def test_client_oldest_tid(self):
         """
         When a client does not advance its oldest tid, the MDS should notice that
@@ -231,12 +300,11 @@ class TestClientLimits(CephFSTestCase):
 
         # The debug hook to inject the failure only exists in the fuse client
         if not isinstance(self.mount_a, FuseMount):
-            raise SkipTest("Require FUSE client to inject client release failure")
+            self.skipTest("Require FUSE client to inject client release failure")
 
         self.set_conf('client', 'client inject fixed oldest tid', 'true')
         self.mount_a.teardown()
-        self.mount_a.mount()
-        self.mount_a.wait_until_mounted()
+        self.mount_a.mount_wait()
 
         self.fs.mds_asok(['config', 'set', 'mds_max_completed_requests', '{0}'.format(max_requests)])
 
@@ -256,7 +324,7 @@ class TestClientLimits(CephFSTestCase):
 
         # The debug hook to inject the failure only exists in the fuse client
         if not isinstance(self.mount_a, FuseMount):
-            raise SkipTest("Require FUSE client to inject client release failure")
+            self.skipTest("Require FUSE client to inject client release failure")
 
         if mount_subdir:
             # fuse assigns a fix inode number (1) to root inode. But in mounting into
@@ -266,8 +334,7 @@ class TestClientLimits(CephFSTestCase):
             self.mount_a.run_shell(["mkdir", "subdir"])
             self.mount_a.umount_wait()
             self.set_conf('client', 'client mountpoint', '/subdir')
-            self.mount_a.mount()
-            self.mount_a.wait_until_mounted()
+            self.mount_a.mount_wait()
             root_ino = self.mount_a.path_to_ino(".")
             self.assertEqual(root_ino, 1);
 
@@ -313,7 +380,7 @@ class TestClientLimits(CephFSTestCase):
         That the MDS will not let a client sit above mds_max_caps_per_client caps.
         """
 
-        mds_min_caps_per_client = int(self.config_get('mds.a', "mds_min_caps_per_client"))
+        mds_min_caps_per_client = int(self.config_get('mds', "mds_min_caps_per_client"))
         mds_max_caps_per_client = 2*mds_min_caps_per_client
         self.config_set('mds', 'mds_max_caps_per_client', mds_max_caps_per_client)
 

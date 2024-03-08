@@ -47,7 +47,21 @@
 
 #define dout_subsys ceph_subsys_mon
 
+using std::cerr;
+using std::cout;
+using std::list;
+using std::map;
+using std::ostringstream;
+using std::string;
+using std::vector;
+
+using ceph::bufferlist;
+using ceph::decode;
+using ceph::encode;
+using ceph::JSONFormatter;
+
 Monitor *mon = NULL;
+
 
 void handle_mon_signal(int signum)
 {
@@ -87,7 +101,7 @@ int obtain_monmap(MonitorDBStore &store, bufferlist &bl)
 	if (b.get_epoch() > latest_ver) {
 	  dout(10) << __func__ << " using stashed monmap " << b.get_epoch()
 		   << " instead" << dendl;
-	  bl.claim(bl2);
+	  bl = std::move(bl2);
 	} else {
 	  dout(10) << __func__ << " ignoring stashed monmap " << b.get_epoch()
 		   << dendl;
@@ -107,6 +121,14 @@ int obtain_monmap(MonitorDBStore &store, bufferlist &bl)
       dout(10) << __func__ << " read backup monmap" << dendl;
       return 0;
     }
+  }
+
+  if (store.exists("mon_sync", "temp_newer_monmap")) {
+    dout(10) << __func__ << " found temp_newer_monmap" << dendl;
+    int err = store.get("mon_sync", "temp_newer_monmap", bl);
+    ceph_assert(err == 0);
+    ceph_assert(bl.length() > 0);
+    return 0;
   }
 
   if (store.exists("mkfs", "monmap")) {
@@ -196,6 +218,8 @@ static void usage()
        << "        extract the monmap from the local monitor store and exit\n"
        << "  --mon-data <directory>\n"
        << "        where the mon store and keyring are located\n"
+       << "  --set-crush-location <bucket>=<foo>"
+       << "        sets monitor's crush bucket location (only for stretch mode)"
        << std::endl;
   generic_server_usage();
 }
@@ -234,10 +258,9 @@ int main(int argc, const char **argv)
   bool compact = false;
   bool force_sync = false;
   bool yes_really = false;
-  std::string osdmapfn, inject_monmap, extract_monmap;
+  std::string osdmapfn, inject_monmap, extract_monmap, crush_loc;
 
-  vector<const char*> args;
-  argv_to_vec(argc, argv, args);
+  auto args = argv_to_vec(argc, argv);
   if (args.empty()) {
     cerr << argv[0] << ": -h or --help for usage" << std::endl;
     exit(1);
@@ -296,7 +319,7 @@ int main(int argc, const char **argv)
 
   auto cct = global_init(&defaults, args,
 			 CEPH_ENTITY_TYPE_MON, CODE_ENVIRONMENT_DAEMON,
-			 flags, "mon_data");
+			 flags);
   ceph_heap_profiler_init();
 
   std::string val;
@@ -317,6 +340,8 @@ int main(int argc, const char **argv)
       inject_monmap = val;
     } else if (ceph_argparse_witharg(args, i, &val, "--extract-monmap", (char*)NULL)) {
       extract_monmap = val;
+    } else if (ceph_argparse_witharg(args, i, &val, "--set-crush-location", (char*)NULL)) {
+      crush_loc = val;
     } else {
       ++i;
     }
@@ -374,7 +399,8 @@ int main(int argc, const char **argv)
     pick_addresses(g_ceph_context, CEPH_PICK_ADDRESS_PUBLIC);
 
     dout(10) << "public_network " << g_conf()->public_network << dendl;
-    dout(10) << "public_addr " << g_conf()->public_network << dendl;
+    dout(10) << "public_addr " << g_conf()->public_addr << dendl;
+    dout(10) << "public_addrv " << g_conf()->public_addrv << dendl;
 
     common_init_finish(g_ceph_context);
 
@@ -395,7 +421,7 @@ int main(int argc, const char **argv)
 
 	// always mark seed/mkfs monmap as epoch 0
 	monmap.set_epoch(0);
-      } catch (const buffer::error& e) {
+      } catch (const ceph::buffer::error& e) {
 	derr << argv[0] << ": error decoding monmap " << monmap_fn << ": " << e.what() << dendl;
 	exit(1);
       }
@@ -421,6 +447,14 @@ int main(int argc, const char **argv)
       if (monmap.contains(g_conf()->name.get_id())) {
 	// hmm, make sure the ip listed exists on the current host?
 	// maybe later.
+      } else if (!g_conf()->public_addrv.empty()) {
+	entity_addrvec_t av = g_conf()->public_addrv;
+	string name;
+	if (monmap.contains(av, &name)) {
+	  monmap.rename(name, g_conf()->name.get_id());
+	  dout(0) << argv[0] << ": renaming mon." << name << " " << av
+		  << " to mon." << g_conf()->name.get_id() << dendl;
+	}
       } else if (!g_conf()->public_addr.is_blank_ip()) {
 	entity_addrvec_t av = make_mon_addrs(g_conf()->public_addr);
 	string name;
@@ -583,7 +617,6 @@ int main(int argc, const char **argv)
 
   // set up signal handlers, now that we've daemonized/forked.
   init_async_signal_handler();
-  register_async_signal_handler(SIGHUP, sighup_handler);
 
   MonitorDBStore *store = new MonitorDBStore(g_conf()->mon_data);
 
@@ -592,17 +625,10 @@ int main(int argc, const char **argv)
     string val;
     int r = store->read_meta("min_mon_release", &val);
     if (r >= 0 && val.size()) {
-      int min = atoi(val.c_str());
-      if (min &&
-	  min + 2 < (int)ceph_release()) {
-	derr << "recorded min_mon_release is " << min
-	     << " (" << ceph_release_name(min)
-	     << ") which is >2 releases older than installed "
-	     << ceph_release() << " (" << ceph_release_name(ceph_release())
-	     << "); you can only upgrade 2 releases at a time" << dendl;
-	derr << "you should first upgrade to "
-	     << (min + 1) << " (" << ceph_release_name(min + 1) << ") or "
-	     << (min + 2) << " (" << ceph_release_name(min + 2) << ")" << dendl;
+      ceph_release_t from_release = ceph_release_from_name(val);
+      ostringstream err;
+      if (!can_upgrade_from(from_release, "min_mon_release", err)) {
+	derr << err.str() << dendl;
 	prefork.exit(1);
       }
     }
@@ -690,7 +716,7 @@ int main(int argc, const char **argv)
     if (err >= 0) {
       try {
         monmap.decode(mapbl);
-      } catch (const buffer::error& e) {
+      } catch (const ceph::buffer::error& e) {
         derr << "can't decode monmap: " << e.what() << dendl;
       }
     } else {
@@ -722,13 +748,12 @@ int main(int argc, const char **argv)
     ipaddrs = monmap.get_addrs(g_conf()->name.get_id());
 
     // print helpful warning if the conf file doesn't match
-    std::vector <std::string> my_sections;
-    g_conf().get_my_sections(my_sections);
+    std::vector<std::string> my_sections = g_conf().get_my_sections();
     std::string mon_addr_str;
     if (g_conf().get_val_from_conf_file(my_sections, "mon addr",
 				       mon_addr_str, true) == 0) {
       entity_addr_t conf_addr;
-      if (conf_addr.parse(mon_addr_str.c_str())) {
+      if (conf_addr.parse(mon_addr_str)) {
 	entity_addrvec_t conf_addrs = make_mon_addrs(conf_addr);
         if (ipaddrs != conf_addrs) {
 	  derr << "WARNING: 'mon addr' config option " << conf_addrs
@@ -743,7 +768,10 @@ int main(int argc, const char **argv)
     dout(0) << g_conf()->name << " does not exist in monmap, will attempt to join an existing cluster" << dendl;
 
     pick_addresses(g_ceph_context, CEPH_PICK_ADDRESS_PUBLIC);
-    if (!g_conf()->public_addr.is_blank_ip()) {
+    if (!g_conf()->public_addrv.empty()) {
+      ipaddrs = g_conf()->public_addrv;
+      dout(0) << "using public_addrv " << ipaddrs << dendl;
+    } else if (!g_conf()->public_addr.is_blank_ip()) {
       ipaddrs = make_mon_addrs(g_conf()->public_addr);
       dout(0) << "using public_addr " << g_conf()->public_addr << " -> "
 	      << ipaddrs << dendl;
@@ -772,8 +800,7 @@ int main(int argc, const char **argv)
   int rank = monmap.get_rank(g_conf()->name.get_id());
   std::string public_msgr_type = g_conf()->ms_public_type.empty() ? g_conf().get_val<std::string>("ms_type") : g_conf()->ms_public_type;
   Messenger *msgr = Messenger::create(g_ceph_context, public_msgr_type,
-				      entity_name_t::MON(rank), "mon",
-				      0, Messenger::HAS_MANY_CONNECTIONS);
+				      entity_name_t::MON(rank), "mon", 0);
   if (!msgr)
     exit(1);
   msgr->set_cluster_protocol(CEPH_MON_PROTOCOL);
@@ -824,7 +851,7 @@ int main(int argc, const char **argv)
 
   Messenger *mgr_msgr = Messenger::create(g_ceph_context, public_msgr_type,
 					  entity_name_t::MON(rank), "mon-mgrc",
-					  getpid(), 0);
+					  Messenger::get_pid_nonce());
   if (!mgr_msgr) {
     derr << "unable to create mgr_msgr" << dendl;
     prefork.exit(1);
@@ -839,9 +866,11 @@ int main(int argc, const char **argv)
   if (force_sync) {
     derr << "flagging a forced sync ..." << dendl;
     ostringstream oss;
-    mon->sync_force(NULL, oss);
-    if (oss.tellp())
-      derr << oss.str() << dendl;
+    JSONFormatter jf(true);
+    mon->sync_force(&jf);
+    derr << "out:\n";
+    jf.flush(*_dout);
+    *_dout << dendl;
   }
 
   err = mon->preinit();
@@ -857,16 +886,10 @@ int main(int argc, const char **argv)
   }
 
   // bind
-  err = msgr->bindv(bind_addrs);
+  err = msgr->bindv(bind_addrs, public_addrs);
   if (err < 0) {
     derr << "unable to bind monitor to " << bind_addrs << dendl;
     prefork.exit(1);
-  }
-
-  // if the public and bind addr are different set the msgr addr
-  // to the public one, now that the bind is complete.
-  if (public_addrs != bind_addrs) {
-    msgr->set_addrs(public_addrs);
   }
 
   if (g_conf()->daemonize) {
@@ -877,10 +900,12 @@ int main(int argc, const char **argv)
   msgr->start();
   mgr_msgr->start();
 
+  mon->set_mon_crush_location(crush_loc);
   mon->init();
 
   register_async_signal_handler_oneshot(SIGINT, handle_mon_signal);
   register_async_signal_handler_oneshot(SIGTERM, handle_mon_signal);
+  register_async_signal_handler(SIGHUP, handle_mon_signal);
 
   if (g_conf()->inject_early_sigterm)
     kill(getpid(), SIGTERM);
@@ -890,7 +915,7 @@ int main(int argc, const char **argv)
 
   store->close();
 
-  unregister_async_signal_handler(SIGHUP, sighup_handler);
+  unregister_async_signal_handler(SIGHUP, handle_mon_signal);
   unregister_async_signal_handler(SIGINT, handle_mon_signal);
   unregister_async_signal_handler(SIGTERM, handle_mon_signal);
   shutdown_async_signal_handler();

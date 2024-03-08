@@ -1,0 +1,74 @@
+#!/bin/sh
+
+set -e
+set -x
+
+usage() {
+        progname=$(basename $0)
+        echo "$progname --upstream-version <UPSTREAM-VERSION> <UPSTREAM-TARBALL>"
+}
+
+
+if [ "$#" -ne "3" ] ; then
+        usage
+        exit 1
+fi
+
+UPSTREAM_VERS="$2"
+UPSTREAM_TAR="$3"
+DEST_DIR=`dirname $3`
+
+PKG_NAME=ceph
+DEB_RELEASE=`dpkg-parsechangelog | sed -n -e 's/^Version: //p'`
+DFSG_VERSION=`echo "${DEB_RELEASE}" | sed -e 's/^[[:digit:]]\+://' -e 's/[-][^-]\+//'`
+UNPACK_DIR="${PKG_NAME}-${UPSTREAM_VERS}"
+UNPACK_DIR_NO_DS=$(echo ${UNPACK_DIR} | sed -e 's/+ds//')
+
+TEMP_DIR=$(mktemp -d -t repack-ceph-upstream-tarball.XXXXXX)
+echo "Unpacking upstream tarball..."
+tar -xf ${UPSTREAM_TAR} --directory ${TEMP_DIR}
+UPSTREAM_SRC=`ls ${TEMP_DIR}`
+
+MYPWD=$(pwd)
+mv ${TEMP_DIR}/${UNPACK_DIR_NO_DS} ${TEMP_DIR}/${UNPACK_DIR}
+cd ${TEMP_DIR}/${UNPACK_DIR}
+
+# Delete .qa annoying symlinks
+find ${TEMP_DIR}/${UNPACK_DIR}/qa -iname '.qa' -delete
+
+# Convert files to LF only, as CRLF is a real pain in Git
+for i in ${TEMP_DIR}/${UNPACK_DIR}/src/jaegertracing/opentelemetry-cpp/third_party/ms-gsl/tests/no_exception_ensure_tests.cpp \
+	${TEMP_DIR}/${UNPACK_DIR}/src/jaegertracing/opentelemetry-cpp/third_party/ms-gsl/tests/span_ext_tests.cpp \
+	${TEMP_DIR}/${UNPACK_DIR}/src/s3select/rapidjson/thirdparty/gtest/googlemock/msvc/2005/gmock.sln \
+	${TEMP_DIR}/${UNPACK_DIR}/src/s3select/rapidjson/thirdparty/gtest/googlemock/msvc/2005/gmock.vcproj \
+	${TEMP_DIR}/${UNPACK_DIR}/src/s3select/rapidjson/thirdparty/gtest/googlemock/msvc/2005/gmock_config.vsprops \
+	${TEMP_DIR}/${UNPACK_DIR}/src/s3select/rapidjson/thirdparty/gtest/googlemock/msvc/2005/gmock_main.vcproj \
+	${TEMP_DIR}/${UNPACK_DIR}/src/s3select/rapidjson/thirdparty/gtest/googlemock/msvc/2005/gmock_test.vcproj \
+	${TEMP_DIR}/${UNPACK_DIR}/src/s3select/rapidjson/thirdparty/gtest/googlemock/msvc/2010/gmock.sln \
+	${TEMP_DIR}/${UNPACK_DIR}/src/s3select/rapidjson/thirdparty/gtest/googlemock/msvc/2010/gmock.vcxproj \
+	${TEMP_DIR}/${UNPACK_DIR}/src/s3select/rapidjson/thirdparty/gtest/googlemock/msvc/2010/gmock_config.props \
+	${TEMP_DIR}/${UNPACK_DIR}/src/s3select/rapidjson/thirdparty/gtest/googlemock/msvc/2010/gmock_main.vcxproj \
+	${TEMP_DIR}/${UNPACK_DIR}/src/s3select/rapidjson/thirdparty/gtest/googlemock/msvc/2010/gmock_test.vcxproj \
+	${TEMP_DIR}/${UNPACK_DIR}/src/s3select/rapidjson/thirdparty/gtest/googletest/codegear/gtest.cbproj \
+	${TEMP_DIR}/${UNPACK_DIR}/src/s3select/rapidjson/thirdparty/gtest/googletest/codegear/gtest.groupproj \
+	${TEMP_DIR}/${UNPACK_DIR}/src/s3select/rapidjson/thirdparty/gtest/googletest/codegear/gtest_all.cc \
+	${TEMP_DIR}/${UNPACK_DIR}/src/s3select/rapidjson/thirdparty/gtest/googletest/codegear/gtest_link.cc \
+	${TEMP_DIR}/${UNPACK_DIR}/src/s3select/rapidjson/thirdparty/gtest/googletest/codegear/gtest_main.cbproj \
+	${TEMP_DIR}/${UNPACK_DIR}/src/s3select/rapidjson/thirdparty/gtest/googletest/codegear/gtest_unittest.cbproj ; do
+
+	dos2unix $i
+done
+
+# These get deleted during clean target, so we'd better remove them
+# right away when building the orig tarball.
+rm -f ${TEMP_DIR}/${UNPACK_DIR}/src/erasure-code/jerasure/jerasure/Examples/makefile.orig
+rm -f ${TEMP_DIR}/${UNPACK_DIR}/src/erasure-code/jerasure/jerasure/include/config.h.in~
+rm -f ${TEMP_DIR}/${UNPACK_DIR}src/erasure-code/jerasure/jerasure/makefile.orig
+rm -f ${TEMP_DIR}/${UNPACK_DIR}src/jaegertracing/opentelemetry-cpp/third_party/prometheus-cpp/3rdparty/civetweb/resources/cert/client.key.orig
+rm -f ${TEMP_DIR}/${UNPACK_DIR}src/jaegertracing/opentelemetry-cpp/third_party/prometheus-cpp/3rdparty/civetweb/resources/cert/server.key.orig
+rm -f ${TEMP_DIR}/${UNPACK_DIR}src/jaegertracing/opentelemetry-cpp/third_party/prometheus-cpp/3rdparty/civetweb/resources/cert/server_bkup.key.orig
+rm -f ${TEMP_DIR}/${UNPACK_DIR}src/pybind/mgr/rook/rook-client-python/rook_client/_helper.py.orig
+
+cd ${MYPWD}
+tar -C ${TEMP_DIR} --owner=root --group=root --mode=a+rX -c ${UNPACK_DIR} | xz -6 >${DEST_DIR}/${PKG_NAME}_${UPSTREAM_VERS}+ds.orig.tar.xz
+rm -r ${TEMP_DIR}

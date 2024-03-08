@@ -15,6 +15,8 @@
 #ifndef CEPH_COMMON_ENTITY_NAME_H
 #define CEPH_COMMON_ENTITY_NAME_H
 
+#include <string_view>
+
 #include <ifaddrs.h>
 
 #include "msg/msg_types.h"
@@ -26,12 +28,12 @@
  */
 struct EntityName
 {
-  void encode(bufferlist& bl) const {
+  void encode(ceph::buffer::list& bl) const {
     using ceph::encode;
     encode(type, bl);
     encode(id, bl);
   }
-  void decode(bufferlist::const_iterator& bl) {
+  void decode(ceph::buffer::list::const_iterator& bl) {
     using ceph::decode;
     uint32_t type_;
     std::string id_;
@@ -42,12 +44,12 @@ struct EntityName
 
   const std::string& to_str() const;
   const char *to_cstr() const;
-  bool from_str(const std::string& s);
-  void set(uint32_t type_, const std::string &id_);
-  int set(const std::string &type_, const std::string &id_);
+  bool from_str(std::string_view s);
+  void set(uint32_t type_, std::string_view id_);
+  int set(std::string_view type_, std::string_view id_);
   void set_type(uint32_t type_);
-  int set_type(const char *type);
-  void set_id(const std::string &id_);
+  int set_type(std::string_view type);
+  void set_id(std::string_view id_);
   void set_name(entity_name_t n);
 
   const char* get_type_str() const;
@@ -59,7 +61,7 @@ struct EntityName
   bool is_client() const { return get_type() == CEPH_ENTITY_TYPE_CLIENT; }
   bool is_mon() const { return get_type() == CEPH_ENTITY_TYPE_MON; }
 
-  const char * get_type_name() const;
+  std::string_view get_type_name() const;
   const std::string &get_id() const;
   bool has_default_id() const;
 
@@ -68,8 +70,10 @@ struct EntityName
 
   friend bool operator<(const EntityName& a, const EntityName& b);
   friend std::ostream& operator<<(std::ostream& out, const EntityName& n);
-  friend bool operator==(const EntityName& a, const EntityName& b);
-  friend bool operator!=(const EntityName& a, const EntityName& b);
+
+  bool operator==(const EntityName& rhs) const noexcept {
+    return type == rhs.type && id == rhs.id;
+  }
 
 private:
   struct str_to_entity_type_t {
@@ -84,7 +88,5 @@ private:
 };
 
 WRITE_CLASS_ENCODER(EntityName)
-
-WRITE_EQ_OPERATORS_2(EntityName, type, id)
 
 #endif

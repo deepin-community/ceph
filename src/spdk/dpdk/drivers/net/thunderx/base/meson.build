@@ -7,8 +7,9 @@ sources = [
 	'nicvf_bsvf.c'
 ]
 
+c_args = cflags
 base_lib = static_library('nicvf_base', sources,
-	c_args: cflags,
+	c_args: c_args,
 	dependencies: static_rte_ethdev
 )
 

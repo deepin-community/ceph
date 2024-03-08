@@ -14,7 +14,7 @@
 
 #pragma once
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 namespace port {
 
 // TODO(jorlow): Many of these belong more in the environment class rather than
@@ -70,7 +70,7 @@ class CondVar {
 //      static void Initializer() { ... do something ...; }
 //      ...
 //      port::InitOnce(&init_control, &Initializer);
-typedef intptr_t OnceType;
+using OnceType = intptr_t;
 #define LEVELDB_ONCE_INIT 0
 extern void InitOnce(port::OnceType*, void (*initializer)());
 
@@ -98,4 +98,4 @@ extern bool Snappy_Uncompress(const char* input_data, size_t input_length,
                               char* output);
 
 }  // namespace port
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

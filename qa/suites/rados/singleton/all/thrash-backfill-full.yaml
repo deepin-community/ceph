@@ -16,13 +16,15 @@ override:
   ceph:
     conf:
       mon:
-        osd default pool size: 3
+        osd pool default size: 3
         osd min pg log entries: 5
         osd max pg log entries: 10
 tasks:
 - install:
 - ceph:
-    log-whitelist:
+    pre-mgr-commands:
+      - sudo ceph config set mgr mgr_pool false --force
+    log-ignorelist:
     - but it is still running
     - missing primary copy of
     - objects unfound and apparently lost
@@ -36,6 +38,7 @@ tasks:
     - \(TOO_FEW_PGS\)
     - \(POOL_BACKFILLFULL\)
     - slow request
+    - \(POOL_APP_NOT_ENABLED\)
 - thrashosds:
     op_delay: 30
     clean_interval: 120

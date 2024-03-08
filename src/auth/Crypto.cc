@@ -14,13 +14,11 @@
 #include <array>
 #include <sstream>
 #include <limits>
-
 #include <fcntl.h>
 
+#include <openssl/aes.h>
+
 #include "Crypto.h"
-#ifdef USE_OPENSSL
-# include <openssl/aes.h>
-#endif
 
 #include "include/ceph_assert.h"
 #include "common/Clock.h"
@@ -34,6 +32,20 @@
 #include "common/Formatter.h"
 #include "common/debug.h"
 #include <errno.h>
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+
+using std::ostringstream;
+using std::string;
+
+using ceph::bufferlist;
+using ceph::bufferptr;
+using ceph::Formatter;
+
 
 // use getentropy() if available. it uses the same source of randomness
 // as /dev/urandom without the filesystem overhead
@@ -79,8 +91,26 @@ void CryptoRandom::get_bytes(char *buf, int len)
   }
 }
 
-#else // !HAVE_GETENTROPY
+#elif defined(_WIN32) // !HAVE_GETENTROPY
 
+#include <bcrypt.h>
+
+CryptoRandom::CryptoRandom() : fd(0) {}
+CryptoRandom::~CryptoRandom() = default;
+
+void CryptoRandom::get_bytes(char *buf, int len)
+{
+  auto ret = BCryptGenRandom (
+    NULL,
+    (unsigned char*)buf,
+    len,
+    BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+  if (ret != 0) {
+    throw std::system_error(ret, std::system_category());
+  }
+}
+
+#else // !HAVE_GETENTROPY && !_WIN32
 // open /dev/urandom once on construction and reuse the fd for all reads
 CryptoRandom::CryptoRandom()
   : fd{open_urandom()}
@@ -169,7 +199,7 @@ std::size_t CryptoKeyHandler::decrypt(
 sha256_digest_t CryptoKeyHandler::hmac_sha256(
   const ceph::bufferlist& in) const
 {
-  ceph::crypto::HMACSHA256 hmac((const unsigned char*)secret.c_str(), secret.length());
+  TOPNSPC::crypto::HMACSHA256 hmac((const unsigned char*)secret.c_str(), secret.length());
 
   for (const auto& bptr : in.buffers()) {
     hmac.Update((const unsigned char *)bptr.c_str(), bptr.length());
@@ -237,7 +267,6 @@ public:
   CryptoKeyHandler *get_key_handler(const bufferptr& secret, string& error) override;
 };
 
-#ifdef USE_OPENSSL
 // when we say AES, we mean AES-128
 static constexpr const std::size_t AES_KEY_LEN{16};
 static constexpr const std::size_t AES_BLOCK_LEN{16};
@@ -417,11 +446,6 @@ public:
   }
 };
 
-#else
-# error "No supported crypto implementation found."
-#endif
-
-
 
 // ------------------------------------------------------------
 
@@ -484,7 +508,7 @@ void CryptoKey::decode(bufferlist::const_iterator& bl)
   bufferptr tmp;
   bl.copy_deep(len, tmp);
   if (_set_secret(type, tmp) < 0)
-    throw buffer::malformed_input("malformed secret");
+    throw ceph::buffer::malformed_input("malformed secret");
 }
 
 int CryptoKey::set_secret(int type, const bufferptr& s, utime_t c)
@@ -586,3 +610,6 @@ CryptoHandler *CryptoHandler::create(int type)
     return NULL;
   }
 }
+
+#pragma clang diagnostic pop
+#pragma GCC diagnostic pop

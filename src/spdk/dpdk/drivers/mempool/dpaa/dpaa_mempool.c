@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- *   Copyright 2017 NXP
+ *   Copyright 2017,2019 NXP
  *
  */
 
@@ -26,6 +26,7 @@
 #include <rte_ring.h>
 
 #include <dpaa_mempool.h>
+#include <dpaax_iova_table.h>
 
 /* List of all the memseg information locally maintained in dpaa driver. This
  * is to optimize the PA_to_VA searches until a better mechanism (algo) is
@@ -34,7 +35,8 @@
 struct dpaa_memseg_list rte_dpaa_memsegs
 	= TAILQ_HEAD_INITIALIZER(rte_dpaa_memsegs);
 
-struct dpaa_bp_info rte_dpaa_bpid_info[DPAA_MAX_BPOOLS];
+struct dpaa_bp_info *rte_dpaa_bpid_info;
+int dpaa_logtype_mempool;
 
 static int
 dpaa_mbuf_create_pool(struct rte_mempool *mp)
@@ -50,6 +52,15 @@ dpaa_mbuf_create_pool(struct rte_mempool *mp)
 
 	MEMPOOL_INIT_FUNC_TRACE();
 
+	if (unlikely(!RTE_PER_LCORE(dpaa_io))) {
+		ret = rte_dpaa_portal_init((void *)0);
+		if (ret) {
+			DPAA_MEMPOOL_ERR(
+				"rte_dpaa_portal_init failed with ret: %d",
+				 ret);
+			return -1;
+		}
+	}
 	bp = bman_new_pool(&params);
 	if (!bp) {
 		DPAA_MEMPOOL_ERR("bman_new_pool() failed");
@@ -72,6 +83,16 @@ dpaa_mbuf_create_pool(struct rte_mempool *mp)
 	if (num_bufs)
 		DPAA_MEMPOOL_WARN("drained %u bufs from BPID %d",
 				  num_bufs, bpid);
+
+	if (rte_dpaa_bpid_info == NULL) {
+		rte_dpaa_bpid_info = (struct dpaa_bp_info *)rte_zmalloc(NULL,
+				sizeof(struct dpaa_bp_info) * DPAA_MAX_BPOOLS,
+				RTE_CACHE_LINE_SIZE);
+		if (rte_dpaa_bpid_info == NULL) {
+			bman_free_pool(bp);
+			return -ENOMEM;
+		}
+	}
 
 	rte_dpaa_bpid_info[bpid].mp = mp;
 	rte_dpaa_bpid_info[bpid].bpid = bpid;
@@ -122,7 +143,7 @@ dpaa_buf_free(struct dpaa_bp_info *bp_info, uint64_t addr)
 	struct bm_buffer buf;
 	int ret;
 
-	DPAA_MEMPOOL_DEBUG("Free 0x%" PRIx64 " to bpid: %d",
+	DPAA_MEMPOOL_DPDEBUG("Free 0x%" PRIx64 " to bpid: %d",
 			   addr, bp_info->bpid);
 
 	bm_buffer_set64(&buf, addr);
@@ -278,17 +299,18 @@ dpaa_populate(struct rte_mempool *mp, unsigned int max_objs,
 	struct dpaa_bp_info *bp_info;
 	unsigned int total_elt_sz;
 
-	MEMPOOL_INIT_FUNC_TRACE();
-
 	if (!mp || !mp->pool_data) {
 		DPAA_MEMPOOL_ERR("Invalid mempool provided\n");
 		return 0;
 	}
 
+	/* Update the PA-VA Table */
+	dpaax_iova_table_update(paddr, vaddr, len);
+
 	bp_info = DPAA_MEMPOOL_TO_POOL_INFO(mp);
 	total_elt_sz = mp->header_size + mp->elt_size + mp->trailer_size;
 
-	DPAA_MEMPOOL_DEBUG("Req size %" PRIx64 " vs Available %u\n",
+	DPAA_MEMPOOL_DPDEBUG("Req size %" PRIx64 " vs Available %u\n",
 			   (uint64_t)len, total_elt_sz * mp->size);
 
 	/* Detect pool area has sufficient space for elements in this memzone */
@@ -320,11 +342,11 @@ dpaa_populate(struct rte_mempool *mp, unsigned int max_objs,
 	 */
 	TAILQ_INSERT_HEAD(&rte_dpaa_memsegs, ms, next);
 
-	return rte_mempool_op_populate_default(mp, max_objs, vaddr, paddr, len,
-					       obj_cb, obj_cb_arg);
+	return rte_mempool_op_populate_helper(mp, 0, max_objs, vaddr, paddr,
+					       len, obj_cb, obj_cb_arg);
 }
 
-struct rte_mempool_ops dpaa_mpool_ops = {
+static const struct rte_mempool_ops dpaa_mpool_ops = {
 	.name = DPAA_MEMPOOL_OPS_NAME,
 	.alloc = dpaa_mbuf_create_pool,
 	.free = dpaa_mbuf_free_pool,
@@ -335,3 +357,10 @@ struct rte_mempool_ops dpaa_mpool_ops = {
 };
 
 MEMPOOL_REGISTER_OPS(dpaa_mpool_ops);
+
+RTE_INIT(dpaa_mp_init_log)
+{
+	dpaa_logtype_mempool = rte_log_register("mempool.dpaa");
+	if (dpaa_logtype_mempool >= 0)
+		rte_log_set_level(dpaa_logtype_mempool, RTE_LOG_NOTICE);
+}

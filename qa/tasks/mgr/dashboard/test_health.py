@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 from __future__ import absolute_import
 
-from .helper import DashboardTestCase, JAny, JLeaf, JList, JObj
+from .helper import (DashboardTestCase, JAny, JLeaf, JList, JObj,
+                     addrvec_schema, module_options_schema)
 
 
 class HealthTest(DashboardTestCase):
@@ -22,6 +23,7 @@ class HealthTest(DashboardTestCase):
     __mdsmap_schema = JObj({
         'session_autoclose': int,
         'balancer': str,
+        'bal_rank_mask': str,
         'up': JObj({}, allow_unknown=True),
         'last_failure_osd_epoch': int,
         'in': JList(int),
@@ -40,7 +42,7 @@ class HealthTest(DashboardTestCase):
             'ro_compat': JObj({}, allow_unknown=True),
             'incompat': JObj({}, allow_unknown=True)
         }),
-        'min_compat_client': str,
+        'required_client_features': JObj({}, allow_unknown=True),
         'data_pools': JList(int),
         'info': JObj({}, allow_unknown=True),
         'fs_name': str,
@@ -50,6 +52,13 @@ class HealthTest(DashboardTestCase):
         'modified': str,
         'session_timeout': int,
         'flags': int,
+        'flags_state': JObj({
+            'joinable': bool,
+            'allow_snaps': bool,
+            'allow_multimds_snaps': bool,
+            'allow_standby_replay': bool,
+            'refuse_client_session': bool
+        }),
         'ever_allowed_features': int,
         'root': int
     })
@@ -81,11 +90,15 @@ class HealthTest(DashboardTestCase):
                 'standbys': JList(JObj({}, allow_unknown=True)),
             }),
             'health': JObj({
-                'checks': JList(str),
+                'checks': JList(JObj({}, allow_unknown=True)),
+                'mutes': JList(JObj({}, allow_unknown=True)),
                 'status': str,
             }),
             'hosts': int,
-            'iscsi_daemons': int,
+            'iscsi_daemons': JObj({
+                'up': int,
+                'down': int
+            }),
             'mgr_map': JObj({
                 'active_name': str,
                 'standbys': JList(JLeaf(dict))
@@ -101,6 +114,7 @@ class HealthTest(DashboardTestCase):
                     JObj({
                         'in': int,
                         'up': int,
+                        'state': JList(str)
                     })),
             }),
             'pg_info': self.__pg_info_schema,
@@ -117,23 +131,7 @@ class HealthTest(DashboardTestCase):
             'can_run': bool,
             'error_string': str,
             'name': str,
-            'module_options': JObj(
-                {},
-                allow_unknown=True,
-                unknown_schema=JObj({
-                    'name': str,
-                    'type': str,
-                    'level': str,
-                    'flags': int,
-                    'default_value': str,
-                    'min': str,
-                    'max': str,
-                    'enum_allowed': JList(str),
-                    'see_also': JList(str),
-                    'desc': str,
-                    'long_desc': str,
-                    'tags': JList(str),
-                })),
+            'module_options': module_options_schema
         })
         schema = JObj({
             'client_perf': JObj({
@@ -147,9 +145,13 @@ class HealthTest(DashboardTestCase):
                 'pools': JList(JObj({
                     'stats': JObj({
                         'stored': int,
+                        'stored_data': int,
+                        'stored_omap': int,
                         'objects': int,
                         'kb_used': int,
                         'bytes_used': int,
+                        'data_bytes_used': int,
+                        'omap_bytes_used': int,
                         'percent_used': float,
                         'max_avail': int,
                         'quota_objects': int,
@@ -174,7 +176,8 @@ class HealthTest(DashboardTestCase):
                     'total_used_raw_bytes': int,
                     'total_used_raw_ratio': float,
                     'num_osds': int,
-                    'num_per_pool_osds': int
+                    'num_per_pool_osds': int,
+                    'num_per_pool_omap_osds': int
                 })
             }),
             'fs_map': JObj({
@@ -198,27 +201,25 @@ class HealthTest(DashboardTestCase):
                 'standbys': JList(JObj({}, allow_unknown=True)),
             }),
             'health': JObj({
-                'checks': JList(str),
+                'checks': JList(JObj({}, allow_unknown=True)),
+                'mutes': JList(JObj({}, allow_unknown=True)),
                 'status': str,
             }),
             'hosts': int,
-            'iscsi_daemons': int,
+            'iscsi_daemons': JObj({
+                'up': int,
+                'down': int
+            }),
             'mgr_map': JObj({
                 'active_addr': str,
                 'active_addrs': JObj({
-                    'addrvec': JList(JObj({
-                        'addr': str,
-                        'nonce': int,
-                        'type': str
-                    }))
+                    'addrvec': addrvec_schema
                 }),
                 'active_change': str,  # timestamp
+                'active_mgr_features': int,
                 'active_gid': int,
                 'active_name': str,
-                'always_on_modules': JObj(
-                    {},
-                    allow_unknown=True, unknown_schema=JList(str)
-                ),
+                'always_on_modules': JObj({}, allow_unknown=True),
                 'available': bool,
                 'available_modules': JList(module_info_schema),
                 'epoch': int,
@@ -230,9 +231,10 @@ class HealthTest(DashboardTestCase):
                 'standbys': JList(JObj({
                     'available_modules': JList(module_info_schema),
                     'gid': int,
-                    'name': str
-                }))
-            }),
+                    'name': str,
+                    'mgr_features': int
+                }, allow_unknown=True))
+            }, allow_unknown=True),
             'mon_status': JObj({
                 'election_epoch': int,
                 'extra_probe_peers': JList(JAny(none=True)),
@@ -250,7 +252,7 @@ class HealthTest(DashboardTestCase):
                     'required_mon': JList(str)
                 }),
                 'monmap': JObj({
-                    # TODO: expand on monmap schema
+                    # @TODO: expand on monmap schema
                     'mons': JList(JLeaf(dict)),
                 }, allow_unknown=True),
                 'name': str,
@@ -259,11 +261,12 @@ class HealthTest(DashboardTestCase):
                 'quorum_age': int,
                 'rank': int,
                 'state': str,
-                # TODO: What type should be expected here?
-                'sync_provider': JList(JAny(none=True))
+                # @TODO: What type should be expected here?
+                'sync_provider': JList(JAny(none=True)),
+                'stretch_mode': bool
             }),
             'osd_map': JObj({
-                # TODO: define schema for crush map and osd_metadata, among
+                # @TODO: define schema for crush map and osd_metadata, among
                 # others
                 'osds': JList(
                     JObj({
@@ -292,7 +295,8 @@ class HealthTest(DashboardTestCase):
             'client_perf': JObj({}, allow_unknown=True),
             'df': JObj({}, allow_unknown=True),
             'health': JObj({
-                'checks': JList(str),
+                'checks': JList(JObj({}, allow_unknown=True)),
+                'mutes': JList(JObj({}, allow_unknown=True)),
                 'status': str
             }),
             'pools': JList(JLeaf(dict)),

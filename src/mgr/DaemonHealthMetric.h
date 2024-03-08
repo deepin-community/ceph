@@ -44,8 +44,9 @@ public:
     : type(type_), value(n)
   {}
   DaemonHealthMetric(daemon_metric type_, uint32_t n1, uint32_t n2)
-    : type(type_), value(n1, n2)
+    : type(type_), value(n1, n2) 
   {}
+
   daemon_metric get_type() const {
     return type;
   }
@@ -58,6 +59,7 @@ public:
   uint32_t get_n2() const {
     return value.n2;
   }
+
   DENC(DaemonHealthMetric, v, p) {
     DENC_START(1, 1, p);
     denc(v.type, p);
@@ -65,7 +67,11 @@ public:
     DENC_FINISH(p);
   }
 
-  friend ostream& operator<<(ostream& out, const DaemonHealthMetric& m) {
+  std::string get_type_name() const {
+    return daemon_metric_name(get_type());
+  }
+
+  friend std::ostream& operator<<(std::ostream& out, const DaemonHealthMetric& m) {
     return out << daemon_metric_name(m.get_type()) << "("
 	       << m.get_n() << "|(" << m.get_n1() << "," << m.get_n2() << "))";
   }

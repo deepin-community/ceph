@@ -22,6 +22,12 @@
 #include "auth/Auth.h"
 #include "auth/KeyRing.h"
 
+using std::map;
+using std::string;
+using std::vector;
+using std::cerr;
+using std::cout;
+
 void usage()
 {
   cout << "usage: ceph-authtool keyringfile [OPTIONS]...\n"
@@ -52,9 +58,7 @@ void usage()
 
 int main(int argc, const char **argv)
 {
-  vector<const char*> args;
-  argv_to_vec(argc, argv, args);
-
+  auto args = argv_to_vec(argc, argv);
   std::string add_key;
   std::string caps_fn;
   std::string import_keyring;
@@ -254,12 +258,10 @@ int main(int argc, const char **argv)
   }
   if (!caps_fn.empty()) {
     ConfFile cf;
-    std::deque<std::string> parse_errors;
-    if (cf.parse_file(caps_fn, &parse_errors, &cerr) != 0) {
+    if (cf.parse_file(caps_fn, &cerr) != 0) {
       cerr << "could not parse caps file " << caps_fn << std::endl;
       exit(1);
     }
-    complain_about_parse_errors(g_ceph_context, &parse_errors);
     map<string, bufferlist> caps;
     const char *key_names[] = { "mon", "osd", "mds", "mgr", NULL };
     for (int i=0; key_names[i]; i++) {

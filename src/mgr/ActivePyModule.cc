@@ -25,6 +25,9 @@
 #undef dout_prefix
 #define dout_prefix *_dout << "mgr " << __func__ << " "
 
+using std::string;
+using namespace std::literals;
+
 int ActivePyModule::load(ActivePyModules *py_modules)
 {
   ceph_assert(py_modules);
@@ -34,7 +37,7 @@ int ActivePyModule::load(ActivePyModules *py_modules)
   // with us in logging etc.
   auto pThisPtr = PyCapsule_New(this, nullptr, nullptr);
   auto pPyModules = PyCapsule_New(py_modules, nullptr, nullptr);
-  auto pModuleName = PyString_FromString(get_name().c_str());
+  auto pModuleName = PyUnicode_FromString(get_name().c_str());
   auto pArgs = PyTuple_Pack(3, pModuleName, pPyModules, pThisPtr);
 
   pClassInstance = PyObject_CallObject(py_module->pClass, pArgs);
@@ -42,7 +45,7 @@ int ActivePyModule::load(ActivePyModules *py_modules)
   Py_DECREF(pArgs);
   if (pClassInstance == nullptr) {
     derr << "Failed to construct class in '" << get_name() << "'" << dendl;
-    derr << handle_pyerror() << dendl;
+    derr << handle_pyerror(true, get_name(), "ActivePyModule::load") << dendl;
     return -EINVAL;
   } else {
     dout(1) << "Constructed class from module: " << get_name() << dendl;
@@ -71,7 +74,7 @@ void ActivePyModule::notify(const std::string &notify_type, const std::string &n
     Py_DECREF(pValue);
   } else {
     derr << get_name() << ".notify:" << dendl;
-    derr << handle_pyerror() << dendl;
+    derr << handle_pyerror(true, get_name(), "ActivePyModule::notify") << dendl;
     // FIXME: callers can't be expected to handle a python module
     // that has spontaneously broken, but Mgr() should provide
     // a hook to unload misbehaving modules when they have an
@@ -104,7 +107,7 @@ void ActivePyModule::notify_clog(const LogEntry &log_entry)
     Py_DECREF(pValue);
   } else {
     derr << get_name() << ".notify_clog:" << dendl;
-    derr << handle_pyerror() << dendl;
+    derr << handle_pyerror(true, get_name(), "ActivePyModule::notify_clog") << dendl;
     // FIXME: callers can't be expected to handle a python module
     // that has spontaneously broken, but Mgr() should provide
     // a hook to unload misbehaving modules when they have an
@@ -159,7 +162,8 @@ PyObject *ActivePyModule::dispatch_remote(
     // Because the caller is in a different context, we can't let this
     // exception bubble up, need to re-raise it from the caller's
     // context later.
-    *err = handle_pyerror();
+    std::string caller = "ActivePyModule::dispatch_remote "s + method;
+    *err = handle_pyerror(true, get_name(), caller);
   } else {
     dout(20) << "Success calling '" << method << "'" << dendl;
   }
@@ -175,10 +179,10 @@ void ActivePyModule::config_notify()
   }
 
   Gil gil(py_module->pMyThreadState, true);
-  dout(20) << "Calling " << py_module->get_name() << ".config_notify..."
+  dout(20) << "Calling " << py_module->get_name() << "._config_notify..."
 	   << dendl;
   auto remoteResult = PyObject_CallMethod(pClassInstance,
-					  const_cast<char*>("config_notify"),
+					  const_cast<char*>("_config_notify"),
 					  (char*)NULL);
   if (remoteResult != nullptr) {
     Py_DECREF(remoteResult);
@@ -206,10 +210,10 @@ int ActivePyModule::handle_command(
   Gil gil(py_module->pMyThreadState, true);
 
   PyFormatter f;
-  cmdmap_dump(cmdmap, &f);
+  TOPNSPC::common::cmdmap_dump(cmdmap, &f);
   PyObject *py_cmd = f.get();
   string instr;
-  inbuf.copy(0, inbuf.length(), instr);
+  inbuf.begin().copy(inbuf.length(), instr);
 
   ceph_assert(m_session == nullptr);
   m_command_perms = module_command.perm;
@@ -230,9 +234,9 @@ int ActivePyModule::handle_command(
               "returned wrong type!" << dendl;
       r = -EINVAL;
     } else {
-      r = PyInt_AsLong(PyTuple_GetItem(pResult, 0));
-      *ds << PyString_AsString(PyTuple_GetItem(pResult, 1));
-      *ss << PyString_AsString(PyTuple_GetItem(pResult, 2));
+      r = PyLong_AsLong(PyTuple_GetItem(pResult, 0));
+      *ds << PyUnicode_AsUTF8(PyTuple_GetItem(pResult, 1));
+      *ss << PyUnicode_AsUTF8(PyTuple_GetItem(pResult, 2));
     }
 
     Py_DECREF(pResult);

@@ -20,29 +20,40 @@
 #include "osd/OSDMap.h"
 #include "include/ceph_features.h"
 
-class MOSDMap : public MessageInstance<MOSDMap> {
-public:
-  friend factory;
+class MOSDMap final : public Message {
 private:
   static constexpr int HEAD_VERSION = 4;
   static constexpr int COMPAT_VERSION = 3;
 
- public:
+public:
   uuid_d fsid;
   uint64_t encode_features = 0;
-  map<epoch_t, bufferlist> maps;
-  map<epoch_t, bufferlist> incremental_maps;
-  epoch_t oldest_map =0, newest_map = 0;
-
-  // if we are fetching maps from the mon and have to jump a gap
-  // (client's next needed map is older than mon's oldest) we can
-  // share removed snaps from the gap here.
-  mempool::osdmap::map<int64_t,OSDMap::snap_interval_set_t> gap_removed_snaps;
+  std::map<epoch_t, ceph::buffer::list> maps;
+  std::map<epoch_t, ceph::buffer::list> incremental_maps;
+  /**
+   * cluster_osdmap_trim_lower_bound
+   *
+   * Encodes a lower bound on the monitor's osdmap trim bound.  Recipients
+   * can safely trim up to this bound.  The sender stores maps back to
+   * cluster_osdmap_trim_lower_bound.
+   *
+   * This field was formerly named oldest_map and encoded the oldest map
+   * stored by the sender.  The primary usage of this field, however, was to
+   * allow the recipient to trim.  The secondary usage was to inform the
+   * recipient of how many maps the sender stored in case it needed to request
+   * more.  For both purposes, it should be safe for an older OSD to interpret
+   * this field as oldest_map, and it should be safe for a new osd to interpret
+   * the oldest_map field sent by an older osd as
+   * cluster_osdmap_trim_lower_bound.
+   * See bug https://tracker.ceph.com/issues/49689
+   */
+  epoch_t cluster_osdmap_trim_lower_bound = 0;
+  epoch_t newest_map = 0;
 
   epoch_t get_first() const {
     epoch_t e = 0;
-    map<epoch_t, bufferlist>::const_iterator i = maps.begin();
-    if (i != maps.end())  e = i->first;
+    auto i = maps.cbegin();
+    if (i != maps.cend())  e = i->first;
     i = incremental_maps.begin();    
     if (i != incremental_maps.end() &&
         (e == 0 || i->first < e)) e = i->first;
@@ -50,43 +61,39 @@ private:
   }
   epoch_t get_last() const {
     epoch_t e = 0;
-    map<epoch_t, bufferlist>::const_reverse_iterator i = maps.rbegin();
-    if (i != maps.rend())  e = i->first;
+    auto i = maps.crbegin();
+    if (i != maps.crend())  e = i->first;
     i = incremental_maps.rbegin();    
     if (i != incremental_maps.rend() &&
         (e == 0 || i->first > e)) e = i->first;
     return e;
   }
-  epoch_t get_oldest() {
-    return oldest_map;
-  }
-  epoch_t get_newest() {
-    return newest_map;
-  }
 
-
-  MOSDMap() : MessageInstance(CEPH_MSG_OSD_MAP, HEAD_VERSION, COMPAT_VERSION) { }
+  MOSDMap() : Message{CEPH_MSG_OSD_MAP, HEAD_VERSION, COMPAT_VERSION} { }
   MOSDMap(const uuid_d &f, const uint64_t features)
-    : MessageInstance(CEPH_MSG_OSD_MAP, HEAD_VERSION, COMPAT_VERSION),
+    : Message{CEPH_MSG_OSD_MAP, HEAD_VERSION, COMPAT_VERSION},
       fsid(f), encode_features(features),
-      oldest_map(0), newest_map(0) { }
+      cluster_osdmap_trim_lower_bound(0), newest_map(0) { }
 private:
-  ~MOSDMap() override {}
+  ~MOSDMap() final {}
 public:
   // marshalling
   void decode_payload() override {
+    using ceph::decode;
     auto p = payload.cbegin();
     decode(fsid, p);
     decode(incremental_maps, p);
     decode(maps, p);
     if (header.version >= 2) {
-      decode(oldest_map, p);
+      decode(cluster_osdmap_trim_lower_bound, p);
       decode(newest_map, p);
     } else {
-      oldest_map = 0;
+      cluster_osdmap_trim_lower_bound = 0;
       newest_map = 0;
     }
     if (header.version >= 4) {
+      // removed in octopus
+      mempool::osdmap::map<int64_t,snap_interval_set_t> gap_removed_snaps;
       decode(gap_removed_snaps, p);
     }
   }
@@ -111,9 +118,7 @@ public:
       // FIXME: this can probably be done more efficiently higher up
       // the stack, or maybe replaced with something that only
       // includes the pools the client cares about.
-      for (map<epoch_t,bufferlist>::iterator p = incremental_maps.begin();
-	   p != incremental_maps.end();
-	   ++p) {
+      for (auto p = incremental_maps.begin(); p != incremental_maps.end(); ++p) {
 	OSDMap::Incremental inc;
 	auto q = p->second.cbegin();
 	inc.decode(q);
@@ -121,14 +126,14 @@ public:
 	uint64_t f = inc.encode_features & features;
 	p->second.clear();
 	if (inc.fullmap.length()) {
-	  // embedded full map?
+	  // embedded full std::map?
 	  OSDMap m;
 	  m.decode(inc.fullmap);
 	  inc.fullmap.clear();
 	  m.encode(inc.fullmap, f | CEPH_FEATURE_RESERVED);
 	}
 	if (inc.crush.length()) {
-	  // embedded crush map
+	  // embedded crush std::map
 	  CrushWrapper c;
 	  auto p = inc.crush.cbegin();
 	  c.decode(p);
@@ -137,9 +142,7 @@ public:
 	}
 	inc.encode(p->second, f | CEPH_FEATURE_RESERVED);
       }
-      for (map<epoch_t,bufferlist>::iterator p = maps.begin();
-	   p != maps.end();
-	   ++p) {
+      for (auto p = maps.begin(); p != maps.end(); ++p) {
 	OSDMap m;
 	m.decode(p->second);
 	// always encode with subset of osdmaps canonical features
@@ -151,23 +154,25 @@ public:
     encode(incremental_maps, payload);
     encode(maps, payload);
     if (header.version >= 2) {
-      encode(oldest_map, payload);
+      encode(cluster_osdmap_trim_lower_bound, payload);
       encode(newest_map, payload);
     }
     if (header.version >= 4) {
-      encode(gap_removed_snaps, payload);
+      encode((uint32_t)0, payload);
     }
   }
 
   std::string_view get_type_name() const override { return "osdmap"; }
-  void print(ostream& out) const override {
+  void print(std::ostream& out) const override {
     out << "osd_map(" << get_first() << ".." << get_last();
-    if (oldest_map || newest_map)
-      out << " src has " << oldest_map << ".." << newest_map;
-    if (!gap_removed_snaps.empty())
-      out << " +gap_removed_snaps";
+    if (cluster_osdmap_trim_lower_bound || newest_map)
+      out << " src has " << cluster_osdmap_trim_lower_bound
+          << ".." << newest_map;
     out << ")";
   }
+private:
+  template<class T, typename... Args>
+  friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
 };
 
 #endif

@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 #include "rgw_common.h"
 #include "rgw_log.h"
@@ -11,6 +11,8 @@
 
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_rgw
+
+using namespace std;
 
 void RGWEnv::init(CephContext *cct)
 {
@@ -50,9 +52,24 @@ const char *rgw_conf_get(const map<string, string, ltstr_nocase>& conf_map, cons
   return iter->second.c_str();
 }
 
+boost::optional<const std::string&> rgw_conf_get_optional(const map<string, string, ltstr_nocase>& conf_map, const std::string& name)
+{
+  auto iter = conf_map.find(name);
+  if (iter == conf_map.end())
+    return boost::none;
+
+  return boost::optional<const std::string&>(iter->second);
+}
+
 const char *RGWEnv::get(const char *name, const char *def_val) const
 {
   return rgw_conf_get(env_map, name, def_val);
+}
+
+boost::optional<const std::string&>
+RGWEnv::get_optional(const std::string& name) const
+{
+  return rgw_conf_get_optional(env_map, name);
 }
 
 int rgw_conf_get_int(const map<string, string, ltstr_nocase>& conf_map, const char *name, int def_val)

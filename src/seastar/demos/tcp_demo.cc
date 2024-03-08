@@ -22,6 +22,9 @@
 #include <seastar/net/ip.hh>
 #include <seastar/net/virtio.hh>
 #include <seastar/net/tcp.hh>
+#include <seastar/net/native-stack.hh>
+#include <seastar/core/reactor.hh>
+#include <fmt/printf.h>
 
 using namespace seastar;
 using namespace net;
@@ -34,21 +37,23 @@ struct tcp_test {
         tcp::connection tcp_conn;
         explicit connection(tcp::connection tc) : tcp_conn(std::move(tc)) {}
         void run() {
-            tcp_conn.wait_for_data().then([this] {
+            // Read packets and echo back in the background.
+            (void)tcp_conn.wait_for_data().then([this] {
                 auto p = tcp_conn.read();
                 if (!p.len()) {
                     tcp_conn.close_write();
                     return;
                 }
                 fmt::print("read {:d} bytes\n", p.len());
-                tcp_conn.send(std::move(p));
+                (void)tcp_conn.send(std::move(p));
                 run();
             });
         }
     };
     tcp_test(ipv4& inet) : inet(inet), _listener(inet.get_tcp().listen(10000)) {}
     void run() {
-        _listener.accept().then([this] (tcp::connection conn) {
+        // Run all connections in the background.
+        (void)_listener.accept().then([this] (tcp::connection conn) {
             (new connection(std::move(conn)))->run();
             run();
         });
@@ -56,15 +61,14 @@ struct tcp_test {
 };
 
 int main(int ac, char** av) {
-    boost::program_options::variables_map opts;
-    opts.insert(std::make_pair("tap-device", boost::program_options::variable_value(std::string("tap0"), false)));
+    native_stack_options opts;
 
-    auto vnet = create_virtio_net_device(opts);
+    auto vnet = create_virtio_net_device(opts.virtio_opts, opts.lro);
     interface netif(std::move(vnet));
     ipv4 inet(&netif);
     inet.set_host_address(ipv4_address("192.168.122.2"));
     tcp_test tt(inet);
-    engine().when_started().then([&tt] { tt.run(); });
+    (void)engine().when_started().then([&tt] { tt.run(); });
     engine().run();
 }
 

@@ -19,14 +19,12 @@
 #include <memory>
 #include "include/buffer_fwd.h"
 #include "include/ceph_assert.h"
+#include "include/common_fwd.h"
 #include "msg/MessageRef.h"
 
 class Messenger;
 class Connection;
-class AuthAuthorizer;
 class CryptoKey;
-class CephContext;
-class AuthAuthorizerChallenge;
 class KeyStore;
 
 class Dispatcher {
@@ -206,56 +204,25 @@ public:
   /**
    * handle successful authentication (msgr2)
    *
-   * Authenticated result/state will be attached to the Connection.
+   * Authenticated result/state will be attached to the Connection. This is
+   * called via the MonClient.
+   *
+   * Do not acquire locks in this method! It is considered "fast" delivery.
    *
    * return 1 for success
    * return 0 for no action (let another Dispatcher handle it)
    * return <0 for failure (failure to parse caps, for instance)
    */
-  virtual int ms_handle_authentication(Connection *con) {
+  virtual int ms_handle_fast_authentication(Connection *con) {
     return 0;
   }
 
   /**
-   * get authentication keyring
-   *
-   * Return the keyring to use for authentication with msgr1.  Remove me
-   * someday.
-   */
-  virtual KeyStore* ms_get_auth1_authorizer_keystore() {
-    return nullptr;
-  }
-
-  /**
-   * Retrieve the AuthAuthorizer for the given peer type. It might not
-   * provide one if it knows there is no AuthAuthorizer for that type.
-   *
-   * @param dest_type The peer type we want the authorizer for.
-   * @param a Double pointer to an AuthAuthorizer. The Dispatcher will fill
-   * in *a with the correct AuthAuthorizer, if it can. Make sure that you have
-   * set *a to NULL before calling in.
-   * @param force_new Force the Dispatcher to wait for a new set of keys before
-   * returning the authorizer.
-   *
-   * @return True if this function call properly filled in *a, false otherwise.
-   */
-  virtual bool ms_get_authorizer(int dest_type, AuthAuthorizer **a) {
-    return false;
-  }
-  /**
    * @} //Authentication
    */
 
-  void ms_set_require_authorizer(bool b) {
-    require_authorizer = b;
-  }
 protected:
   CephContext *cct;
-public:
-  // allow unauthenticated connections.  This is needed for
-  // compatibility with pre-nautilus OSDs, which do not authenticate
-  // the heartbeat sessions.
-  bool require_authorizer = true;
 private:
   explicit Dispatcher(const Dispatcher &rhs);
   Dispatcher& operator=(const Dispatcher &rhs);

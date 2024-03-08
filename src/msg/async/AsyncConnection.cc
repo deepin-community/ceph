@@ -35,7 +35,7 @@
 #define dout_subsys ceph_subsys_ms
 #undef dout_prefix
 #define dout_prefix _conn_prefix(_dout)
-ostream& AsyncConnection::_conn_prefix(std::ostream *_dout) {
+std::ostream& AsyncConnection::_conn_prefix(std::ostream *_dout) {
   return *_dout << "-- " << async_msgr->get_myaddrs() << " >> "
 		<< *peer_addrs << " conn(" << this
 		<< (msgr2 ? " msgr2=" : " legacy=")
@@ -113,8 +113,10 @@ class C_tick_wakeup : public EventCallback {
 
 AsyncConnection::AsyncConnection(CephContext *cct, AsyncMessenger *m, DispatchQueue *q,
                                  Worker *w, bool m2, bool local)
-  : Connection(cct, m), delay_state(NULL), async_msgr(m), conn_id(q->get_id()),
+  : Connection(cct, m),
+    delay_state(NULL), async_msgr(m), conn_id(q->get_id()),
     logger(w->get_perf_counter()),
+    labeled_logger(w->get_labeled_perf_counter()),
     state(STATE_NONE), port(-1),
     dispatch_queue(q), recv_buf(NULL),
     recv_max_prefetch(std::max<int64_t>(msgr->cct->_conf->ms_tcp_prefetch_max_size, TCP_PREFETCH_MIN_SIZE)),
@@ -152,8 +154,14 @@ AsyncConnection::~AsyncConnection()
   ceph_assert(!delay_state);
 }
 
-int AsyncConnection::get_con_mode() const {
+int AsyncConnection::get_con_mode() const
+{
   return protocol->get_con_mode();
+}
+
+bool AsyncConnection::is_msgr2() const
+{
+  return protocol->proto_type == 2;
 }
 
 void AsyncConnection::maybe_start_delay_thread()
@@ -161,8 +169,8 @@ void AsyncConnection::maybe_start_delay_thread()
   if (!delay_state) {
     async_msgr->cct->_conf.with_val<std::string>(
       "ms_inject_delay_type",
-      [this](const string& s) {
-	if (s.find(ceph_entity_type_name(peer_type)) != string::npos) {
+      [this](const std::string& s) {
+	if (s.find(ceph_entity_type_name(peer_type)) != std::string::npos) {
 	  ldout(msgr->cct, 1) << __func__ << " setting up a delay queue"
 			      << dendl;
 	  delay_state = new DelayedDelivery(async_msgr, center, dispatch_queue,
@@ -219,6 +227,7 @@ ssize_t AsyncConnection::read_until(unsigned len, char *p)
                                << " left is " << left << " buffer still has "
                                << recv_end - recv_start << dendl;
     if (left == 0) {
+      state_offset = 0;
       return 0;
     }
     state_offset += to_read;
@@ -282,7 +291,7 @@ ssize_t AsyncConnection::read_bulk(char *buf, unsigned len)
       goto again;
     } else {
       ldout(async_msgr->cct, 1) << __func__ << " reading from fd=" << cs.fd()
-                          << " : "<< strerror(nread) << dendl;
+                          << " : "<< nread << " " << strerror(nread) << dendl;
       return -1;
     }
   } else if (nread == 0) {
@@ -293,7 +302,7 @@ ssize_t AsyncConnection::read_bulk(char *buf, unsigned len)
   return nread;
 }
 
-ssize_t AsyncConnection::write(bufferlist &bl,
+ssize_t AsyncConnection::write(ceph::buffer::list &bl,
                                std::function<void(ssize_t)> callback,
                                bool more) {
 
@@ -320,7 +329,12 @@ ssize_t AsyncConnection::_try_send(bool more)
   ceph_assert(center->in_thread());
   ldout(async_msgr->cct, 25) << __func__ << " cs.send " << outgoing_bl.length()
                              << " bytes" << dendl;
-  ssize_t r = cs.send(outgoing_bl, more);
+  // network block would make ::send return EAGAIN, that would make here looks
+  // like do not call cs.send() and r = 0
+  ssize_t r = 0;
+  if (likely(!inject_network_congestion())) {
+    r = cs.send(outgoing_bl, more);
+  }
   if (r < 0) {
     ldout(async_msgr->cct, 1) << __func__ << " send error: " << cpp_strerror(r) << dendl;
     return r;
@@ -355,6 +369,11 @@ void AsyncConnection::inject_delay() {
   }
 }
 
+bool AsyncConnection::inject_network_congestion() const {
+  return (async_msgr->cct->_conf->ms_inject_network_congestion > 0 &&
+	  rand() % async_msgr->cct->_conf->ms_inject_network_congestion != 0);
+}
+
 void AsyncConnection::process() {
   std::lock_guard<std::mutex> l(lock);
   last_active = ceph::coarse_mono_clock::now();
@@ -377,8 +396,10 @@ void AsyncConnection::process() {
       // clear timer (if any) since we are connecting/re-connecting
       if (last_tick_id) {
         center->delete_time_event(last_tick_id);
-        last_tick_id = 0;
       }
+      last_connect_started = ceph::coarse_mono_clock::now();
+      last_tick_id = center->create_time_event(
+          connect_timeout_us, tick_handler);
 
       if (cs) {
         center->delete_file_event(cs.fd(), EVENT_READABLE | EVENT_WRITABLE);
@@ -387,6 +408,12 @@ void AsyncConnection::process() {
 
       SocketOptions opts;
       opts.priority = async_msgr->get_socket_priority();
+      if (async_msgr->cct->_conf->mon_use_min_delay_socket) {
+          if (async_msgr->get_mytype() == CEPH_ENTITY_TYPE_MON &&
+              peer_is_mon()) {
+            opts.priority = SOCKET_PRIORITY_MIN_DELAY;
+          }
+      }
       opts.connect_bind_addr = msgr->get_myaddrs().front();
       ssize_t r = worker->connect(target_addr, opts, &cs);
       if (r < 0) {
@@ -425,18 +452,19 @@ void AsyncConnection::process() {
       ldout(async_msgr->cct, 10)
           << __func__ << " connect successfully, ready to send banner" << dendl;
       state = STATE_CONNECTION_ESTABLISHED;
-      ceph_assert(last_tick_id == 0);
-      // exclude TCP nonblock connect time
-      last_connect_started = ceph::coarse_mono_clock::now();
-      last_tick_id = center->create_time_event(
-        connect_timeout_us, tick_handler);
       break;
     }
 
     case STATE_ACCEPTING: {
       center->create_file_event(cs.fd(), EVENT_READABLE, read_handler);
       state = STATE_CONNECTION_ESTABLISHED;
-
+      if (async_msgr->cct->_conf->mon_use_min_delay_socket) {
+        if (async_msgr->get_mytype() == CEPH_ENTITY_TYPE_MON &&
+            peer_is_mon()) {
+          cs.set_priority(cs.fd(), SOCKET_PRIORITY_MIN_DELAY,
+                          target_addr.get_family());
+        }
+      }
       break;
     }
 
@@ -449,6 +477,8 @@ void AsyncConnection::process() {
           read_buffer = nullptr;
           readCallback(buf_tmp, r);
         }
+	logger->tinc(l_msgr_running_recv_time,
+	    ceph::mono_clock::now() - recv_start_time);
         return;
       }
       break;
@@ -516,6 +546,13 @@ int AsyncConnection::send_message(Message *m)
 		      << this
 		      << dendl;
 
+  if (is_blackhole()) {
+    lgeneric_subdout(async_msgr->cct, ms, 0) << __func__ << ceph_entity_type_name(peer_type)
+      << " blackhole " << *m << dendl;
+    m->put();
+    return 0;
+  }
+
   // optimistic think it's ok to encode(actually may broken now)
   if (!m->get_priority())
     m->set_priority(async_msgr->get_default_send_priority());
@@ -523,12 +560,14 @@ int AsyncConnection::send_message(Message *m)
   m->get_header().src = async_msgr->get_myname();
   m->set_connection(this);
 
+#if defined(WITH_EVENTTRACE)
   if (m->get_type() == CEPH_MSG_OSD_OP)
     OID_EVENT_TRACE_WITH_MSG(m, "SEND_MSG_OSD_OP_BEGIN", true);
   else if (m->get_type() == CEPH_MSG_OSD_OPREPLY)
     OID_EVENT_TRACE_WITH_MSG(m, "SEND_MSG_OSD_OPREPLY_BEGIN", true);
+#endif
 
-  if (async_msgr->get_myaddrs() == get_peer_addrs()) { //loopback connection
+  if (is_loopback) { //loopback connection
     ldout(async_msgr->cct, 20) << __func__ << " " << *m << " local" << dendl;
     std::lock_guard<std::mutex> l(write_lock);
     if (protocol->is_connected()) {
@@ -749,9 +788,11 @@ void AsyncConnection::tick(uint64_t id)
           (now - last_connect_started).count()) {
       ldout(async_msgr->cct, 1) << __func__ << " see no progress in more than "
                                 << connect_timeout_us
-                                << " us during connecting, fault."
+                                << " us during connecting to "
+                                << target_addr << ", fault."
                                 << dendl;
       protocol->fault();
+      labeled_logger->inc(l_msgr_connection_ready_timeouts);
     } else {
       last_tick_id = center->create_time_event(connect_timeout_us, tick_handler);
     }
@@ -764,6 +805,7 @@ void AsyncConnection::tick(uint64_t id)
                                 << " us, fault."
                                 << dendl;
       protocol->fault();
+      labeled_logger->inc(l_msgr_connection_idle_timeouts);
     } else {
       last_tick_id = center->create_time_event(inactive_timeout_us, tick_handler);
     }

@@ -1,0 +1,15 @@
+Description: Do not include mgr_legacy_options.h
+Author: Thomas Goirand <zigo@debian.org>
+Forwarded: no
+Last-Update: 2023-08-03
+
+--- ceph-18.1.2+ds.orig/src/common/options/legacy_config_opts.h
++++ ceph-18.1.2+ds/src/common/options/legacy_config_opts.h
+@@ -2,7 +2,6 @@
+ #include "cephfs-mirror_legacy_options.h"
+ #include "mds_legacy_options.h"
+ #include "mds-client_legacy_options.h"
+-#include "mgr_legacy_options.h"
+ #include "mon_legacy_options.h"
+ #include "osd_legacy_options.h"
+ #include "rbd_legacy_options.h"

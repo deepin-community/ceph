@@ -41,6 +41,18 @@
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_crush
 
+using std::cerr;
+using std::cout;
+using std::decay_t;
+using std::ifstream;
+using std::ios;
+using std::is_same_v;
+using std::map;
+using std::ofstream;
+using std::pair;
+using std::set;
+using std::string;
+using std::vector;
 
 const char *infn = "stdin";
 
@@ -192,13 +204,15 @@ void usage()
   cout << "                         table, table-kv, html, html-pretty\n";
   cout << "   --dump                dump the crush map\n";
   cout << "   --tree                print map summary as a tree\n";
+  cout << "   --bucket-tree         print bucket map summary as a tree\n";
+  cout << "   --bucket-name         specify bucket bucket name for bucket-tree\n";
   cout << "   --check [max_id]      check if any item is referencing an unknown name/type\n";
   cout << "   -i mapfn --show-location id\n";
   cout << "                         show location for given device id\n";
   cout << "   -i mapfn --test       test a range of inputs on the map\n";
   cout << "      [--min-x x] [--max-x x] [--x x]\n";
-  cout << "      [--min-rule r] [--max-rule r] [--rule r] [--ruleset rs]\n";
-  cout << "      [--num-rep n]\n";
+  cout << "      [--min-rule r] [--max-rule r] [--rule r]\n";
+  cout << "      [--min-rep n] [--max-rep n] [--num-rep n]\n";
   cout << "      [--pool-id n]      specifies pool id\n";
   cout << "      [--batches b]      split the CRUSH mapping into b > 1 rounds\n";
   cout << "      [--weight|-w devno weight]\n";
@@ -362,8 +376,7 @@ int do_move_item(CephContext* cct,
 
 int main(int argc, const char **argv)
 {
-  vector<const char*> args;
-  argv_to_vec(argc, argv, args);
+  auto args = argv_to_vec(argc, argv);
   if (args.empty()) {
     cerr << argv[0] << ": -h or --help for usage" << std::endl;
     exit(1);
@@ -374,7 +387,9 @@ int main(int argc, const char **argv)
   }
 
   const char *me = argv[0];
-  std::string infn, srcfn, outfn, add_name, add_type, remove_name, reweight_name;
+
+  std::string infn, srcfn, outfn, add_name, add_type, remove_name,
+    reweight_name, bucket_name;
   std::string move_name;
   bool compile = false;
   bool decompile = false;
@@ -383,6 +398,7 @@ int main(int argc, const char **argv)
   bool test = false;
   bool display = false;
   bool tree = false;
+  bool bucket_tree = false;
   string dump_format = "json-pretty";
   bool dump = false;
   int full_location = -1;
@@ -496,6 +512,10 @@ int main(int argc, const char **argv)
       i = args.erase(i);
     } else if (ceph_argparse_flag(args, i, "--tree", (char*)NULL)) {
       tree = true;
+    } else if (ceph_argparse_flag(args, i, "--bucket-tree", (char*)NULL)) {
+      bucket_tree = true;
+    } else if (ceph_argparse_witharg(args, i, &val, "-b", "--bucket-name", (char*)NULL)) {
+      bucket_name = val;
     } else if (ceph_argparse_witharg(args, i, &val, "-f", "--format", (char*)NULL)) {
       dump_format = val;
     } else if (ceph_argparse_flag(args, i, "--dump", (char*)NULL)) {
@@ -732,6 +752,18 @@ int main(int argc, const char **argv)
 	return EXIT_FAILURE;
       }
       tester.set_num_rep(x);
+    } else if (ceph_argparse_witharg(args, i, &x, err, "--min_rep", (char*)NULL)) {
+      if (!err.str().empty()) {
+	cerr << err.str() << std::endl;
+	return EXIT_FAILURE;
+      }
+      tester.set_min_rep(x);
+    } else if (ceph_argparse_witharg(args, i, &x, err, "--max_rep", (char*)NULL)) {
+      if (!err.str().empty()) {
+	cerr << err.str() << std::endl;
+	return EXIT_FAILURE;
+      }
+      tester.set_max_rep(x);
     } else if (ceph_argparse_witharg(args, i, &x, err, "--max_x", (char*)NULL)) {
       if (!err.str().empty()) {
 	cerr << err.str() << std::endl;
@@ -774,12 +806,6 @@ int main(int argc, const char **argv)
 	return EXIT_FAILURE;
       }
       tester.set_rule(x);
-    } else if (ceph_argparse_witharg(args, i, &x, err, "--ruleset", (char*)NULL)) {
-      if (!err.str().empty()) {
-	cerr << err.str() << std::endl;
-	return EXIT_FAILURE;
-      }
-      tester.set_ruleset(x);
     } else if (ceph_argparse_witharg(args, i, &x, err, "--batches", (char*)NULL)) {
       if (!err.str().empty()) {
 	cerr << err.str() << std::endl;
@@ -827,8 +853,10 @@ int main(int argc, const char **argv)
   }
   if (!check && !compile && !decompile && !build && !test && !reweight && !adjust && !tree && !dump &&
       add_item < 0 && !add_bucket && !move_item && !add_rule && !del_rule && full_location < 0 &&
+      !bucket_tree &&
       !reclassify && !rebuild_class_roots &&
       compare.empty() &&
+
       remove_name.empty() && reweight_name.empty()) {
     cerr << "no action specified; -h for help" << std::endl;
     return EXIT_FAILURE;
@@ -1020,7 +1048,7 @@ int main(int argc, const char **argv)
       set<int> roots;
       crush.find_roots(&roots);
       if (roots.size() > 1) {
-	cerr << "The crush rulesets will use the root " << root << "\n"
+	cerr << "The crush rules will use the root " << root << "\n"
 	     << "and ignore the others.\n"
 	     << "There are " << roots.size() << " roots, they can be\n"
 	     << "grouped into a single root by appending something like:\n"
@@ -1210,6 +1238,19 @@ int main(int argc, const char **argv)
     crush.dump_tree(&cout, NULL, {}, true);
   }
 
+  if (bucket_tree) {
+    if (bucket_name.empty()) {
+      cerr << ": error bucket_name is empty" << std::endl;
+    }
+    else {
+      set<int> osd_ids;
+      crush.get_leaves(bucket_name.c_str(), &osd_ids);
+      for (auto &id : osd_ids) {
+        cout << "osd." << id << std::endl;
+      }
+    }
+  }
+
   if (dump) {
     boost::scoped_ptr<Formatter> f(Formatter::create(dump_format, "json-pretty", "json-pretty"));
     f->open_object_section("crush_map");
@@ -1236,7 +1277,6 @@ int main(int argc, const char **argv)
   }
 
   if (check) {
-    tester.check_overlapped_rules();
     if (max_id >= 0) {
       if (!tester.check_name_maps(max_id)) {
 	return EXIT_FAILURE;
@@ -1249,7 +1289,7 @@ int main(int argc, const char **argv)
 	tester.get_output_utilization())
       tester.set_output_statistics(true);
 
-    int r = tester.test();
+    int r = tester.test(cct->get());
     if (r < 0)
       return EXIT_FAILURE;
   }

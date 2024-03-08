@@ -1,19 +1,19 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
 // vim: ts=8 sw=2 smarttab
 
-#include "include/compat.h"
+#include <vector>
+
 #include "CrushLocation.h"
 #include "CrushWrapper.h"
 #include "common/ceph_context.h"
 #include "common/config.h"
-#include "include/str_list.h"
 #include "common/debug.h"
 #include "common/errno.h"
+#include "include/common_fwd.h"
 #include "include/compat.h"
+#include "include/str_list.h"
 
-#include "common/SubProcess.h"
-
-#include <vector>
+namespace ceph::crush {
 
 int CrushLocation::update_from_conf()
 {
@@ -34,7 +34,7 @@ int CrushLocation::_parse(const std::string& s)
 	       << loc << dendl;
     return -EINVAL;
   }
-  std::lock_guard<std::mutex> l(lock);
+  std::lock_guard l(lock);
   loc.swap(new_crush_location);
   lgeneric_dout(cct, 10) << "crush_location is " << loc << dendl;
   return 0;
@@ -45,6 +45,9 @@ int CrushLocation::update_from_hook()
   if (cct->_conf->crush_location_hook.length() == 0)
     return 0;
  
+#if defined(WITH_SEASTAR) && !defined(WITH_ALIEN)
+  ceph_abort_msg("crimson does not support crush_location_hook, it must stay empty");
+#else
   if (0 != access(cct->_conf->crush_location_hook.c_str(), R_OK)) {
     lderr(cct) << "the user define crush location hook: " << cct->_conf->crush_location_hook
                << " may not exist or can not access it" << dendl;
@@ -67,13 +70,13 @@ int CrushLocation::update_from_hook()
     return ret;
   }
 
-  bufferlist bl;
+  ceph::buffer::list bl;
   ret = bl.read_fd(hook.get_stdout(), 100 * 1024);
   if (ret < 0) {
     lderr(cct) << "error: failed read stdout from "
 	       << cct->_conf->crush_location_hook
 	       << ": " << cpp_strerror(-ret) << dendl;
-    bufferlist err;
+    ceph::buffer::list err;
     err.read_fd(hook.get_stderr(), 100 * 1024);
     lderr(cct) << "stderr:\n";
     err.hexdump(*_dout);
@@ -89,9 +92,10 @@ int CrushLocation::update_from_hook()
     return ret;
 
   std::string out;
-  bl.copy(0, bl.length(), out);
+  bl.begin().copy(bl.length(), out);
   out.erase(out.find_last_not_of(" \n\r\t")+1);
   return _parse(out);
+#endif // WITH_SEASTAR && !WITH_ALIEN
 }
 
 int CrushLocation::init_on_startup()
@@ -115,10 +119,31 @@ int CrushLocation::init_on_startup()
       break;
     }
   }
-  std::lock_guard<std::mutex> l(lock);
+  std::lock_guard l(lock);
   loc.clear();
-  loc.insert(make_pair<std::string,std::string>("host", hostname));
-  loc.insert(make_pair<std::string,std::string>("root", "default"));
-  lgeneric_dout(cct, 10) << "crush_location is (default) " << loc << dendl;
+  loc.insert(std::make_pair<std::string,std::string>("host", hostname));
+  loc.insert(std::make_pair<std::string,std::string>("root", "default"));
   return 0;
+}
+
+std::multimap<std::string,std::string> CrushLocation::get_location() const
+{
+  std::lock_guard l(lock);
+  return loc;
+}
+
+std::ostream& operator<<(std::ostream& os, const CrushLocation& loc)
+{
+  bool first = true;
+  for (auto& [type, pos] : loc.get_location()) {
+    if (first) {
+      first = false;
+    } else {
+      os << ", ";
+    }
+    os << '"' << type << '=' << pos << '"';
+  }
+  return os;
+}
+
 }

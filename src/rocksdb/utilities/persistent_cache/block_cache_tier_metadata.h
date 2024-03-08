@@ -11,13 +11,12 @@
 #include <unordered_map>
 
 #include "rocksdb/slice.h"
-
 #include "utilities/persistent_cache/block_cache_tier_file.h"
 #include "utilities/persistent_cache/hash_table.h"
 #include "utilities/persistent_cache/hash_table_evictable.h"
 #include "utilities/persistent_cache/lrulist.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 //
 // Block Cache Tier Metadata
@@ -95,9 +94,9 @@ class BlockCacheTierMetadata {
     }
   };
 
-  typedef EvictableHashTable<BlockCacheFile, BlockCacheFileHash,
-                             BlockCacheFileEqual>
-      CacheFileIndexType;
+  using CacheFileIndexType =
+      EvictableHashTable<BlockCacheFile, BlockCacheFileHash,
+                         BlockCacheFileEqual>;
 
   // Block Lookup Index
   //
@@ -114,12 +113,12 @@ class BlockCacheTierMetadata {
     }
   };
 
-  typedef HashTable<BlockInfo*, Hash, Equal> BlockIndexType;
+  using BlockIndexType = HashTable<BlockInfo*, Hash, Equal>;
 
   CacheFileIndexType cache_file_index_;
   BlockIndexType block_index_;
 };
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
 
 #endif

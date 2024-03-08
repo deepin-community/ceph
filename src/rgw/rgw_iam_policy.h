@@ -1,22 +1,23 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef CEPH_RGW_IAM_POLICY_H
-#define CEPH_RGW_IAM_POLICY_H
+#pragma once
 
 #include <bitset>
 #include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <string>
+#include <string_view>
 
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/container/flat_map.hpp>
 #include <boost/container/flat_set.hpp>
 #include <boost/optional.hpp>
 #include <boost/thread/shared_mutex.hpp>
-#include <boost/utility/string_ref.hpp>
 #include <boost/variant.hpp>
+
+#include <fmt/format.h>
 
 #include "common/ceph_time.h"
 #include "common/iso_8601.h"
@@ -30,14 +31,11 @@
 #include "rgw_string.h"
 #include "rgw_arn.h"
 
-class RGWRados;
 namespace rgw {
 namespace auth {
 class Identity;
 }
 }
-struct rgw_obj;
-struct rgw_bucket;
 
 namespace rgw {
 namespace IAM {
@@ -103,39 +101,70 @@ static constexpr std::uint64_t s3GetObjectRetention = 57;
 static constexpr std::uint64_t s3PutObjectLegalHold = 58;
 static constexpr std::uint64_t s3GetObjectLegalHold = 59;
 static constexpr std::uint64_t s3BypassGovernanceRetention = 60;
-static constexpr std::uint64_t s3All = 61;
+static constexpr std::uint64_t s3GetBucketPolicyStatus = 61;
+static constexpr std::uint64_t s3PutPublicAccessBlock = 62;
+static constexpr std::uint64_t s3GetPublicAccessBlock = 63;
+static constexpr std::uint64_t s3DeletePublicAccessBlock = 64;
+static constexpr std::uint64_t s3GetBucketPublicAccessBlock = 65;
+static constexpr std::uint64_t s3PutBucketPublicAccessBlock = 66;
+static constexpr std::uint64_t s3DeleteBucketPublicAccessBlock = 67;
+static constexpr std::uint64_t s3GetBucketEncryption = 68;
+static constexpr std::uint64_t s3PutBucketEncryption = 69;
+static constexpr std::uint64_t s3All = 70;
 
-static constexpr std::uint64_t iamPutUserPolicy = 62;
-static constexpr std::uint64_t iamGetUserPolicy = 63;
-static constexpr std::uint64_t iamDeleteUserPolicy = 64;
-static constexpr std::uint64_t iamListUserPolicies = 65;
-static constexpr std::uint64_t iamCreateRole = 66;
-static constexpr std::uint64_t iamDeleteRole = 67;
-static constexpr std::uint64_t iamModifyRole = 68;
-static constexpr std::uint64_t iamGetRole = 69;
-static constexpr std::uint64_t iamListRoles = 70;
-static constexpr std::uint64_t iamPutRolePolicy = 71;
-static constexpr std::uint64_t iamGetRolePolicy = 72;
-static constexpr std::uint64_t iamListRolePolicies = 73;
-static constexpr std::uint64_t iamDeleteRolePolicy = 74;
-static constexpr std::uint64_t iamAll = 75;
-static constexpr std::uint64_t stsAssumeRole = 76;
-static constexpr std::uint64_t stsAssumeRoleWithWebIdentity = 77;
-static constexpr std::uint64_t stsGetSessionToken = 78;
-static constexpr std::uint64_t stsAll = 79;
+static constexpr std::uint64_t iamPutUserPolicy = s3All + 1;
+static constexpr std::uint64_t iamGetUserPolicy = s3All + 2;
+static constexpr std::uint64_t iamDeleteUserPolicy = s3All + 3;
+static constexpr std::uint64_t iamListUserPolicies = s3All + 4;
+static constexpr std::uint64_t iamCreateRole = s3All + 5;
+static constexpr std::uint64_t iamDeleteRole = s3All + 6;
+static constexpr std::uint64_t iamModifyRoleTrustPolicy = s3All + 7;
+static constexpr std::uint64_t iamGetRole = s3All + 8;
+static constexpr std::uint64_t iamListRoles = s3All + 9;
+static constexpr std::uint64_t iamPutRolePolicy = s3All + 10;
+static constexpr std::uint64_t iamGetRolePolicy = s3All + 11;
+static constexpr std::uint64_t iamListRolePolicies = s3All + 12;
+static constexpr std::uint64_t iamDeleteRolePolicy = s3All + 13;
+static constexpr std::uint64_t iamCreateOIDCProvider = s3All + 14;
+static constexpr std::uint64_t iamDeleteOIDCProvider = s3All + 15;
+static constexpr std::uint64_t iamGetOIDCProvider = s3All + 16;
+static constexpr std::uint64_t iamListOIDCProviders = s3All + 17;
+static constexpr std::uint64_t iamTagRole = s3All + 18;
+static constexpr std::uint64_t iamListRoleTags = s3All + 19;
+static constexpr std::uint64_t iamUntagRole = s3All + 20;
+static constexpr std::uint64_t iamUpdateRole = s3All + 21;
+static constexpr std::uint64_t iamAll = s3All + 22;
 
-static constexpr std::uint64_t s3Count = s3BypassGovernanceRetention + 1;
+static constexpr std::uint64_t stsAssumeRole = iamAll + 1;
+static constexpr std::uint64_t stsAssumeRoleWithWebIdentity = iamAll + 2;
+static constexpr std::uint64_t stsGetSessionToken = iamAll + 3;
+static constexpr std::uint64_t stsTagSession = iamAll + 4;
+static constexpr std::uint64_t stsAll = iamAll + 5;
+
+static constexpr std::uint64_t s3Count = s3All;
 static constexpr std::uint64_t allCount = stsAll + 1;
 
 using Action_t = std::bitset<allCount>;
 using NotAction_t = Action_t;
 
+template <size_t N>
+constexpr std::bitset<N> make_bitmask(size_t s) {
+  // unfortunately none of the shift/logic operators of std::bitset have a constexpr variation
+  return s < 64 ? std::bitset<N> ((1ULL << s) - 1) :
+    std::bitset<N>((1ULL << 63) - 1) | make_bitmask<N> (s - 63) << 63;
+}
+
+template <size_t N>
+constexpr std::bitset<N> set_cont_bits(size_t start, size_t end)
+{
+  return (make_bitmask<N>(end - start)) << start;
+}
+
 static const Action_t None(0);
-static const Action_t s3AllValue("1111111111111111111111111111111111111111111111111111111111111");
-static const Action_t iamAllValue("111111111111100000000000000000000000000000000000000000000000000000000000000");
-static const Action_t stsAllValue("1110000000000000000000000000000000000000000000000000000000000000000000000000000");
-//Modify allValue if more Actions are added
-static const Action_t allValue("11111111111111111111111111111111111111111111111111111111111111111111111111111111");
+static const Action_t s3AllValue = set_cont_bits<allCount>(0,s3All);
+static const Action_t iamAllValue = set_cont_bits<allCount>(s3All+1,iamAll);
+static const Action_t stsAllValue = set_cont_bits<allCount>(iamAll+1,stsAll);
+static const Action_t allValue = set_cont_bits<allCount>(0,allCount);
 
 namespace {
 // Please update the table in doc/radosgw/s3/authentication.rst if you
@@ -176,10 +205,12 @@ inline int op_to_perm(std::uint64_t op) {
   case s3GetAccelerateConfiguration:
   case s3GetBucketAcl:
   case s3GetBucketCORS:
+  case s3GetBucketEncryption:
   case s3GetBucketLocation:
   case s3GetBucketLogging:
   case s3GetBucketNotification:
   case s3GetBucketPolicy:
+  case s3GetBucketPolicyStatus:
   case s3GetBucketRequestPayment:
   case s3GetBucketTagging:
   case s3GetBucketVersioning:
@@ -189,6 +220,7 @@ inline int op_to_perm(std::uint64_t op) {
   case s3GetObjectVersionAcl:
   case s3GetReplicationConfiguration:
   case s3GetBucketObjectLockConfiguration:
+  case s3GetBucketPublicAccessBlock:
     return RGW_PERM_READ_ACP;
 
   case s3DeleteBucketPolicy:
@@ -197,6 +229,7 @@ inline int op_to_perm(std::uint64_t op) {
   case s3PutAccelerateConfiguration:
   case s3PutBucketAcl:
   case s3PutBucketCORS:
+  case s3PutBucketEncryption:
   case s3PutBucketLogging:
   case s3PutBucketNotification:
   case s3PutBucketPolicy:
@@ -209,6 +242,7 @@ inline int op_to_perm(std::uint64_t op) {
   case s3PutObjectVersionAcl:
   case s3PutReplicationConfiguration:
   case s3PutBucketObjectLockConfiguration:
+  case s3PutBucketPublicAccessBlock:
     return RGW_PERM_WRITE_ACP;
 
   case s3All:
@@ -218,7 +252,13 @@ inline int op_to_perm(std::uint64_t op) {
 }
 }
 
-using Environment = boost::container::flat_map<std::string, std::string>;
+enum class PolicyPrincipal {
+  Role,
+  Session,
+  Other
+};
+
+using Environment = std::unordered_multimap<std::string, std::string>;
 
 using Address = std::bitset<128>;
 struct MaskedIP {
@@ -248,6 +288,7 @@ struct Condition {
   // In future development, use symbol internment.
   std::string key;
   bool ifexists = false;
+  bool isruntime = false; //Is evaluated during run-time
   // Much to my annoyance there is no actual way to do this in a
   // typed way that is compatible with AWS. I know this because I've
   // seen examples where the same value is used as a string in one
@@ -288,7 +329,7 @@ struct Condition {
 				  * 1000000000)));
       }
 
-      return from_iso_8601(boost::string_ref(s), false);
+      return from_iso_8601(std::string_view(s), false);
     } catch (const std::logic_error& e) {
       return boost::none;
     }
@@ -355,13 +396,33 @@ struct Condition {
     }
   };
 
+  using unordered_multimap_it_pair = std::pair <std::unordered_multimap<std::string,std::string>::const_iterator, std::unordered_multimap<std::string,std::string>::const_iterator>;
+
   template<typename F>
-  static bool orrible(F&& f, const std::string& c,
+  static bool andible(F&& f, const unordered_multimap_it_pair& it,
 		      const std::vector<std::string>& v) {
-    for (const auto& d : v) {
-      if (std::forward<F>(f)(c, d)) {
-	return true;
+    for (auto itr = it.first; itr != it.second; itr++) {
+      bool matched = false;
+      for (const auto& d : v) {
+        if (std::forward<F>(f)(itr->second, d)) {
+	        matched = true;
       }
+     }
+     if (!matched)
+      return false;
+    }
+    return true;
+  }
+
+  template<typename F>
+  static bool orrible(F&& f, const unordered_multimap_it_pair& it,
+		      const std::vector<std::string>& v) {
+    for (auto itr = it.first; itr != it.second; itr++) {
+      for (const auto& d : v) {
+        if (std::forward<F>(f)(itr->second, d)) {
+	        return true;
+      }
+     }
     }
     return false;
   }
@@ -391,6 +452,15 @@ struct Condition {
   bool has_key_p(const std::string& _key, F p) const {
     return p(key, _key);
   }
+
+  template <typename F>
+  bool has_val_p(const std::string& _val, F p) const {
+    for (auto val : vals) {
+      if (p(val, _val))
+        return true;
+    }
+    return false;
+  }
 };
 
 std::ostream& operator <<(std::ostream& m, const Condition& c);
@@ -415,23 +485,31 @@ struct Statement {
 
   Effect eval(const Environment& e,
 	      boost::optional<const rgw::auth::Identity&> ida,
-	      std::uint64_t action, const ARN& resource) const;
+	      std::uint64_t action, boost::optional<const ARN&> resource, boost::optional<PolicyPrincipal&> princ_type=boost::none) const;
 
   Effect eval_principal(const Environment& e,
-		       boost::optional<const rgw::auth::Identity&> ida) const;
+		       boost::optional<const rgw::auth::Identity&> ida, boost::optional<PolicyPrincipal&> princ_type=boost::none) const;
 
   Effect eval_conditions(const Environment& e) const;
 };
 
-std::ostream& operator <<(ostream& m, const Statement& s);
+std::ostream& operator <<(std::ostream& m, const Statement& s);
 
 struct PolicyParseException : public std::exception {
   rapidjson::ParseResult pr;
+  std::string msg;
 
-  explicit PolicyParseException(rapidjson::ParseResult&& pr)
-    : pr(pr) { }
+  explicit PolicyParseException(const rapidjson::ParseResult pr,
+				const std::string& annotation)
+    : pr(pr),
+      msg(fmt::format("At character offset {}, {}",
+		      pr.Offset(),
+		      (pr.Code() == rapidjson::kParseErrorTermination ?
+		       annotation :
+		       rapidjson::GetParseError_En(pr.Code())))) {}
+
   const char* what() const noexcept override {
-    return rapidjson::GetParseError_En(pr.Code());
+    return msg.c_str();
   }
 };
 
@@ -442,20 +520,26 @@ struct Policy {
 
   std::vector<Statement> statements;
 
+  // reject_invalid_principals should be set to
+  // `cct->_conf.get_val<bool>("rgw_policy_reject_invalid_principals")`
+  // when executing operations that *set* a bucket policy, but should
+  // be false when reading a stored bucket policy so as not to break
+  // backwards configuration.
   Policy(CephContext* cct, const std::string& tenant,
-	 const bufferlist& text);
+	 const bufferlist& text,
+	 bool reject_invalid_principals);
 
   Effect eval(const Environment& e,
 	      boost::optional<const rgw::auth::Identity&> ida,
-	      std::uint64_t action, const ARN& resource) const;
+	      std::uint64_t action, boost::optional<const ARN&> resource, boost::optional<PolicyPrincipal&> princ_type=boost::none) const;
 
   Effect eval_principal(const Environment& e,
-	      boost::optional<const rgw::auth::Identity&> ida) const;
+	      boost::optional<const rgw::auth::Identity&> ida, boost::optional<PolicyPrincipal&> princ_type=boost::none) const;
 
   Effect eval_conditions(const Environment& e) const;
 
   template <typename F>
-  bool has_conditional(const string& conditional, F p) const {
+  bool has_conditional(const std::string& conditional, F p) const {
     for (const auto&s: statements){
       if (std::any_of(s.conditions.begin(), s.conditions.end(),
 		      [&](const Condition& c) { return c.has_key_p(conditional, p);}))
@@ -464,17 +548,32 @@ struct Policy {
     return false;
   }
 
-  bool has_conditional(const string& c) const {
+  template <typename F>
+  bool has_conditional_value(const std::string& conditional, F p) const {
+    for (const auto&s: statements){
+      if (std::any_of(s.conditions.begin(), s.conditions.end(),
+		      [&](const Condition& c) { return c.has_val_p(conditional, p);}))
+	    return true;
+    }
+    return false;
+  }
+
+  bool has_conditional(const std::string& c) const {
     return has_conditional(c, Condition::ci_equal_to());
   }
 
-  bool has_partial_conditional(const string& c) const {
+  bool has_partial_conditional(const std::string& c) const {
     return has_conditional(c, Condition::ci_starts_with());
+  }
+
+  // Example: ${s3:ResourceTag}
+  bool has_partial_conditional_value(const std::string& c) const {
+    return has_conditional_value(c, Condition::ci_starts_with());
   }
 };
 
-std::ostream& operator <<(ostream& m, const Policy& p);
-}
-}
+std::ostream& operator <<(std::ostream& m, const Policy& p);
+bool is_public(const Policy& p);
 
-#endif
+}
+}

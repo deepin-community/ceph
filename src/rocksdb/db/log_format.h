@@ -11,7 +11,10 @@
 // See ../doc/log_format.txt for more detail.
 
 #pragma once
-namespace rocksdb {
+
+#include "rocksdb/rocksdb_namespace.h"
+
+namespace ROCKSDB_NAMESPACE {
 namespace log {
 
 enum RecordType {
@@ -29,8 +32,11 @@ enum RecordType {
   kRecyclableFirstType = 6,
   kRecyclableMiddleType = 7,
   kRecyclableLastType = 8,
+
+  // Compression Type
+  kSetCompressionType = 9,
 };
-static const int kMaxRecordType = kRecyclableLastType;
+static const int kMaxRecordType = kSetCompressionType;
 
 static const unsigned int kBlockSize = 32768;
 
@@ -42,4 +48,4 @@ static const int kHeaderSize = 4 + 2 + 1;
 static const int kRecyclableHeaderSize = 4 + 2 + 1 + 4;
 
 }  // namespace log
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

@@ -13,8 +13,10 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <poll.h>
+#include <regex>
 #include <sstream>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,14 +49,29 @@
 #include <libudev.h>
 
 static const int UDEV_BUF_SIZE = 1 << 20;  /* doubled to 2M (SO_RCVBUFFORCE) */
+static const char DEVNODE_PREFIX[] = "/dev/rbd";
+static const char SNAP_HEAD_NAME[] = "-";
+
+#define DEFINE_UDEV_UPTR(what)                           \
+struct udev_##what##_deleter {                           \
+  void operator()(udev_##what *p) {                      \
+    udev_##what##_unref(p);                              \
+  }                                                      \
+};                                                       \
+using udev_##what##_uptr =                               \
+    std::unique_ptr<udev_##what, udev_##what##_deleter>;
+
+DEFINE_UDEV_UPTR(monitor)  /* udev_monitor_uptr */
+DEFINE_UDEV_UPTR(enumerate)  /* udev_enumerate_uptr */
+DEFINE_UDEV_UPTR(device)  /* udev_device_uptr */
+
+using std::string;
 
 struct krbd_ctx {
   CephContext *cct;
   struct udev *udev;
   uint32_t flags;  /* KRBD_CTX_F_* */
 };
-
-static const std::string SNAP_HEAD_NAME("-");
 
 struct krbd_spec {
   std::string pool_name;
@@ -77,7 +94,8 @@ struct krbd_spec {
   }
 };
 
-std::ostream& operator<<(std::ostream& os, const krbd_spec& spec) {
+static std::ostream& operator<<(std::ostream& os, const krbd_spec& spec)
+{
   os << spec.pool_name << "/";
   if (!spec.nspace_name.empty())
     os << spec.nspace_name << "/";
@@ -87,7 +105,8 @@ std::ostream& operator<<(std::ostream& os, const krbd_spec& spec) {
   return os;
 }
 
-std::optional<krbd_spec> spec_from_dev(udev_device *dev) {
+static std::optional<krbd_spec> spec_from_dev(udev_device *dev)
+{
   const char *pool_name = udev_device_get_sysattr_value(dev, "pool");
   const char *nspace_name = udev_device_get_sysattr_value(dev, "pool_ns");
   const char *image_name = udev_device_get_sysattr_value(dev, "name");
@@ -100,9 +119,17 @@ std::optional<krbd_spec> spec_from_dev(udev_device *dev) {
       pool_name, nspace_name ?: "", image_name, snap_name);
 }
 
-static string get_kernel_rbd_name(const char *id)
+static udev_device_uptr dev_from_list_entry(udev *udev, udev_list_entry *l)
 {
-  return string("/dev/rbd") + id;
+  return udev_device_uptr(
+      udev_device_new_from_syspath(udev, udev_list_entry_get_name(l)));
+}
+
+static std::string get_devnode(udev_device *dev)
+{
+  std::string devnode = DEVNODE_PREFIX;
+  devnode += udev_device_get_sysname(dev);
+  return devnode;
 }
 
 static int sysfs_write_rbd(const char *which, const string& buf)
@@ -164,7 +191,7 @@ static int build_map_buf(CephContext *cct, const krbd_spec& spec,
                          const string& options, string *pbuf)
 {
   bool msgr2 = false;
-  ostringstream oss;
+  std::ostringstream oss;
   int r;
 
   boost::char_separator<char> sep(",");
@@ -177,7 +204,7 @@ static int build_map_buf(CephContext *cct, const krbd_spec& spec,
   }
 
   MonMap monmap;
-  r = monmap.build_initial(cct, false, cerr);
+  r = monmap.build_initial(cct, false, std::cerr);
   if (r < 0)
     return r;
 
@@ -196,6 +223,11 @@ static int build_map_buf(CephContext *cct, const krbd_spec& spec,
     }
   }
 
+  if (oss.tellp() == 0) {
+    std::cerr << "rbd: failed to get mon address (possible ms_mode mismatch)" << std::endl;
+    return -ENOENT;
+  }
+
   oss << " name=" << cct->_conf->name.get_id();
 
   KeyRing keyring;
@@ -208,7 +240,7 @@ static int build_map_buf(CephContext *cct, const krbd_spec& spec,
     if (r == -ENOENT && keyfile.empty() && key.empty())
       r = 0;
     if (r < 0) {
-      cerr << "rbd: failed to get secret" << std::endl;
+      std::cerr << "rbd: failed to get secret" << std::endl;
       return r;
     }
   }
@@ -222,13 +254,13 @@ static int build_map_buf(CephContext *cct, const krbd_spec& spec,
     r = set_kernel_secret(secret_str.c_str(), key_name.c_str());
     if (r >= 0) {
       if (r == 0)
-        cerr << "rbd: warning: secret has length 0" << std::endl;
+        std::cerr << "rbd: warning: secret has length 0" << std::endl;
       oss << ",key=" << key_name;
     } else if (r == -ENODEV || r == -ENOSYS) {
       // running against older kernel; fall back to secret= in options
       oss << ",secret=" << secret_str;
     } else {
-      cerr << "rbd: failed to add secret '" << key_name << "' to kernel"
+      std::cerr << "rbd: failed to add secret '" << key_name << "' to kernel"
            << std::endl;
       return r;
     }
@@ -288,9 +320,7 @@ static std::pair<int, bool> wait_for_mapping(int sysfs_r_fd, udev_monitor *mon,
 
     if (fds[1].revents) {
       for (;;) {
-        struct udev_device *dev;
-
-        dev = udev_monitor_receive_device(mon);
+        udev_device_uptr dev(udev_monitor_receive_device(mon));
         if (!dev) {
           if (errno != EINTR && errno != EAGAIN) {
             udev_r = -errno;
@@ -302,7 +332,7 @@ static std::pair<int, bool> wait_for_mapping(int sysfs_r_fd, udev_monitor *mon,
           }
           break;
         }
-        if (udev_device_handler(dev)) {
+        if (udev_device_handler(std::move(dev))) {
           udev_r = 0;
           if (sysfs_r != INT_MAX) {
             ceph_assert(!sysfs_r);
@@ -318,73 +348,65 @@ static std::pair<int, bool> wait_for_mapping(int sysfs_r_fd, udev_monitor *mon,
 
 class UdevMapHandler {
 public:
-  UdevMapHandler(const krbd_spec *spec, std::string *pdevnode) :
-      m_spec(spec), m_pdevnode(pdevnode) {}
+  UdevMapHandler(const krbd_spec *spec, std::string *pdevnode,
+                 std::string *majnum, std::string *minnum) :
+      m_spec(spec), m_pdevnode(pdevnode), m_majnum(majnum), m_minnum(minnum) {}
 
   /*
    * Catch /sys/devices/rbd/<id>/ and wait for the corresponding
    * block device to show up.  This is necessary because rbd devices
    * and block devices aren't linked together in our sysfs layout.
+   *
+   * Note that our "block" event can come before the "rbd" event, so
+   * all potential "block" events are gathered in m_block_devs before
+   * m_bus_dev is caught.
    */
-  bool operator()(udev_device *dev) {
-    if (strcmp(udev_device_get_action(dev), "add")) {
-      goto next;
+  bool operator()(udev_device_uptr dev) {
+    if (strcmp(udev_device_get_action(dev.get()), "add")) {
+      return false;
     }
-    if (!strcmp(udev_device_get_subsystem(dev), "rbd")) {
+    if (!strcmp(udev_device_get_subsystem(dev.get()), "rbd")) {
       if (!m_bus_dev) {
-        auto spec = spec_from_dev(dev);
+        auto spec = spec_from_dev(dev.get());
         if (spec && *spec == *m_spec) {
-          m_bus_dev = dev;
-          goto check;
+          m_bus_dev = std::move(dev);
+          m_devnode = get_devnode(m_bus_dev.get());
         }
       }
-    } else if (!strcmp(udev_device_get_subsystem(dev), "block")) {
-      m_block_devs.push_back(dev);
-      goto check;
+    } else if (!strcmp(udev_device_get_subsystem(dev.get()), "block")) {
+      if (boost::starts_with(udev_device_get_devnode(dev.get()),
+                             DEVNODE_PREFIX)) {
+        m_block_devs.push_back(std::move(dev));
+      }
     }
 
-next:
-    udev_device_unref(dev);
-    return false;
-
-check:
     if (m_bus_dev && !m_block_devs.empty()) {
-      const char *major = udev_device_get_sysattr_value(m_bus_dev, "major");
-      const char *minor = udev_device_get_sysattr_value(m_bus_dev, "minor");
-      ceph_assert(!minor ^ have_minor_attr());
-
-      for (auto p : m_block_devs) {
-        const char *this_major = udev_device_get_property_value(p, "MAJOR");
-        const char *this_minor = udev_device_get_property_value(p, "MINOR");
-
-        if (strcmp(this_major, major) == 0 &&
-            (!minor || strcmp(this_minor, minor) == 0)) {
-          string name = get_kernel_rbd_name(udev_device_get_sysname(m_bus_dev));
-
-          ceph_assert(strcmp(udev_device_get_devnode(p), name.c_str()) == 0);
-          *m_pdevnode = name;
+      for (const auto& p : m_block_devs) {
+        if (udev_device_get_devnode(p.get()) == m_devnode) {
+          *m_pdevnode = std::move(m_devnode);
+          *m_majnum = udev_device_get_property_value(p.get(), "MAJOR");
+          *m_minnum = udev_device_get_property_value(p.get(), "MINOR");
+          ceph_assert(*m_majnum == udev_device_get_sysattr_value(
+                          m_bus_dev.get(), "major"));
+          ceph_assert(!have_minor_attr() ||
+                      *m_minnum == udev_device_get_sysattr_value(
+                          m_bus_dev.get(), "minor"));
           return true;
         }
       }
+      m_block_devs.clear();
     }
     return false;
   }
 
-  ~UdevMapHandler() {
-    if (m_bus_dev) {
-      udev_device_unref(m_bus_dev);
-    }
-
-    for (auto p : m_block_devs) {
-      udev_device_unref(p);
-    }
-  }
-
 private:
-  udev_device *m_bus_dev = nullptr;
-  std::vector<udev_device *> m_block_devs;
+  udev_device_uptr m_bus_dev;
+  std::vector<udev_device_uptr> m_block_devs;
+  std::string m_devnode;
   const krbd_spec *m_spec;
   std::string *m_pdevnode;
+  std::string *m_majnum;
+  std::string *m_minnum;
 };
 
 static const char *get_event_source(const krbd_ctx *ctx)
@@ -422,41 +444,42 @@ static const char *get_event_source(const krbd_ctx *ctx)
 static int do_map(krbd_ctx *ctx, const krbd_spec& spec, const string& buf,
                   string *pname)
 {
-  struct udev_monitor *mon;
-  std::thread mapper;
+  std::string majnum, minnum;
+  struct stat sb;
   bool mapped;
   int fds[2];
   int r;
 
-  mon = udev_monitor_new_from_netlink(ctx->udev, get_event_source(ctx));
+  udev_monitor_uptr mon(udev_monitor_new_from_netlink(ctx->udev,
+                                                      get_event_source(ctx)));
   if (!mon)
     return -ENOMEM;
 
-  r = udev_monitor_filter_add_match_subsystem_devtype(mon, "rbd", nullptr);
+  r = udev_monitor_filter_add_match_subsystem_devtype(mon.get(), "rbd",
+                                                      nullptr);
   if (r < 0)
-    goto out_mon;
+    return r;
 
-  r = udev_monitor_filter_add_match_subsystem_devtype(mon, "block", "disk");
+  r = udev_monitor_filter_add_match_subsystem_devtype(mon.get(), "block",
+                                                      "disk");
   if (r < 0)
-    goto out_mon;
+    return r;
 
-  r = udev_monitor_set_receive_buffer_size(mon, UDEV_BUF_SIZE);
+  r = udev_monitor_set_receive_buffer_size(mon.get(), UDEV_BUF_SIZE);
   if (r < 0) {
     std::cerr << "rbd: failed to set udev buffer size: " << cpp_strerror(r)
               << std::endl;
     /* not fatal */
   }
 
-  r = udev_monitor_enable_receiving(mon);
+  r = udev_monitor_enable_receiving(mon.get());
   if (r < 0)
-    goto out_mon;
+    return r;
 
-  if (pipe2(fds, O_NONBLOCK) < 0) {
-    r = -errno;
-    goto out_mon;
-  }
+  if (pipe2(fds, O_NONBLOCK) < 0)
+    return -errno;
 
-  mapper = make_named_thread("mapper", [&buf, sysfs_r_fd = fds[1]]() {
+  auto mapper = make_named_thread("mapper", [&buf, sysfs_r_fd = fds[1]]() {
     int sysfs_r = sysfs_write_rbd_add(buf);
     int r = safe_write(sysfs_r_fd, &sysfs_r, sizeof(sysfs_r));
     if (r < 0) {
@@ -464,8 +487,9 @@ static int do_map(krbd_ctx *ctx, const krbd_spec& spec, const string& buf,
     }
   });
 
-  std::tie(r, mapped) = wait_for_mapping(fds[0], mon,
-                                         UdevMapHandler(&spec, pname));
+  std::tie(r, mapped) = wait_for_mapping(fds[0], mon.get(),
+                                         UdevMapHandler(&spec, pname, &majnum,
+                                                        &minnum));
   if (r < 0) {
     if (!mapped) {
       std::cerr << "rbd: sysfs write failed" << std::endl;
@@ -479,9 +503,34 @@ static int do_map(krbd_ctx *ctx, const krbd_spec& spec, const string& buf,
   close(fds[0]);
   close(fds[1]);
 
-out_mon:
-  udev_monitor_unref(mon);
-  return r;
+  if (r < 0)
+    return r;
+
+  /*
+   * Make sure our device node is there.  This is intended to help
+   * diagnose environments where "rbd map" is run from a container with
+   * a private /dev and some external mechanism (e.g. udev) is used to
+   * add the device to the container asynchronously, possibly seconds
+   * after "rbd map" successfully exits.  These setups are very fragile
+   * and in some cases can even lead to data loss, depending on higher
+   * level logic and orchestration layers involved.
+   */
+  ceph_assert(mapped);
+  if (stat(pname->c_str(), &sb) < 0 || !S_ISBLK(sb.st_mode)) {
+    std::cerr << "rbd: mapping succeeded but " << *pname
+              << " is not accessible, is host /dev mounted?" << std::endl;
+    return -EINVAL;
+  }
+  if (stringify(major(sb.st_rdev)) != majnum ||
+      stringify(minor(sb.st_rdev)) != minnum) {
+    std::cerr << "rbd: mapping succeeded but " << *pname
+              << " (" << major(sb.st_rdev) << ":" << minor(sb.st_rdev)
+              << ") does not match expected " << majnum << ":" << minnum
+              << std::endl;
+    return -EINVAL;
+  }
+
+  return 0;
 }
 
 static int map_image(struct krbd_ctx *ctx, const krbd_spec& spec,
@@ -490,13 +539,12 @@ static int map_image(struct krbd_ctx *ctx, const krbd_spec& spec,
   string buf;
   int r;
 
-  r = build_map_buf(ctx->cct, spec, options, &buf);
-  if (r < 0)
-    return r;
-
   /*
    * Modprobe rbd kernel module.  If it supports single-major device
    * number allocation scheme, make sure it's turned on.
+   *
+   * Do this before calling build_map_buf() - it wants "ceph" key type
+   * registered.
    */
   if (access("/sys/bus/rbd", F_OK) != 0) {
     const char *module_options = NULL;
@@ -505,7 +553,7 @@ static int map_image(struct krbd_ctx *ctx, const krbd_spec& spec,
 
     r = module_load("rbd", module_options);
     if (r) {
-      cerr << "rbd: failed to load rbd kernel module (" << r << ")"
+      std::cerr << "rbd: failed to load rbd kernel module (" << r << ")"
            << std::endl;
       /*
        * Ignore the error: modprobe failing doesn't necessarily prevent
@@ -514,133 +562,131 @@ static int map_image(struct krbd_ctx *ctx, const krbd_spec& spec,
     }
   }
 
+  r = build_map_buf(ctx->cct, spec, options, &buf);
+  if (r < 0)
+    return r;
+
   return do_map(ctx, spec, buf, pname);
 }
 
 static int devno_to_krbd_id(struct udev *udev, dev_t devno, string *pid)
 {
-  struct udev_enumerate *enm;
+  udev_enumerate_uptr enm;
   struct udev_list_entry *l;
-  struct udev_device *dev;
   int r;
 
 retry:
-  enm = udev_enumerate_new(udev);
+  enm.reset(udev_enumerate_new(udev));
   if (!enm)
     return -ENOMEM;
 
-  r = udev_enumerate_add_match_subsystem(enm, "rbd");
+  r = udev_enumerate_add_match_subsystem(enm.get(), "rbd");
   if (r < 0)
-    goto out_enm;
+    return r;
 
-  r = udev_enumerate_add_match_sysattr(enm, "major",
+  r = udev_enumerate_add_match_sysattr(enm.get(), "major",
                                        stringify(major(devno)).c_str());
   if (r < 0)
-    goto out_enm;
+    return r;
 
   if (have_minor_attr()) {
-    r = udev_enumerate_add_match_sysattr(enm, "minor",
+    r = udev_enumerate_add_match_sysattr(enm.get(), "minor",
                                          stringify(minor(devno)).c_str());
     if (r < 0)
-      goto out_enm;
+      return r;
   }
 
-  r = udev_enumerate_scan_devices(enm);
+  r = udev_enumerate_scan_devices(enm.get());
   if (r < 0) {
     if (r == -ENOENT || r == -ENODEV) {
       std::cerr << "rbd: udev enumerate failed, retrying" << std::endl;
-      udev_enumerate_unref(enm);
       goto retry;
     }
-    goto out_enm;
+    return r;
   }
 
-  l = udev_enumerate_get_list_entry(enm);
-  if (!l) {
-    r = -ENOENT;
-    goto out_enm;
-  }
+  l = udev_enumerate_get_list_entry(enm.get());
+  if (!l)
+    return -ENOENT;
 
   /* make sure there is only one match */
   ceph_assert(!udev_list_entry_get_next(l));
 
-  dev = udev_device_new_from_syspath(udev, udev_list_entry_get_name(l));
-  if (!dev) {
-    r = -ENOMEM;
-    goto out_enm;
-  }
+  auto dev = dev_from_list_entry(udev, l);
+  if (!dev)
+    return -ENOMEM;
 
-  *pid = udev_device_get_sysname(dev);
+  *pid = udev_device_get_sysname(dev.get());
+  return 0;
+}
 
-  udev_device_unref(dev);
-out_enm:
-  udev_enumerate_unref(enm);
-  return r;
+// wrap any of * ? [ between square brackets
+static std::string escape_glob(const std::string& s)
+{
+  std::regex glob_meta("([*?[])");
+  return std::regex_replace(s, glob_meta, "[$1]");
 }
 
 static int __enumerate_devices(struct udev *udev, const krbd_spec& spec,
-                               bool match_nspace, struct udev_enumerate **penm)
+                               bool match_nspace, udev_enumerate_uptr *penm)
 {
-  struct udev_enumerate *enm;
+  udev_enumerate_uptr enm;
   int r;
 
 retry:
-  enm = udev_enumerate_new(udev);
+  enm.reset(udev_enumerate_new(udev));
   if (!enm)
     return -ENOMEM;
 
-  r = udev_enumerate_add_match_subsystem(enm, "rbd");
+  r = udev_enumerate_add_match_subsystem(enm.get(), "rbd");
   if (r < 0)
-    goto out_enm;
+    return r;
 
-  r = udev_enumerate_add_match_sysattr(enm, "pool", spec.pool_name.c_str());
+  r = udev_enumerate_add_match_sysattr(enm.get(), "pool",
+                                       escape_glob(spec.pool_name).c_str());
   if (r < 0)
-    goto out_enm;
+    return r;
 
   if (match_nspace) {
-    r = udev_enumerate_add_match_sysattr(enm, "pool_ns",
-                                         spec.nspace_name.c_str());
+    r = udev_enumerate_add_match_sysattr(enm.get(), "pool_ns",
+                                         escape_glob(spec.nspace_name).c_str());
   } else {
     /*
      * Match _only_ devices that don't have pool_ns attribute.
      * If the kernel supports namespaces, the result will be empty.
      */
-    r = udev_enumerate_add_nomatch_sysattr(enm, "pool_ns", nullptr);
+    r = udev_enumerate_add_nomatch_sysattr(enm.get(), "pool_ns", nullptr);
   }
   if (r < 0)
-    goto out_enm;
+    return r;
 
-  r = udev_enumerate_add_match_sysattr(enm, "name", spec.image_name.c_str());
+  r = udev_enumerate_add_match_sysattr(enm.get(), "name",
+                                       escape_glob(spec.image_name).c_str());
   if (r < 0)
-    goto out_enm;
+    return r;
 
-  r = udev_enumerate_add_match_sysattr(enm, "current_snap",
-                                       spec.snap_name.c_str());
+  r = udev_enumerate_add_match_sysattr(enm.get(), "current_snap",
+                                       escape_glob(spec.snap_name).c_str());
   if (r < 0)
-    goto out_enm;
+    return r;
 
-  r = udev_enumerate_scan_devices(enm);
+  r = udev_enumerate_scan_devices(enm.get());
   if (r < 0) {
     if (r == -ENOENT || r == -ENODEV) {
       std::cerr << "rbd: udev enumerate failed, retrying" << std::endl;
-      udev_enumerate_unref(enm);
       goto retry;
     }
-    goto out_enm;
+    return r;
   }
 
-  *penm = enm;
+  *penm = std::move(enm);
   return 0;
-
-out_enm:
-  udev_enumerate_unref(enm);
-  return r;
 }
 
 static int enumerate_devices(struct udev *udev, const krbd_spec& spec,
-                             struct udev_enumerate **penm)
+                             udev_enumerate_uptr *penm)
 {
-  struct udev_enumerate *enm;
+  udev_enumerate_uptr enm;
   int r;
 
   r = __enumerate_devices(udev, spec, true, &enm);
@@ -652,23 +698,21 @@ static int enumerate_devices(struct udev *udev, const krbd_spec& spec,
    * handle older kernels.  On a newer kernel the result will remain
    * the same (i.e. empty).
    */
-  if (!udev_enumerate_get_list_entry(enm) && spec.nspace_name.empty()) {
-    udev_enumerate_unref(enm);
+  if (!udev_enumerate_get_list_entry(enm.get()) && spec.nspace_name.empty()) {
     r = __enumerate_devices(udev, spec, false, &enm);
     if (r < 0)
       return r;
   }
 
-  *penm = enm;
+  *penm = std::move(enm);
   return 0;
 }
 
 static int spec_to_devno_and_krbd_id(struct udev *udev, const krbd_spec& spec,
                                      dev_t *pdevno, string *pid)
 {
-  struct udev_enumerate *enm;
+  udev_enumerate_uptr enm;
   struct udev_list_entry *l;
-  struct udev_device *dev;
   unsigned int maj, min = 0;
   string err;
   int r;
@@ -677,30 +721,26 @@ static int spec_to_devno_and_krbd_id(struct udev *udev, const krbd_spec& spec,
   if (r < 0)
     return r;
 
-  l = udev_enumerate_get_list_entry(enm);
-  if (!l) {
-    r = -ENOENT;
-    goto out_enm;
-  }
+  l = udev_enumerate_get_list_entry(enm.get());
+  if (!l)
+    return -ENOENT;
 
-  dev = udev_device_new_from_syspath(udev, udev_list_entry_get_name(l));
-  if (!dev) {
-    r = -ENOMEM;
-    goto out_enm;
-  }
+  auto dev = dev_from_list_entry(udev, l);
+  if (!dev)
+    return -ENOMEM;
 
-  maj = strict_strtoll(udev_device_get_sysattr_value(dev, "major"), 10, &err);
+  maj = strict_strtoll(udev_device_get_sysattr_value(dev.get(), "major"), 10,
+                       &err);
   if (!err.empty()) {
-    cerr << "rbd: couldn't parse major: " << err << std::endl;
-    r = -EINVAL;
-    goto out_dev;
+    std::cerr << "rbd: couldn't parse major: " << err << std::endl;
+    return -EINVAL;
   }
   if (have_minor_attr()) {
-    min = strict_strtoll(udev_device_get_sysattr_value(dev, "minor"), 10, &err);
+    min = strict_strtoll(udev_device_get_sysattr_value(dev.get(), "minor"), 10,
+                         &err);
     if (!err.empty()) {
-      cerr << "rbd: couldn't parse minor: " << err << std::endl;
-      r = -EINVAL;
-      goto out_dev;
+      std::cerr << "rbd: couldn't parse minor: " << err << std::endl;
+      return -EINVAL;
     }
   }
 
@@ -710,43 +750,31 @@ static int spec_to_devno_and_krbd_id(struct udev *udev, const krbd_spec& spec,
    * ran map.
    */
   if (udev_list_entry_get_next(l))
-    cerr << "rbd: " << spec << ": mapped more than once, unmapping "
-         << get_kernel_rbd_name(udev_device_get_sysname(dev))
-         << " only" << std::endl;
+    std::cerr << "rbd: " << spec << ": mapped more than once, unmapping "
+         << get_devnode(dev.get()) << " only" << std::endl;
 
   *pdevno = makedev(maj, min);
-  *pid = udev_device_get_sysname(dev);
-
-out_dev:
-  udev_device_unref(dev);
-out_enm:
-  udev_enumerate_unref(enm);
-  return r;
+  *pid = udev_device_get_sysname(dev.get());
+  return 0;
 }
 
-static string build_unmap_buf(const string& id, const char *options)
+static void append_unmap_options(std::string *buf, const char *options)
 {
-  string buf(id);
   if (strcmp(options, "") != 0) {
-    buf += " ";
-    buf += options;
+    *buf += " ";
+    *buf += options;
   }
-  return buf;
 }
 
 class UdevUnmapHandler {
 public:
   UdevUnmapHandler(dev_t devno) : m_devno(devno) {}
 
-  bool operator()(udev_device *dev) {
-    bool match = false;
-
-    if (!strcmp(udev_device_get_action(dev), "remove") &&
-        udev_device_get_devnum(dev) == m_devno) {
-      match = true;
+  bool operator()(udev_device_uptr dev) {
+    if (strcmp(udev_device_get_action(dev.get()), "remove")) {
+      return false;
     }
-    udev_device_unref(dev);
-    return match;
+    return udev_device_get_devnum(dev.get()) == m_devno;
   }
 
 private:
@@ -755,37 +783,35 @@ private:
 
 static int do_unmap(krbd_ctx *ctx, dev_t devno, const string& buf)
 {
-  struct udev_monitor *mon;
-  std::thread unmapper;
   bool unmapped;
   int fds[2];
   int r;
 
-  mon = udev_monitor_new_from_netlink(ctx->udev, get_event_source(ctx));
+  udev_monitor_uptr mon(udev_monitor_new_from_netlink(ctx->udev,
+                                                      get_event_source(ctx)));
   if (!mon)
     return -ENOMEM;
 
-  r = udev_monitor_filter_add_match_subsystem_devtype(mon, "block", "disk");
+  r = udev_monitor_filter_add_match_subsystem_devtype(mon.get(), "block",
+                                                      "disk");
   if (r < 0)
-    goto out_mon;
+    return r;
 
-  r = udev_monitor_set_receive_buffer_size(mon, UDEV_BUF_SIZE);
+  r = udev_monitor_set_receive_buffer_size(mon.get(), UDEV_BUF_SIZE);
   if (r < 0) {
     std::cerr << "rbd: failed to set udev buffer size: " << cpp_strerror(r)
               << std::endl;
     /* not fatal */
   }
 
-  r = udev_monitor_enable_receiving(mon);
+  r = udev_monitor_enable_receiving(mon.get());
   if (r < 0)
-    goto out_mon;
+    return r;
 
-  if (pipe2(fds, O_NONBLOCK) < 0) {
-    r = -errno;
-    goto out_mon;
-  }
+  if (pipe2(fds, O_NONBLOCK) < 0)
+    return -errno;
 
-  unmapper = make_named_thread(
+  auto unmapper = make_named_thread(
       "unmapper", [&buf, sysfs_r_fd = fds[1], flags = ctx->flags]() {
     /*
      * On final device close(), kernel sends a block change event, in
@@ -818,7 +844,7 @@ static int do_unmap(krbd_ctx *ctx, dev_t devno, const string& buf)
     }
   });
 
-  std::tie(r, unmapped) = wait_for_mapping(fds[0], mon,
+  std::tie(r, unmapped) = wait_for_mapping(fds[0], mon.get(),
                                            UdevUnmapHandler(devno));
   if (r < 0) {
     if (!unmapped) {
@@ -832,9 +858,6 @@ static int do_unmap(krbd_ctx *ctx, dev_t devno, const string& buf)
   unmapper.join();
   close(fds[0]);
   close(fds[1]);
-
-out_mon:
-  udev_monitor_unref(mon);
   return r;
 }
 
@@ -843,17 +866,17 @@ static int unmap_image(struct krbd_ctx *ctx, const char *devnode,
 {
   struct stat sb;
   dev_t wholedevno = 0;
-  string id;
+  std::string buf;
   int r;
 
   if (stat(devnode, &sb) < 0 || !S_ISBLK(sb.st_mode)) {
-    cerr << "rbd: '" << devnode << "' is not a block device" << std::endl;
+    std::cerr << "rbd: '" << devnode << "' is not a block device" << std::endl;
     return -EINVAL;
   }
 
   r = blkid_devno_to_wholedisk(sb.st_rdev, NULL, 0, &wholedevno);
   if (r < 0) {
-    cerr << "rbd: couldn't compute wholedevno: " << cpp_strerror(r)
+    std::cerr << "rbd: couldn't compute wholedevno: " << cpp_strerror(r)
          << std::endl;
     /*
      * Ignore the error: we are given whole disks most of the time, and
@@ -863,7 +886,7 @@ static int unmap_image(struct krbd_ctx *ctx, const char *devnode,
   }
 
   for (int tries = 0; ; tries++) {
-    r = devno_to_krbd_id(ctx->udev, wholedevno, &id);
+    r = devno_to_krbd_id(ctx->udev, wholedevno, &buf);
     if (r == -ENOENT && tries < 2) {
       usleep(250 * 1000);
     } else {
@@ -883,18 +906,19 @@ static int unmap_image(struct krbd_ctx *ctx, const char *devnode,
     }
   }
 
-  return do_unmap(ctx, wholedevno, build_unmap_buf(id, options));
+  append_unmap_options(&buf, options);
+  return do_unmap(ctx, wholedevno, buf);
 }
 
 static int unmap_image(struct krbd_ctx *ctx, const krbd_spec& spec,
                        const char *options)
 {
   dev_t devno = 0;
-  string id;
+  std::string buf;
   int r;
 
   for (int tries = 0; ; tries++) {
-    r = spec_to_devno_and_krbd_id(ctx->udev, spec, &devno, &id);
+    r = spec_to_devno_and_krbd_id(ctx->udev, spec, &devno, &buf);
     if (r == -ENOENT && tries < 2) {
       usleep(250 * 1000);
     } else {
@@ -914,15 +938,16 @@ static int unmap_image(struct krbd_ctx *ctx, const krbd_spec& spec,
     }
   }
 
-  return do_unmap(ctx, devno, build_unmap_buf(id, options));
+  append_unmap_options(&buf, options);
+  return do_unmap(ctx, devno, buf);
 }
 
 static bool dump_one_image(Formatter *f, TextTable *tbl,
                            struct udev_device *dev)
 {
-  const char *id = udev_device_get_sysname(dev);
   auto spec = spec_from_dev(dev);
-  string kname = get_kernel_rbd_name(id);
+  std::string devnode = get_devnode(dev);
+  const char *id = devnode.c_str() + sizeof(DEVNODE_PREFIX) - 1;
 
   if (!spec)
     return false;
@@ -934,11 +959,11 @@ static bool dump_one_image(Formatter *f, TextTable *tbl,
     f->dump_string("namespace", spec->nspace_name);
     f->dump_string("name", spec->image_name);
     f->dump_string("snap", spec->snap_name);
-    f->dump_string("device", kname);
+    f->dump_string("device", devnode);
     f->close_section();
   } else {
     *tbl << id << spec->pool_name << spec->nspace_name << spec->image_name
-         << spec->snap_name << kname << TextTable::endrow;
+         << spec->snap_name << devnode << TextTable::endrow;
   }
 
   return true;
@@ -946,47 +971,40 @@ static bool dump_one_image(Formatter *f, TextTable *tbl,
 
 static int do_dump(struct udev *udev, Formatter *f, TextTable *tbl)
 {
-  struct udev_enumerate *enm;
+  udev_enumerate_uptr enm;
   struct udev_list_entry *l = NULL;
   bool have_output = false;
   int r;
 
 retry:
-  enm = udev_enumerate_new(udev);
+  enm.reset(udev_enumerate_new(udev));
   if (!enm)
     return -ENOMEM;
 
-  r = udev_enumerate_add_match_subsystem(enm, "rbd");
+  r = udev_enumerate_add_match_subsystem(enm.get(), "rbd");
   if (r < 0)
-    goto out_enm;
+    return r;
 
-  r = udev_enumerate_scan_devices(enm);
+  r = udev_enumerate_scan_devices(enm.get());
   if (r < 0) {
     if (r == -ENOENT || r == -ENODEV) {
       std::cerr << "rbd: udev enumerate failed, retrying" << std::endl;
-      udev_enumerate_unref(enm);
       goto retry;
     }
-    goto out_enm;
+    return r;
   }
 
-  udev_list_entry_foreach(l, udev_enumerate_get_list_entry(enm)) {
-    struct udev_device *dev;
-
-    dev = udev_device_new_from_syspath(udev, udev_list_entry_get_name(l));
+  udev_list_entry_foreach(l, udev_enumerate_get_list_entry(enm.get())) {
+    auto dev = dev_from_list_entry(udev, l);
     if (dev) {
-      have_output |= dump_one_image(f, tbl, dev);
-      udev_device_unref(dev);
+      have_output |= dump_one_image(f, tbl, dev.get());
     }
   }
 
-  r = have_output;
-out_enm:
-  udev_enumerate_unref(enm);
-  return r;
+  return have_output;
 }
 
-int dump_images(struct krbd_ctx *ctx, Formatter *f)
+static int dump_images(struct krbd_ctx *ctx, Formatter *f)
 {
   TextTable tbl;
   int r;
@@ -1006,10 +1024,10 @@ int dump_images(struct krbd_ctx *ctx, Formatter *f)
 
   if (f) {
     f->close_section();
-    f->flush(cout);
+    f->flush(std::cout);
   } else {
     if (r > 0)
-      cout << tbl;
+      std::cout << tbl;
   }
 
   return r;
@@ -1018,7 +1036,7 @@ int dump_images(struct krbd_ctx *ctx, Formatter *f)
 static int is_mapped_image(struct udev *udev, const krbd_spec& spec,
                            string *pname)
 {
-  struct udev_enumerate *enm;
+  udev_enumerate_uptr enm;
   struct udev_list_entry *l;
   int r;
 
@@ -1026,26 +1044,17 @@ static int is_mapped_image(struct udev *udev, const krbd_spec& spec,
   if (r < 0)
     return r;
 
-  l = udev_enumerate_get_list_entry(enm);
+  l = udev_enumerate_get_list_entry(enm.get());
   if (l) {
-    struct udev_device *dev;
+    auto dev = dev_from_list_entry(udev, l);
+    if (!dev)
+      return -ENOMEM;
 
-    dev = udev_device_new_from_syspath(udev, udev_list_entry_get_name(l));
-    if (!dev) {
-      r = -ENOMEM;
-      goto out_enm;
-    }
-
-    r = 1;
-    *pname = get_kernel_rbd_name(udev_device_get_sysname(dev));
-    udev_device_unref(dev);
-  } else {
-    r = 0;  /* not mapped */
+    *pname = get_devnode(dev.get());
+    return 1;
   }
 
-out_enm:
-  udev_enumerate_unref(enm);
-  return r;
+  return 0;  /* not mapped */
 }
 
 extern "C" int krbd_create_from_context(rados_config_t cct, uint32_t flags,

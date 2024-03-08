@@ -16,7 +16,7 @@
 
 #include "mds/FSMap.h"
 #include "mon/MgrMap.h"
-#include "common/Mutex.h"
+#include "common/ceph_mutex.h"
 
 #include "osdc/Objecter.h"
 #include "mon/MonClient.h"
@@ -39,11 +39,11 @@ protected:
   Objecter *objecter;
   FSMap fsmap;
   ServiceMap servicemap;
-  mutable Mutex lock;
+  mutable ceph::mutex lock = ceph::make_mutex("ClusterState");
 
   MgrMap mgr_map;
 
-  map<int64_t,unsigned> existing_pools; ///< pools that exist, and pg_num, as of PGMap epoch
+  std::map<int64_t,unsigned> existing_pools; ///< pools that exist, and pg_num, as of PGMap epoch
   PGMap pg_map;
   PGMap::Incremental pending_inc;
 
@@ -55,7 +55,7 @@ protected:
 public:
 
   void load_digest(MMgrDigest *m);
-  void ingest_pgstats(MPGStats *stats);
+  void ingest_pgstats(ceph::ref_t<MPGStats> stats);
 
   void update_delta_stats();
 
@@ -74,24 +74,24 @@ public:
   }
 
   template<typename Callback, typename...Args>
-  void with_servicemap(Callback&& cb, Args&&...args) const
+  auto with_servicemap(Callback&& cb, Args&&...args) const
   {
     std::lock_guard l(lock);
-    std::forward<Callback>(cb)(servicemap, std::forward<Args>(args)...);
+    return std::forward<Callback>(cb)(servicemap, std::forward<Args>(args)...);
   }
 
   template<typename Callback, typename...Args>
-  void with_fsmap(Callback&& cb, Args&&...args) const
+  auto with_fsmap(Callback&& cb, Args&&...args) const
   {
     std::lock_guard l(lock);
-    std::forward<Callback>(cb)(fsmap, std::forward<Args>(args)...);
+    return std::forward<Callback>(cb)(fsmap, std::forward<Args>(args)...);
   }
 
   template<typename Callback, typename...Args>
-  void with_mgrmap(Callback&& cb, Args&&...args) const
+  auto with_mgrmap(Callback&& cb, Args&&...args) const
   {
     std::lock_guard l(lock);
-    std::forward<Callback>(cb)(mgr_map, std::forward<Args>(args)...);
+    return std::forward<Callback>(cb)(mgr_map, std::forward<Args>(args)...);
   }
 
   template<typename Callback, typename...Args>
@@ -111,11 +111,11 @@ public:
   }
 
   template<typename... Args>
-  void with_monmap(Args &&... args) const
+  auto with_monmap(Args &&... args) const
   {
     std::lock_guard l(lock);
     ceph_assert(monc != nullptr);
-    monc->with_monmap(std::forward<Args>(args)...);
+    return monc->with_monmap(std::forward<Args>(args)...);
   }
 
   template<typename... Args>
@@ -138,23 +138,25 @@ public:
   }
 
   template<typename Callback, typename...Args>
-  void with_health(Callback&& cb, Args&&...args) const
+  auto with_health(Callback&& cb, Args&&...args) const
   {
     std::lock_guard l(lock);
-    std::forward<Callback>(cb)(health_json, std::forward<Args>(args)...);
+    return std::forward<Callback>(cb)(health_json, std::forward<Args>(args)...);
   }
 
   template<typename Callback, typename...Args>
-  void with_mon_status(Callback&& cb, Args&&...args) const
+  auto with_mon_status(Callback&& cb, Args&&...args) const
   {
     std::lock_guard l(lock);
-    std::forward<Callback>(cb)(mon_status_json, std::forward<Args>(args)...);
+    return std::forward<Callback>(cb)(mon_status_json, std::forward<Args>(args)...);
   }
 
   void final_init();
   void shutdown();
-  bool asok_command(std::string_view admin_command, const cmdmap_t& cmdmap,
-		       std::string_view format, ostream& ss);
+  bool asok_command(std::string_view admin_command,
+		    const cmdmap_t& cmdmap,
+		    Formatter *f,
+		    std::ostream& ss);
 };
 
 #endif

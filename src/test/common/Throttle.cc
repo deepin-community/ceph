@@ -29,10 +29,11 @@
 #include <thread>
 
 #include "gtest/gtest.h"
-#include "common/Mutex.h"
 #include "common/Thread.h"
 #include "common/Throttle.h"
 #include "common/ceph_argparse.h"
+
+using namespace std;
 
 class ThrottleTest : public ::testing::Test {
 protected:

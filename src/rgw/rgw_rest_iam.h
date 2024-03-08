@@ -1,32 +1,33 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef CEPH_RGW_REST_IAM_H
-#define CEPH_RGW_REST_IAM_H
+#pragma once
 
 #include "rgw_auth.h"
 #include "rgw_auth_filters.h"
+#include "rgw_rest.h"
 
 class RGWHandler_REST_IAM : public RGWHandler_REST {
   const rgw::auth::StrategyRegistry& auth_registry;
-  const string& post_body;
+  bufferlist bl_post_body;
   RGWOp *op_post() override;
-  void rgw_iam_parse_input();
+
 public:
 
-  static int init_from_header(struct req_state *s, int default_formatter, bool configurable_format);
+  static bool action_exists(const req_state* s);
 
-  RGWHandler_REST_IAM(const rgw::auth::StrategyRegistry& auth_registry, const string& post_body="")
+  RGWHandler_REST_IAM(const rgw::auth::StrategyRegistry& auth_registry,
+		      bufferlist& bl_post_body)
     : RGWHandler_REST(),
       auth_registry(auth_registry),
-      post_body(post_body) {}
+      bl_post_body(bl_post_body) {}
   ~RGWHandler_REST_IAM() override = default;
 
-  int init(RGWRados *store,
-           struct req_state *s,
+  int init(rgw::sal::Driver* driver,
+           req_state *s,
            rgw::io::BasicClient *cio) override;
-  int authorize(const DoutPrefixProvider* dpp) override;
-  int postauth_init() override { return 0; }
+  int authorize(const DoutPrefixProvider* dpp, optional_yield y) override;
+  int postauth_init(optional_yield y) override { return 0; }
 };
 
 class RGWRESTMgr_IAM : public RGWRESTMgr {
@@ -34,16 +35,14 @@ public:
   RGWRESTMgr_IAM() = default;
   ~RGWRESTMgr_IAM() override = default;
 
-  RGWRESTMgr *get_resource_mgr(struct req_state* const s,
+  RGWRESTMgr *get_resource_mgr(req_state* const s,
                                const std::string& uri,
                                std::string* const out_uri) override {
     return this;
   }
 
-  RGWHandler_REST* get_handler(struct req_state*,
+  RGWHandler_REST* get_handler(rgw::sal::Driver* driver,
+			       req_state*,
                                const rgw::auth::StrategyRegistry&,
                                const std::string&) override;
 };
-
-#endif /* CEPH_RGW_REST_STS_H */
-

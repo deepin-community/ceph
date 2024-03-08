@@ -14,8 +14,6 @@ require {
 	type setfiles_t;
 	type nvme_device_t;
 	type targetd_etc_rw_t;
-	type httpd_config_t;
-	type proc_kcore_t;
 	type amqp_port_t;
 	type soundd_port_t;
 	class sock_file unlink;
@@ -77,6 +75,9 @@ manage_lnk_files_pattern(ceph_t, ceph_var_run_t, ceph_var_run_t)
 
 kernel_read_system_state(ceph_t)
 kernel_read_network_state(ceph_t)
+ifdef(`kernel_io_uring_use',`
+	kernel_io_uring_use(ceph_t)
+')
 allow ceph_t kernel_t:system module_request;
 
 corenet_all_recvfrom_unlabeled(ceph_t)
@@ -156,10 +157,6 @@ allow ceph_t var_run_t:dir { write create add_name };
 allow ceph_t var_run_t:file { read write create open getattr };
 allow ceph_t init_var_run_t:file getattr;
 allow init_t ceph_t:process2 { nnp_transition nosuid_transition };
-
-allow ceph_t httpd_config_t:dir search;
-
-allow ceph_t proc_kcore_t:file getattr;
 
 allow ceph_t targetd_etc_rw_t:dir { getattr search };
 

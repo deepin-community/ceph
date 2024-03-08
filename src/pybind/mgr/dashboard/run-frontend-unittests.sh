@@ -1,28 +1,20 @@
 #!/usr/bin/env bash
 
 failed=false
-: ${CEPH_ROOT:=$PWD/../../../../}
+SCRIPTPATH="$( cd "$(dirname "$0")" ; pwd -P )"
+: ${CEPH_ROOT:=$SCRIPTPATH/../../../../}
+
 cd $CEPH_ROOT/src/pybind/mgr/dashboard/frontend
+[ -z "$BUILD_DIR" ] && BUILD_DIR=build
 if [ `uname` != "FreeBSD" ]; then
-  .  $CEPH_ROOT/build/src/pybind/mgr/dashboard/node-env/bin/activate
+  .  $CEPH_ROOT/${BUILD_DIR}/src/pybind/mgr/dashboard/frontend/node-env/bin/activate
 fi
 
 # Build
-npm run build -- --prod --progress=false || failed=true
+npm run build -- --configuration=production --progress=false || failed=true
 
 # Unit Tests
-config='src/unit-test-configuration.ts'
-if [ -e $config ]; then
-  mv $config ${config}_old
-fi
-cp ${config}.sample $config
-
 npm run test:ci || failed=true
-
-rm $config
-if [ -e ${config}_old ]; then
-  mv ${config}_old $config
-fi
 
 # Linting
 npm run lint --silent
@@ -39,9 +31,11 @@ if [ $? -gt 0 ]; then
   echo -e "\nTranslations extraction has failed."
 else
   i18n_lint=`awk '/<source> |<source>$| <\/source>/,/<\/context-group>/ {printf "%-4s ", NR; print}' src/locale/messages.xlf`
-  if [ "$i18n_lint" ]; then
-    echo -e "The following source translations in 'messages.xlf' need to be \
-  fixed, please check the I18N suggestions in 'HACKING.rst':\n"
+
+  # Excluding the node_modules/ folder errors from the lint error
+  if [[ -n "$i18n_lint" &&  $i18n_lint != *"node_modules/"* ]]; then
+    echo -e "\nThe following source translations in 'messages.xlf' need to be \
+  fixed, please check the I18N suggestions on https://docs.ceph.com/en/latest/dev/developer_guide/dash-devel/#i18n:\n"
     echo "${i18n_lint}"
     failed=true
   fi

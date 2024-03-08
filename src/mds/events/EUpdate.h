@@ -23,18 +23,18 @@
 class EUpdate : public LogEvent {
 public:
   EMetaBlob metablob;
-  string type;
+  std::string type;
   bufferlist client_map;
   version_t cmapv;
   metareqid_t reqid;
-  bool had_slaves;
+  bool had_peers;
 
-  EUpdate() : LogEvent(EVENT_UPDATE), cmapv(0), had_slaves(false) { }
+  EUpdate() : LogEvent(EVENT_UPDATE), cmapv(0), had_peers(false) { }
   EUpdate(MDLog *mdlog, std::string_view s) :
     LogEvent(EVENT_UPDATE),
-    type(s), cmapv(0), had_slaves(false) { }
+    type(s), cmapv(0), had_peers(false) { }
   
-  void print(ostream& out) const override {
+  void print(std::ostream& out) const override {
     if (type.length())
       out << "EUpdate " << type << " ";
     out << metablob;
@@ -45,7 +45,7 @@ public:
   void encode(bufferlist& bl, uint64_t features) const override;
   void decode(bufferlist::const_iterator& bl) override;
   void dump(Formatter *f) const override;
-  static void generate_test_instances(list<EUpdate*>& ls);
+  static void generate_test_instances(std::list<EUpdate*>& ls);
 
   void update_segment() override;
   void replay(MDSRank *mds) override;

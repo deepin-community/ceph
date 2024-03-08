@@ -9,11 +9,11 @@ Overview
 -----------
 
 Generally, snapshots do what they sound like: they create an immutable view
-of the filesystem at the point in time they're taken. There are some headline
+of the file system at the point in time they're taken. There are some headline
 features that make CephFS snapshots different from what you might expect:
 
 * Arbitrary subtrees. Snapshots are created within any directory you choose,
-  and cover all data in the filesystem under that directory.
+  and cover all data in the file system under that directory.
 * Asynchronous. If you create a snapshot, buffered data is flushed out lazily,
   including from other clients. As a result, "creating" the snapshot is
   very fast.
@@ -30,7 +30,7 @@ Important Data Structures
   directory and contains sequence counters, timestamps, the list of associated
   snapshot IDs, and `past_parent_snaps`.
 * SnapServer: SnapServer manages snapshot ID allocation, snapshot deletion and
-  tracks list of effective snapshots in the filesystem. A filesystem only has
+  tracks list of effective snapshots in the file system. A file system only has
   one instance of snapserver.
 * SnapClient: SnapClient is used to communicate with snapserver, each MDS rank
   has its own snapclient instance. SnapClient also caches effective snapshots
@@ -38,8 +38,8 @@ Important Data Structures
 
 Creating a snapshot
 -------------------
-CephFS snapshot feature is enabled by default on new filesystem. To enable it
-on existing filesystems, use command below.
+CephFS snapshot feature is enabled by default on new file system. To enable it
+on existing file systems, use command below.
 
 .. code::
 
@@ -52,6 +52,17 @@ snapdir`` setting if you wish.)
 To create a CephFS snapshot, create a subdirectory under
 ``.snap`` with a name of your choice. For example, to create a snapshot on
 directory "/1/2/3/", invoke ``mkdir /1/2/3/.snap/my-snapshot-name`` .
+
+.. note::
+   Snapshot names can not start with an underscore ('_'), as these names are
+   reserved for internal usage.
+
+.. note::
+   Snapshot names can not exceed 240 characters.  This is because the MDS makes
+   use of long snapshot names internally, which follow the format:
+   `_<SNAPSHOT-NAME>_<INODE-NUMBER>`.  Since filenames in general can't have
+   more than 255 characters, and `<node-id>` takes 13 characters, the long
+   snapshot names can take as much as 255 - 1 - 1 - 13 = 240.
 
 This is transmitted to the MDS Server as a
 CEPH_MDS_OP_MKSNAP-tagged `MClientRequest`, and initially handled in
@@ -119,15 +130,20 @@ out again.
 Hard links
 ----------
 Inode with multiple hard links is moved to a dummy global SnapRealm. The
-dummy SnapRealm covers all snapshots in the filesystem. The inode's data
+dummy SnapRealm covers all snapshots in the file system. The inode's data
 will be preserved for any new snapshot. These preserved data will cover
 snapshots on any linkage of the inode.
 
 Multi-FS
 ---------
-Snapshots and multiple filesystems don't interact well. Specifically, each
-MDS cluster allocates `snapids` independently; if you have multiple filesystems
+Snapshots and multiple file systems don't interact well. Specifically, each
+MDS cluster allocates `snapids` independently; if you have multiple file systems
 sharing a single pool (via namespaces), their snapshots *will* collide and
 deleting one will result in missing file data for others. (This may even be
 invisible, not throwing errors to the user.) If each FS gets its own
 pool things probably work, but this isn't tested and may not be true.
+
+.. Note:: To avoid snap id collision between mon-managed snapshots and file system
+   snapshots, pools with mon-managed snapshots are not allowed to be attached
+   to a file system. Also, mon-managed snapshots can't be created in pools
+   already attached to a file system either.

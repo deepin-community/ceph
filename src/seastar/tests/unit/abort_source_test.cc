@@ -20,9 +20,11 @@
  */
 
 #include <seastar/testing/test_case.hh>
+#include <seastar/testing/thread_test_case.hh>
 
 #include <seastar/core/gate.hh>
 #include <seastar/core/sleep.hh>
+#include <seastar/core/do_with.hh>
 
 using namespace seastar;
 using namespace std::chrono_literals;
@@ -30,19 +32,21 @@ using namespace std::chrono_literals;
 SEASTAR_TEST_CASE(test_abort_source_notifies_subscriber) {
     bool signalled = false;
     auto as = abort_source();
-    auto st_opt = as.subscribe([&signalled] {
+    auto st_opt = as.subscribe([&signalled] () noexcept {
         signalled = true;
     });
     BOOST_REQUIRE_EQUAL(true, bool(st_opt));
     as.request_abort();
     BOOST_REQUIRE_EQUAL(true, signalled);
+    BOOST_REQUIRE_EQUAL(false, bool(st_opt));
+    BOOST_REQUIRE_THROW(as.check(), abort_requested_exception);
     return make_ready_future<>();
 }
 
 SEASTAR_TEST_CASE(test_abort_source_subscription_unregister) {
     bool signalled = false;
     auto as = abort_source();
-    auto st_opt = as.subscribe([&signalled] {
+    auto st_opt = as.subscribe([&signalled] () noexcept {
         signalled = true;
     });
     BOOST_REQUIRE_EQUAL(true, bool(st_opt));
@@ -55,7 +59,7 @@ SEASTAR_TEST_CASE(test_abort_source_subscription_unregister) {
 SEASTAR_TEST_CASE(test_abort_source_rejects_subscription) {
     auto as = abort_source();
     as.request_abort();
-    auto st_opt = as.subscribe([] { });
+    auto st_opt = as.subscribe([] () noexcept { });
     BOOST_REQUIRE_EQUAL(false, bool(st_opt));
     return make_ready_future<>();
 }
@@ -74,4 +78,99 @@ SEASTAR_TEST_CASE(test_sleep_abortable) {
     });
     as->request_abort();
     return f.finally([as = std::move(as)] { });
+}
+
+// Verify that negative sleep does not sleep forever. It should not sleep
+// at all.
+SEASTAR_TEST_CASE(test_negative_sleep_abortable) {
+    return do_with(abort_source(), [] (abort_source& as) {
+        return sleep_abortable(-10s, as);
+    });
+}
+
+SEASTAR_TEST_CASE(test_request_abort_with_exception) {
+    abort_source as;
+    optimized_optional<abort_source::subscription> st_opt;
+    std::optional<std::exception_ptr> aborted_ex;
+    auto expected_message = "expected";
+
+    auto make_abort_source = [&] () {
+        as = abort_source();
+        st_opt = as.subscribe([&aborted_ex] (const std::optional<std::exception_ptr>& opt_ex) noexcept {
+            aborted_ex = opt_ex;
+        });
+        aborted_ex = std::nullopt;
+    };
+
+    make_abort_source();
+    auto ex = make_exception_ptr(std::runtime_error(expected_message));
+    as.request_abort_ex(ex);
+    BOOST_REQUIRE(aborted_ex.has_value());
+    bool caught_exception = false;
+    try {
+        std::rethrow_exception(*aborted_ex);
+    } catch (const std::runtime_error& e) {
+        BOOST_REQUIRE_EQUAL(e.what(), expected_message);
+        caught_exception = true;
+    }
+    BOOST_REQUIRE(caught_exception);
+    BOOST_REQUIRE_THROW(as.check(), std::runtime_error);
+
+    make_abort_source();
+    as.request_abort_ex(make_exception_ptr(std::runtime_error(expected_message)));
+    BOOST_REQUIRE(aborted_ex.has_value());
+    caught_exception = false;
+    try {
+        std::rethrow_exception(*aborted_ex);
+    } catch (const std::runtime_error& e) {
+        BOOST_REQUIRE_EQUAL(e.what(), expected_message);
+        caught_exception = true;
+    }
+    BOOST_REQUIRE(caught_exception);
+    BOOST_REQUIRE_THROW(as.check(), std::runtime_error);
+
+
+    make_abort_source();
+    as.request_abort_ex(std::runtime_error(expected_message));
+    BOOST_REQUIRE(aborted_ex.has_value());
+    caught_exception = false;
+    try {
+        std::rethrow_exception(*aborted_ex);
+    } catch (const std::runtime_error& e) {
+        BOOST_REQUIRE_EQUAL(e.what(), expected_message);
+        caught_exception = true;
+    }
+    BOOST_REQUIRE(caught_exception);
+    BOOST_REQUIRE_THROW(as.check(), std::runtime_error);
+
+    return make_ready_future<>();
+}
+
+SEASTAR_THREAD_TEST_CASE(test_sleep_abortable_with_exception) {
+    abort_source as;
+    auto f = sleep_abortable(10s, as);
+    auto expected_message = "expected";
+    as.request_abort_ex(std::runtime_error(expected_message));
+
+    bool caught_exception = false;
+    try {
+        f.get();
+    } catch (const std::runtime_error& e) {
+        BOOST_REQUIRE_EQUAL(e.what(), expected_message);
+        caught_exception = true;
+    }
+    BOOST_REQUIRE(caught_exception);
+}
+
+SEASTAR_THREAD_TEST_CASE(test_destroy_with_moved_subscriptions) {
+    auto as = std::make_unique<abort_source>();
+    int aborted = 0;
+    auto sub1 = as->subscribe([&] () noexcept { ++aborted; });
+    auto sub2 = std::move(sub1);
+    optimized_optional<abort_source::subscription> sub3;
+    sub3 = std::move(sub2);
+    auto sub4 = as->subscribe([&] () noexcept { ++aborted; });
+    sub4 = std::move(sub3);
+    as.reset();
+    BOOST_REQUIRE_EQUAL(aborted, 0);
 }

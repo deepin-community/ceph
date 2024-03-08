@@ -5,13 +5,14 @@
 
 #pragma once
 
+#include "db/dbformat.h"
 #include "rocksdb/types.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 class ReadCallback {
  public:
-  ReadCallback(SequenceNumber last_visible_seq)
+  explicit ReadCallback(SequenceNumber last_visible_seq)
       : max_visible_seq_(last_visible_seq) {}
   ReadCallback(SequenceNumber last_visible_seq, SequenceNumber min_uncommitted)
       : max_visible_seq_(last_visible_seq), min_uncommitted_(min_uncommitted) {}
@@ -39,10 +40,8 @@ class ReadCallback {
 
   inline SequenceNumber max_visible_seq() { return max_visible_seq_; }
 
+  // Refresh to a more recent visible seq
   virtual void Refresh(SequenceNumber seq) { max_visible_seq_ = seq; }
-
-  // Refer to DBIter::CanReseekToSkip
-  virtual bool CanReseekToSkip() { return true; }
 
  protected:
   // The max visible seq, it is usually the snapshot but could be larger if
@@ -52,4 +51,4 @@ class ReadCallback {
   const SequenceNumber min_uncommitted_ = kMinUnCommittedSeq;
 };
 
-}  //  namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

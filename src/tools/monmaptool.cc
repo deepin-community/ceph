@@ -20,6 +20,15 @@
 #include "include/str_list.h"
 #include "mon/MonMap.h"
 
+using std::cerr;
+using std::cout;
+using std::list;
+using std::map;
+using std::ostream;
+using std::set;
+using std::string;
+using std::string_view;
+using std::vector;
 
 void usage()
 {
@@ -27,6 +36,7 @@ void usage()
        << "        [--enable-all-features]\n"
        << "        [--generate] [--set-initial-members]\n"
        << "        [--add name 1.2.3.4:567] [--rm name]\n"
+       << "        [--addv name [v2:1.2.4.5:567,v1:1.2.3.4:568]]\n"
        << "        [--feature-list [plain|parseable]]\n"
        << "        [--feature-set <value> [--optional|--persistent]]\n"
        << "        [--feature-unset <value> [--optional|--persistent]]\n"
@@ -172,8 +182,7 @@ bool handle_features(list<feature_op_t>& lst, MonMap &m)
 
 int main(int argc, const char **argv)
 {
-  vector<const char*> args;
-  argv_to_vec(argc, argv, args);
+  auto args = argv_to_vec(argc, argv);
   if (args.empty()) {
     cerr << argv[0] << ": -h or --help for usage" << std::endl;
     exit(1);
@@ -194,7 +203,7 @@ int main(int argc, const char **argv)
   bool show_features = false;
   bool generate = false;
   bool filter = false;
-  int min_mon_release = -1;
+  ceph_release_t min_mon_release = ceph_release_t::unknown;
   map<string,entity_addr_t> add;
   map<string,entity_addrvec_t> addv;
   list<string> rm;
@@ -222,14 +231,15 @@ int main(int argc, const char **argv)
       filter = true;
     } else if (ceph_argparse_witharg(args, i, &val, "--set-min-mon-release",
 				     (char*)NULL)) {
-      min_mon_release = atoi(val.c_str());
+      min_mon_release = ceph_release_from_name(val);
     } else if (ceph_argparse_flag(args, i, "--add", (char*)NULL)) {
       string name = *i;
       i = args.erase(i);
       if (i == args.end())
 	helpful_exit();
       entity_addr_t addr;
-      if (!addr.parse(*i)) {
+      if (!addr.parse(string_view{*i})) {
+        // Either we couldn't parse the address or we didn't consume the entire token
 	cerr << me << ": invalid ip:port '" << *i << "'" << std::endl;
 	return -1;
       }
@@ -345,6 +355,12 @@ int main(int argc, const char **argv)
       monmap.generate_fsid();
       cout << me << ": generated fsid " << monmap.fsid << std::endl;
     }
+    monmap.strategy = static_cast<MonMap::election_strategy>(
+		  g_conf().get_val<uint64_t>("mon_election_default_strategy"));
+    if (min_mon_release == ceph_release_t::unknown) {
+      min_mon_release = ceph_release_t::pacific;
+    }
+    // TODO: why do we not use build_initial in our normal path here!?!?!
     modified = true;
   }
   if (enable_all_features) {
@@ -359,7 +375,7 @@ int main(int argc, const char **argv)
       return r;
   }
 
-  if (min_mon_release >= 0) {
+  if (min_mon_release != ceph_release_t::unknown) {
     monmap.min_mon_release = min_mon_release;
     cout << "setting min_mon_release = " << min_mon_release << std::endl;
     modified = true;

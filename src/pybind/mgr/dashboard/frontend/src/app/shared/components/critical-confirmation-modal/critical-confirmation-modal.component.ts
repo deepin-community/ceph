@@ -1,10 +1,10 @@
 import { Component, OnInit, TemplateRef, ViewChild } from '@angular/core';
-import { FormControl, Validators } from '@angular/forms';
+import { UntypedFormControl, Validators } from '@angular/forms';
 
-import { BsModalRef } from 'ngx-bootstrap/modal';
+import { NgbActiveModal } from '@ng-bootstrap/ng-bootstrap';
 import { Observable } from 'rxjs';
 
-import { CdFormGroup } from '../../forms/cd-form-group';
+import { CdFormGroup } from '~/app/shared/forms/cd-form-group';
 import { SubmitButtonComponent } from '../submit-button/submit-button.component';
 
 @Component({
@@ -13,24 +13,32 @@ import { SubmitButtonComponent } from '../submit-button/submit-button.component'
   styleUrls: ['./critical-confirmation-modal.component.scss']
 })
 export class CriticalConfirmationModalComponent implements OnInit {
-  @ViewChild(SubmitButtonComponent)
+  @ViewChild(SubmitButtonComponent, { static: true })
   submitButton: SubmitButtonComponent;
   bodyTemplate: TemplateRef<any>;
   bodyContext: object;
   submitActionObservable: () => Observable<any>;
+  callBackAtionObservable: () => Observable<any>;
   submitAction: Function;
+  backAction: Function;
   deletionForm: CdFormGroup;
   itemDescription: 'entry';
   itemNames: string[];
   actionDescription = 'delete';
 
-  constructor(public modalRef: BsModalRef) {}
+  childFormGroup: CdFormGroup;
+  childFormGroupTemplate: TemplateRef<any>;
+
+  constructor(public activeModal: NgbActiveModal) {}
 
   ngOnInit() {
-    this.deletionForm = new CdFormGroup({
-      confirmation: new FormControl(false, [Validators.requiredTrue])
-    });
-
+    const controls = {
+      confirmation: new UntypedFormControl(false, [Validators.requiredTrue])
+    };
+    if (this.childFormGroup) {
+      controls['child'] = this.childFormGroup;
+    }
+    this.deletionForm = new CdFormGroup(controls);
     if (!(this.submitAction || this.submitActionObservable)) {
       throw new Error('No submit action defined');
     }
@@ -38,18 +46,28 @@ export class CriticalConfirmationModalComponent implements OnInit {
 
   callSubmitAction() {
     if (this.submitActionObservable) {
-      this.submitActionObservable().subscribe(
-        null,
-        this.stopLoadingSpinner.bind(this),
-        this.hideModal.bind(this)
-      );
+      this.submitActionObservable().subscribe({
+        error: this.stopLoadingSpinner.bind(this),
+        complete: this.hideModal.bind(this)
+      });
     } else {
       this.submitAction();
     }
   }
 
+  callBackAction() {
+    if (this.callBackAtionObservable) {
+      this.callBackAtionObservable().subscribe({
+        error: this.stopLoadingSpinner.bind(this),
+        complete: this.hideModal.bind(this)
+      });
+    } else {
+      this.backAction();
+    }
+  }
+
   hideModal() {
-    this.modalRef.hide();
+    this.activeModal.close();
   }
 
   stopLoadingSpinner() {

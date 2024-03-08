@@ -73,8 +73,6 @@ struct rte_rawdev_global {
 	uint16_t nb_devs;
 };
 
-extern struct rte_rawdev_global *rte_rawdev_globals;
-/** Pointer to global raw devices data structure. */
 extern struct rte_rawdev *rte_rawdevs;
 /** The pool of rte_rawdev structures. */
 
@@ -284,7 +282,7 @@ typedef uint16_t (*rawdev_queue_count_t)(struct rte_rawdev *dev);
  *   an opaque object representing context of the call; for example, an
  *   application can pass information about the queues on which enqueue needs
  *   to be done. Or, the enqueue operation might be passed reference to an
- *   object containing a callback (agreed upon between applicatio and driver).
+ *   object containing a callback (agreed upon between application and driver).
  *
  * @return
  *   >=0 Count of buffers successfully enqueued (0: no buffers enqueued)
@@ -465,7 +463,7 @@ typedef int (*rawdev_firmware_version_get_t)(struct rte_rawdev *dev,
 					     rte_rawdev_obj_t version_info);
 
 /**
- * Load firwmare from a buffer (DMA'able)
+ * Load firmware from a buffer (DMA'able)
  *
  * @param dev
  *   Raw device pointer
@@ -482,7 +480,7 @@ typedef int (*rawdev_firmware_load_t)(struct rte_rawdev *dev,
 				      rte_rawdev_obj_t firmware_buf);
 
 /**
- * Unload firwmare
+ * Unload firmware
  *
  * @param dev
  *   Raw device pointer
@@ -501,7 +499,7 @@ typedef int (*rawdev_firmware_unload_t)(struct rte_rawdev *dev);
  * @return
  *   Return 0 on success
  */
-typedef int (*rawdev_selftest_t)(void);
+typedef int (*rawdev_selftest_t)(uint16_t dev_id);
 
 /** Rawdevice operations function pointer table */
 struct rte_rawdev_ops {
@@ -550,7 +548,7 @@ struct rte_rawdev_ops {
 	/**< Reset the statistics values in xstats. */
 	rawdev_xstats_reset_t xstats_reset;
 
-	/**< Obtainer firmware status */
+	/**< Obtain firmware status */
 	rawdev_firmware_status_get_t firmware_status_get;
 	/**< Obtain firmware version information */
 	rawdev_firmware_version_get_t firmware_version_get;
@@ -570,7 +568,9 @@ struct rte_rawdev_ops {
  * @param name
  *   Unique identifier name for each device
  * @param dev_private_size
- *   Private data allocated within rte_rawdev object.
+ *   Size of private data memory allocated within rte_rawdev object.
+ *   Set to 0 to disable internal memory allocation and allow for
+ *   self-allocation.
  * @param socket_id
  *   Socket to allocate resources on.
  * @return

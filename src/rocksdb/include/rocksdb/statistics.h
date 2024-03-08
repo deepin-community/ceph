@@ -13,17 +13,19 @@
 #include <string>
 #include <vector>
 
+#include "rocksdb/customizable.h"
 #include "rocksdb/status.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 /**
- * Keep adding ticker's here.
- *  1. Any ticker should be added before TICKER_ENUM_MAX.
+ * Keep adding tickers here.
+ *  1. Any ticker should be added immediately before TICKER_ENUM_MAX, taking
+ *     over its old value.
  *  2. Add a readable string in TickersNameMap below for the newly added ticker.
  *  3. Add a corresponding enum value to TickerType.java in the java API
  *  4. Add the enum conversions from Java and C++ to portal.h's toJavaTickerType
- * and toCppTickers
+ *     and toCppTickers
  */
 enum Tickers : uint32_t {
   // total block cache misses
@@ -81,6 +83,8 @@ enum Tickers : uint32_t {
   // exist.
   BLOOM_FILTER_FULL_TRUE_POSITIVE,
 
+  BLOOM_FILTER_MICROS,
+
   // # persistent cache hit
   PERSISTENT_CACHE_HIT,
   // # persistent cache miss
@@ -115,7 +119,7 @@ enum Tickers : uint32_t {
   COMPACTION_RANGE_DEL_DROP_OBSOLETE,  // all keys in range were deleted.
   // Deletions obsoleted before bottom level due to file gap optimization.
   COMPACTION_OPTIMIZED_DEL_DROP_OBSOLETE,
-  // If a compaction was cancelled in sfm to prevent ENOSPC
+  // If a compaction was canceled in sfm to prevent ENOSPC
   COMPACTION_CANCELLED,
 
   // Number of keys written to the database via the Put and Write call's
@@ -181,7 +185,7 @@ enum Tickers : uint32_t {
   // over large number of keys with same userkey.
   NUMBER_OF_RESEEKS_IN_ITERATION,
 
-  // Record the number of calls to GetUpadtesSince. Useful to keep track of
+  // Record the number of calls to GetUpdatesSince. Useful to keep track of
   // transaction log iterator refreshes
   GET_UPDATES_SINCE_CALLS,
   BLOCK_CACHE_COMPRESSED_MISS,  // miss in the compressed block cache
@@ -202,6 +206,14 @@ enum Tickers : uint32_t {
   COMPACT_READ_BYTES,   // Bytes read during compaction
   COMPACT_WRITE_BYTES,  // Bytes written during compaction
   FLUSH_WRITE_BYTES,    // Bytes written during flush
+
+  // Compaction read and write statistics broken down by CompactionReason
+  COMPACT_READ_BYTES_MARKED,
+  COMPACT_READ_BYTES_PERIODIC,
+  COMPACT_READ_BYTES_TTL,
+  COMPACT_WRITE_BYTES_MARKED,
+  COMPACT_WRITE_BYTES_PERIODIC,
+  COMPACT_WRITE_BYTES_TTL,
 
   // Number of table's properties loaded directly from file, without creating
   // table reader object.
@@ -237,35 +249,42 @@ enum Tickers : uint32_t {
   NUMBER_ITER_SKIP,
 
   // BlobDB specific stats
-  // # of Put/PutTTL/PutUntil to BlobDB.
+  // # of Put/PutTTL/PutUntil to BlobDB. Only applicable to legacy BlobDB.
   BLOB_DB_NUM_PUT,
-  // # of Write to BlobDB.
+  // # of Write to BlobDB. Only applicable to legacy BlobDB.
   BLOB_DB_NUM_WRITE,
-  // # of Get to BlobDB.
+  // # of Get to BlobDB. Only applicable to legacy BlobDB.
   BLOB_DB_NUM_GET,
-  // # of MultiGet to BlobDB.
+  // # of MultiGet to BlobDB. Only applicable to legacy BlobDB.
   BLOB_DB_NUM_MULTIGET,
-  // # of Seek/SeekToFirst/SeekToLast/SeekForPrev to BlobDB iterator.
+  // # of Seek/SeekToFirst/SeekToLast/SeekForPrev to BlobDB iterator. Only
+  // applicable to legacy BlobDB.
   BLOB_DB_NUM_SEEK,
-  // # of Next to BlobDB iterator.
+  // # of Next to BlobDB iterator. Only applicable to legacy BlobDB.
   BLOB_DB_NUM_NEXT,
-  // # of Prev to BlobDB iterator.
+  // # of Prev to BlobDB iterator. Only applicable to legacy BlobDB.
   BLOB_DB_NUM_PREV,
-  // # of keys written to BlobDB.
+  // # of keys written to BlobDB. Only applicable to legacy BlobDB.
   BLOB_DB_NUM_KEYS_WRITTEN,
-  // # of keys read from BlobDB.
+  // # of keys read from BlobDB. Only applicable to legacy BlobDB.
   BLOB_DB_NUM_KEYS_READ,
-  // # of bytes (key + value) written to BlobDB.
+  // # of bytes (key + value) written to BlobDB. Only applicable to legacy
+  // BlobDB.
   BLOB_DB_BYTES_WRITTEN,
-  // # of bytes (keys + value) read from BlobDB.
+  // # of bytes (keys + value) read from BlobDB. Only applicable to legacy
+  // BlobDB.
   BLOB_DB_BYTES_READ,
-  // # of keys written by BlobDB as non-TTL inlined value.
+  // # of keys written by BlobDB as non-TTL inlined value. Only applicable to
+  // legacy BlobDB.
   BLOB_DB_WRITE_INLINED,
-  // # of keys written by BlobDB as TTL inlined value.
+  // # of keys written by BlobDB as TTL inlined value. Only applicable to legacy
+  // BlobDB.
   BLOB_DB_WRITE_INLINED_TTL,
-  // # of keys written by BlobDB as non-TTL blob value.
+  // # of keys written by BlobDB as non-TTL blob value. Only applicable to
+  // legacy BlobDB.
   BLOB_DB_WRITE_BLOB,
-  // # of keys written by BlobDB as TTL blob value.
+  // # of keys written by BlobDB as TTL blob value. Only applicable to legacy
+  // BlobDB.
   BLOB_DB_WRITE_BLOB_TTL,
   // # of bytes written to blob file.
   BLOB_DB_BLOB_FILE_BYTES_WRITTEN,
@@ -274,42 +293,49 @@ enum Tickers : uint32_t {
   // # of times a blob files being synced.
   BLOB_DB_BLOB_FILE_SYNCED,
   // # of blob index evicted from base DB by BlobDB compaction filter because
-  // of expiration.
+  // of expiration. Only applicable to legacy BlobDB.
   BLOB_DB_BLOB_INDEX_EXPIRED_COUNT,
   // size of blob index evicted from base DB by BlobDB compaction filter
-  // because of expiration.
+  // because of expiration. Only applicable to legacy BlobDB.
   BLOB_DB_BLOB_INDEX_EXPIRED_SIZE,
   // # of blob index evicted from base DB by BlobDB compaction filter because
-  // of corresponding file deleted.
+  // of corresponding file deleted. Only applicable to legacy BlobDB.
   BLOB_DB_BLOB_INDEX_EVICTED_COUNT,
   // size of blob index evicted from base DB by BlobDB compaction filter
-  // because of corresponding file deleted.
+  // because of corresponding file deleted. Only applicable to legacy BlobDB.
   BLOB_DB_BLOB_INDEX_EVICTED_SIZE,
-  // # of blob files being garbage collected.
+  // # of blob files that were obsoleted by garbage collection. Only applicable
+  // to legacy BlobDB.
   BLOB_DB_GC_NUM_FILES,
-  // # of blob files generated by garbage collection.
+  // # of blob files generated by garbage collection. Only applicable to legacy
+  // BlobDB.
   BLOB_DB_GC_NUM_NEW_FILES,
-  // # of BlobDB garbage collection failures.
+  // # of BlobDB garbage collection failures. Only applicable to legacy BlobDB.
   BLOB_DB_GC_FAILURES,
-  // # of keys drop by BlobDB garbage collection because they had been
-  // overwritten.
+  // # of keys dropped by BlobDB garbage collection because they had been
+  // overwritten. DEPRECATED.
   BLOB_DB_GC_NUM_KEYS_OVERWRITTEN,
-  // # of keys drop by BlobDB garbage collection because of expiration.
+  // # of keys dropped by BlobDB garbage collection because of expiration.
+  // DEPRECATED.
   BLOB_DB_GC_NUM_KEYS_EXPIRED,
   // # of keys relocated to new blob file by garbage collection.
   BLOB_DB_GC_NUM_KEYS_RELOCATED,
-  // # of bytes drop by BlobDB garbage collection because they had been
-  // overwritten.
+  // # of bytes dropped by BlobDB garbage collection because they had been
+  // overwritten. DEPRECATED.
   BLOB_DB_GC_BYTES_OVERWRITTEN,
-  // # of bytes drop by BlobDB garbage collection because of expiration.
+  // # of bytes dropped by BlobDB garbage collection because of expiration.
+  // DEPRECATED.
   BLOB_DB_GC_BYTES_EXPIRED,
   // # of bytes relocated to new blob file by garbage collection.
   BLOB_DB_GC_BYTES_RELOCATED,
-  // # of blob files evicted because of BlobDB is full.
+  // # of blob files evicted because of BlobDB is full. Only applicable to
+  // legacy BlobDB.
   BLOB_DB_FIFO_NUM_FILES_EVICTED,
-  // # of keys in the blob files evicted because of BlobDB is full.
+  // # of keys in the blob files evicted because of BlobDB is full. Only
+  // applicable to legacy BlobDB.
   BLOB_DB_FIFO_NUM_KEYS_EVICTED,
-  // # of bytes in the blob files evicted because of BlobDB is full.
+  // # of bytes in the blob files evicted because of BlobDB is full. Only
+  // applicable to legacy BlobDB.
   BLOB_DB_FIFO_BYTES_EVICTED,
 
   // These counters indicate a performance issue in WritePrepared transactions.
@@ -322,6 +348,8 @@ enum Tickers : uint32_t {
   TXN_DUPLICATE_KEY_OVERHEAD,
   // # of times snapshot_mutex_ is acquired in the fast path.
   TXN_SNAPSHOT_MUTEX_OVERHEAD,
+  // # of times ::Get returned TryAgain due to expired snapshot seq
+  TXN_GET_TRY_AGAIN,
 
   // Number of keys actually found in MultiGet calls (vs number requested by
   // caller)
@@ -336,6 +364,95 @@ enum Tickers : uint32_t {
   BLOCK_CACHE_COMPRESSION_DICT_ADD,
   BLOCK_CACHE_COMPRESSION_DICT_BYTES_INSERT,
   BLOCK_CACHE_COMPRESSION_DICT_BYTES_EVICT,
+
+  // # of blocks redundantly inserted into block cache.
+  // REQUIRES: BLOCK_CACHE_ADD_REDUNDANT <= BLOCK_CACHE_ADD
+  BLOCK_CACHE_ADD_REDUNDANT,
+  // # of index blocks redundantly inserted into block cache.
+  // REQUIRES: BLOCK_CACHE_INDEX_ADD_REDUNDANT <= BLOCK_CACHE_INDEX_ADD
+  BLOCK_CACHE_INDEX_ADD_REDUNDANT,
+  // # of filter blocks redundantly inserted into block cache.
+  // REQUIRES: BLOCK_CACHE_FILTER_ADD_REDUNDANT <= BLOCK_CACHE_FILTER_ADD
+  BLOCK_CACHE_FILTER_ADD_REDUNDANT,
+  // # of data blocks redundantly inserted into block cache.
+  // REQUIRES: BLOCK_CACHE_DATA_ADD_REDUNDANT <= BLOCK_CACHE_DATA_ADD
+  BLOCK_CACHE_DATA_ADD_REDUNDANT,
+  // # of dict blocks redundantly inserted into block cache.
+  // REQUIRES: BLOCK_CACHE_COMPRESSION_DICT_ADD_REDUNDANT
+  //           <= BLOCK_CACHE_COMPRESSION_DICT_ADD
+  BLOCK_CACHE_COMPRESSION_DICT_ADD_REDUNDANT,
+
+  // # of files marked as trash by sst file manager and will be deleted
+  // later by background thread.
+  FILES_MARKED_TRASH,
+  // # of files deleted immediately by sst file manger through delete scheduler.
+  FILES_DELETED_IMMEDIATELY,
+
+  // The counters for error handler, not that, bg_io_error is the subset of
+  // bg_error and bg_retryable_io_error is the subset of bg_io_error
+  ERROR_HANDLER_BG_ERROR_COUNT,
+  ERROR_HANDLER_BG_IO_ERROR_COUNT,
+  ERROR_HANDLER_BG_RETRYABLE_IO_ERROR_COUNT,
+  ERROR_HANDLER_AUTORESUME_COUNT,
+  ERROR_HANDLER_AUTORESUME_RETRY_TOTAL_COUNT,
+  ERROR_HANDLER_AUTORESUME_SUCCESS_COUNT,
+
+  // Statistics for memtable garbage collection:
+  // Raw bytes of data (payload) present on memtable at flush time.
+  MEMTABLE_PAYLOAD_BYTES_AT_FLUSH,
+  // Outdated bytes of data present on memtable at flush time.
+  MEMTABLE_GARBAGE_BYTES_AT_FLUSH,
+
+  // Secondary cache statistics
+  SECONDARY_CACHE_HITS,
+
+  // Bytes read by `VerifyChecksum()` and `VerifyFileChecksums()` APIs.
+  VERIFY_CHECKSUM_READ_BYTES,
+
+  // Bytes read/written while creating backups
+  BACKUP_READ_BYTES,
+  BACKUP_WRITE_BYTES,
+
+  // Remote compaction read/write statistics
+  REMOTE_COMPACT_READ_BYTES,
+  REMOTE_COMPACT_WRITE_BYTES,
+
+  // Tiered storage related statistics
+  HOT_FILE_READ_BYTES,
+  WARM_FILE_READ_BYTES,
+  COLD_FILE_READ_BYTES,
+  HOT_FILE_READ_COUNT,
+  WARM_FILE_READ_COUNT,
+  COLD_FILE_READ_COUNT,
+
+  // Last level and non-last level read statistics
+  LAST_LEVEL_READ_BYTES,
+  LAST_LEVEL_READ_COUNT,
+  NON_LAST_LEVEL_READ_BYTES,
+  NON_LAST_LEVEL_READ_COUNT,
+
+  BLOCK_CHECKSUM_COMPUTE_COUNT,
+  MULTIGET_COROUTINE_COUNT,
+
+  // Integrated BlobDB specific stats
+  // # of times cache miss when accessing blob from blob cache.
+  BLOB_DB_CACHE_MISS,
+  // # of times cache hit when accessing blob from blob cache.
+  BLOB_DB_CACHE_HIT,
+  // # of data blocks added to blob cache.
+  BLOB_DB_CACHE_ADD,
+  // # of failures when adding blobs to blob cache.
+  BLOB_DB_CACHE_ADD_FAILURES,
+  // # of bytes read from blob cache.
+  BLOB_DB_CACHE_BYTES_READ,
+  // # of bytes written into blob cache.
+  BLOB_DB_CACHE_BYTES_WRITE,
+
+  // Time spent in the ReadAsync file system call
+  READ_ASYNC_MICROS,
+  // Number of errors returned to the async read callback
+  ASYNC_READ_ERROR_COUNT,
+
   TICKER_ENUM_MAX
 };
 
@@ -394,21 +511,23 @@ enum Histograms : uint32_t {
   READ_NUM_MERGE_OPERANDS,
 
   // BlobDB specific stats
-  // Size of keys written to BlobDB.
+  // Size of keys written to BlobDB. Only applicable to legacy BlobDB.
   BLOB_DB_KEY_SIZE,
-  // Size of values written to BlobDB.
+  // Size of values written to BlobDB. Only applicable to legacy BlobDB.
   BLOB_DB_VALUE_SIZE,
-  // BlobDB Put/PutWithTTL/PutUntil/Write latency.
+  // BlobDB Put/PutWithTTL/PutUntil/Write latency. Only applicable to legacy
+  // BlobDB.
   BLOB_DB_WRITE_MICROS,
-  // BlobDB Get lagency.
+  // BlobDB Get latency. Only applicable to legacy BlobDB.
   BLOB_DB_GET_MICROS,
-  // BlobDB MultiGet latency.
+  // BlobDB MultiGet latency. Only applicable to legacy BlobDB.
   BLOB_DB_MULTIGET_MICROS,
-  // BlobDB Seek/SeekToFirst/SeekToLast/SeekForPrev latency.
+  // BlobDB Seek/SeekToFirst/SeekToLast/SeekForPrev latency. Only applicable to
+  // legacy BlobDB.
   BLOB_DB_SEEK_MICROS,
-  // BlobDB Next latency.
+  // BlobDB Next latency. Only applicable to legacy BlobDB.
   BLOB_DB_NEXT_MICROS,
-  // BlobDB Prev latency.
+  // BlobDB Prev latency. Only applicable to legacy BlobDB.
   BLOB_DB_PREV_MICROS,
   // Blob file write latency.
   BLOB_DB_BLOB_FILE_WRITE_MICROS,
@@ -416,7 +535,7 @@ enum Histograms : uint32_t {
   BLOB_DB_BLOB_FILE_READ_MICROS,
   // Blob file sync latency.
   BLOB_DB_BLOB_FILE_SYNC_MICROS,
-  // BlobDB garbage collection time.
+  // BlobDB garbage collection time. DEPRECATED.
   BLOB_DB_GC_MICROS,
   // BlobDB compression time.
   BLOB_DB_COMPRESSION_MICROS,
@@ -424,6 +543,35 @@ enum Histograms : uint32_t {
   BLOB_DB_DECOMPRESSION_MICROS,
   // Time spent flushing memtable to disk
   FLUSH_TIME,
+  SST_BATCH_SIZE,
+
+  // MultiGet stats logged per level
+  // Num of index and filter blocks read from file system per level.
+  NUM_INDEX_AND_FILTER_BLOCKS_READ_PER_LEVEL,
+  // Num of data blocks read from file system per level.
+  // Obsolete
+  NUM_DATA_BLOCKS_READ_PER_LEVEL,
+  // Num of sst files read from file system per level.
+  NUM_SST_READ_PER_LEVEL,
+
+  // Error handler statistics
+  ERROR_HANDLER_AUTORESUME_RETRY_COUNT,
+
+  // Stats related to asynchronous read requests.
+  ASYNC_READ_BYTES,
+  POLL_WAIT_MICROS,
+
+  // Number of prefetched bytes discarded by RocksDB.
+  PREFETCHED_BYTES_DISCARDED,
+
+  // Number of IOs issued in parallel in a MultiGet batch
+  MULTIGET_IO_BATCH_SIZE,
+
+  // Number of levels requiring IO for MultiGet
+  NUM_LEVEL_READ_PER_MULTIGET,
+
+  // Wait time for aborting async read in FilePrefetchBuffer destructor
+  ASYNC_PREFETCH_ABORT_MICROS,
 
   HISTOGRAM_ENUM_MAX,
 };
@@ -444,7 +592,15 @@ struct HistogramData {
   double min = 0.0;
 };
 
+// StatsLevel can be used to reduce statistics overhead by skipping certain
+// types of stats in the stats collection process.
+// Usage:
+//   options.statistics->set_stats_level(StatsLevel::kExceptTimeForMutex);
 enum StatsLevel : uint8_t {
+  // Disable all metrics
+  kDisableAll,
+  // Disable tickers
+  kExceptTickers = kDisableAll,
   // Disable timer stats, and skip histogram stats
   kExceptHistogramOrTimers,
   // Skip timer stats
@@ -461,11 +617,30 @@ enum StatsLevel : uint8_t {
   kAll,
 };
 
-// Analyze the performance of a db
-class Statistics {
+// Analyze the performance of a db by providing cumulative stats over time.
+// Usage:
+//  Options options;
+//  options.statistics = ROCKSDB_NAMESPACE::CreateDBStatistics();
+//  Status s = DB::Open(options, kDBPath, &db);
+//  ...
+//  options.statistics->getTickerCount(NUMBER_BLOCK_COMPRESSED);
+//  HistogramData hist;
+//  options.statistics->histogramData(FLUSH_TIME, &hist);
+//
+// Exceptions MUST NOT propagate out of overridden functions into RocksDB,
+// because RocksDB is not exception-safe. This could cause undefined behavior
+// including data loss, unreported corruption, deadlocks, and more.
+class Statistics : public Customizable {
  public:
-  virtual ~Statistics() {}
-
+  ~Statistics() override {}
+  static const char* Type() { return "Statistics"; }
+  static Status CreateFromString(const ConfigOptions& opts,
+                                 const std::string& value,
+                                 std::shared_ptr<Statistics>* result);
+  // Default name of empty, for backwards compatibility.  Derived classes should
+  // override this method.
+  // This default implementation will likely be removed in a future release
+  const char* Name() const override { return ""; }
   virtual uint64_t getTickerCount(uint32_t tickerType) const = 0;
   virtual void histogramData(uint32_t type,
                              HistogramData* const data) const = 0;
@@ -489,7 +664,7 @@ class Statistics {
   virtual void recordInHistogram(uint32_t histogramType, uint64_t time) {
     // measureTime() is the old and inaccurate function name.
     // To keep backward compatible. If users implement their own
-    // statistics, which overrides meareTime() but doesn't override
+    // statistics, which overrides measureTime() but doesn't override
     // this function. We forward to measureTime().
     measureTime(histogramType, time);
   }
@@ -497,7 +672,10 @@ class Statistics {
   // Resets all ticker and histogram stats
   virtual Status Reset() { return Status::NotSupported("Not implemented"); }
 
-  // String representation of the statistic object.
+#ifndef ROCKSDB_LITE
+  using Customizable::ToString;
+#endif  // ROCKSDB_LITE
+  // String representation of the statistic object. Must be thread-safe.
   virtual std::string ToString() const {
     // Do nothing by default
     return std::string("ToString(): not implemented");
@@ -506,7 +684,7 @@ class Statistics {
   virtual bool getTickerMap(std::map<std::string, uint64_t>*) const {
     // Do nothing by default
     return false;
-  };
+  }
 
   // Override this function to disable particular histogram collection
   virtual bool HistEnabledForType(uint32_t type) const {
@@ -526,4 +704,4 @@ class Statistics {
 // Create a concrete DBStatistics object
 std::shared_ptr<Statistics> CreateDBStatistics();
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

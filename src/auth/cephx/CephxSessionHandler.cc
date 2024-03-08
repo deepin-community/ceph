@@ -24,6 +24,18 @@
 
 #define dout_subsys ceph_subsys_auth
 
+namespace {
+#ifdef WITH_SEASTAR
+  crimson::common::ConfigProxy& conf(CephContext*) {
+    return crimson::common::local_conf();
+  }
+#else
+  ConfigProxy& conf(CephContext* cct) {
+    return cct->_conf;
+  }
+#endif
+}
+
 int CephxSessionHandler::_calc_signature(Message *m, uint64_t *psig)
 {
   const ceph_msg_header& header = m->get_header();
@@ -44,9 +56,9 @@ int CephxSessionHandler::_calc_signature(Message *m, uint64_t *psig)
       ceph_le32 middle_crc;
       ceph_le32 data_crc;
     } __attribute__ ((packed)) sigblock = {
-      1, init_le64(AUTH_ENC_MAGIC), init_le32(4*4),
-      init_le32(header.crc), init_le32(footer.front_crc),
-      init_le32(footer.middle_crc), init_le32(footer.data_crc)
+      1, ceph_le64(AUTH_ENC_MAGIC), ceph_le32(4 * 4),
+      ceph_le32(header.crc), ceph_le32(footer.front_crc),
+      ceph_le32(footer.middle_crc), ceph_le32(footer.data_crc)
     };
 
     char exp_buf[CryptoKey::get_max_outbuf_size(sizeof(sigblock))];
@@ -79,14 +91,14 @@ int CephxSessionHandler::_calc_signature(Message *m, uint64_t *psig)
       ceph_le32 data_len;
       ceph_le32 seq_lower_word;
     } __attribute__ ((packed)) sigblock = {
-      init_le32(header.crc),
-      init_le32(footer.front_crc),
-      init_le32(header.front_len),
-      init_le32(footer.middle_crc),
-      init_le32(header.middle_len),
-      init_le32(footer.data_crc),
-      init_le32(header.data_len),
-      init_le32(header.seq)
+      ceph_le32(header.crc),
+      ceph_le32(footer.front_crc),
+      ceph_le32(header.front_len),
+      ceph_le32(footer.middle_crc),
+      ceph_le32(header.middle_len),
+      ceph_le32(footer.data_crc),
+      ceph_le32(header.data_len),
+      ceph_le32(header.seq)
     };
 
     char exp_buf[CryptoKey::get_max_outbuf_size(sizeof(sigblock))];
@@ -124,7 +136,7 @@ int CephxSessionHandler::_calc_signature(Message *m, uint64_t *psig)
 int CephxSessionHandler::sign_message(Message *m)
 {
   // If runtime signing option is off, just return success without signing.
-  if (!cct->_conf->cephx_sign_messages) {
+  if (!conf(cct)->cephx_sign_messages) {
     return 0;
   }
 
@@ -144,7 +156,7 @@ int CephxSessionHandler::sign_message(Message *m)
 int CephxSessionHandler::check_message_signature(Message *m)
 {
   // If runtime signing option is off, just return success without checking signature.
-  if (!cct->_conf->cephx_sign_messages) {
+  if (!conf(cct)->cephx_sign_messages) {
     return 0;
   }
   if ((features & CEPH_FEATURE_MSG_AUTH) == 0) {

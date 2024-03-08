@@ -47,13 +47,13 @@ Should return something like:
 '''
 
 # Copyright: Wido den Hollander <wido@42on.com> 2014
-# License:   LGPL2.1
+# License:   LGPL-2.1 or LGPL-3.0
 
 from ConfigParser import SafeConfigParser, NoSectionError
 from flask import abort, Flask, request, Response
 from hashlib import sha1 as sha
 from time import gmtime, strftime
-from six.moves.urllib.parse import urlparse
+from urllib.parse import urlparse
 import argparse
 import base64
 import hmac

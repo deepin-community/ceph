@@ -6,7 +6,7 @@
 #include "rte_compressdev.h"
 #include "rte_compressdev_internal.h"
 
-const char * __rte_experimental
+const char *
 rte_comp_get_feature_name(uint64_t flag)
 {
 	switch (flag) {
@@ -83,8 +83,8 @@ struct rte_comp_op_pool_private {
  * @param nb_ops
  *   Number of operations to allocate
  * @return
- *   - 0: Success
- *   - -ENOENT: Not enough entries in the mempool; no ops are retrieved.
+ *   - nb_ops: Success, the nb_ops requested was allocated
+ *   - 0: Not enough entries in the mempool; no ops are retrieved.
  */
 static inline int
 rte_comp_op_raw_bulk_alloc(struct rte_mempool *mempool,
@@ -112,7 +112,7 @@ rte_comp_op_init(struct rte_mempool *mempool,
 	op->mempool = mempool;
 }
 
-struct rte_mempool * __rte_experimental
+struct rte_mempool *
 rte_comp_op_pool_create(const char *name,
 		unsigned int nb_elts, unsigned int cache_size,
 		uint16_t user_size, int socket_id)
@@ -167,14 +167,14 @@ rte_comp_op_pool_create(const char *name,
 	return mp;
 }
 
-struct rte_comp_op * __rte_experimental
+struct rte_comp_op *
 rte_comp_op_alloc(struct rte_mempool *mempool)
 {
 	struct rte_comp_op *op = NULL;
 	int retval;
 
 	retval = rte_comp_op_raw_bulk_alloc(mempool, &op, 1);
-	if (unlikely(retval < 0))
+	if (unlikely(retval != 1))
 		return NULL;
 
 	rte_comp_op_reset(op);
@@ -182,16 +182,16 @@ rte_comp_op_alloc(struct rte_mempool *mempool)
 	return op;
 }
 
-int __rte_experimental
+int
 rte_comp_op_bulk_alloc(struct rte_mempool *mempool,
 		struct rte_comp_op **ops, uint16_t nb_ops)
 {
-	int ret;
+	int retval;
 	uint16_t i;
 
-	ret = rte_comp_op_raw_bulk_alloc(mempool, ops, nb_ops);
-	if (unlikely(ret < nb_ops))
-		return ret;
+	retval = rte_comp_op_raw_bulk_alloc(mempool, ops, nb_ops);
+	if (unlikely(retval != nb_ops))
+		return 0;
 
 	for (i = 0; i < nb_ops; i++)
 		rte_comp_op_reset(ops[i]);
@@ -207,9 +207,21 @@ rte_comp_op_bulk_alloc(struct rte_mempool *mempool,
  * @param op
  *   Compress operation
  */
-void __rte_experimental
+void
 rte_comp_op_free(struct rte_comp_op *op)
 {
 	if (op != NULL && op->mempool != NULL)
 		rte_mempool_put(op->mempool, op);
+}
+
+void
+rte_comp_op_bulk_free(struct rte_comp_op **ops, uint16_t nb_ops)
+{
+	uint16_t i;
+
+	for (i = 0; i < nb_ops; i++) {
+		if (ops[i] != NULL && ops[i]->mempool != NULL)
+			rte_mempool_put(ops[i]->mempool, ops[i]);
+		ops[i] = NULL;
+	}
 }

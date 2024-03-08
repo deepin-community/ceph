@@ -48,7 +48,8 @@ extern "C" {
 #include <boost/container/flat_map.hpp>
 #include <map>
 #include <vector>
-#include <iostream>
+#include <optional>
+#include <ostream>
 #include <iomanip>
 
 
@@ -96,6 +97,8 @@ template<class A, class Comp, class Alloc>
 inline std::ostream& operator<<(std::ostream& out, const std::deque<A,Alloc>& v);
 template<typename... Ts>
 inline std::ostream& operator<<(std::ostream& out, const std::tuple<Ts...> &t);
+template<typename T>
+inline std::ostream& operator<<(std::ostream& out, const std::optional<T> &t);
 template<class A, class Alloc>
 inline std::ostream& operator<<(std::ostream& out, const std::list<A,Alloc>& ilist);
 template<class A, class Comp, class Alloc>
@@ -171,6 +174,16 @@ inline std::ostream& operator<<(std::ostream& out, const std::tuple<Ts...> &t) {
       out << ",";
   };
   ceph::for_each(t, f);
+  return out;
+}
+
+// Mimics boost::optional
+template<typename T>
+inline std::ostream& operator<<(std::ostream& out, const std::optional<T> &t) {
+  if (!t)
+    out << "--" ;
+  else
+    out << ' ' << *t ;
   return out;
 }
 
@@ -307,11 +320,11 @@ WRITE_RAW_ENCODER(ceph_file_layout)
 WRITE_RAW_ENCODER(ceph_dir_layout)
 WRITE_RAW_ENCODER(ceph_mds_session_head)
 WRITE_RAW_ENCODER(ceph_mds_request_head_legacy)
-WRITE_RAW_ENCODER(ceph_mds_request_head)
 WRITE_RAW_ENCODER(ceph_mds_request_release)
 WRITE_RAW_ENCODER(ceph_filelock)
 WRITE_RAW_ENCODER(ceph_mds_caps_head)
-WRITE_RAW_ENCODER(ceph_mds_caps_body_legacy)
+WRITE_RAW_ENCODER(ceph_mds_caps_export_body)
+WRITE_RAW_ENCODER(ceph_mds_caps_non_export_body)
 WRITE_RAW_ENCODER(ceph_mds_cap_peer)
 WRITE_RAW_ENCODER(ceph_mds_cap_release)
 WRITE_RAW_ENCODER(ceph_mds_cap_item)
@@ -350,11 +363,11 @@ struct client_t {
   // cppcheck-suppress noExplicitConstructor
   client_t(int64_t _v = -2) : v(_v) {}
 
-  void encode(bufferlist& bl) const {
+  void encode(ceph::buffer::list& bl) const {
     using ceph::encode;
     encode(v, bl);
   }
-  void decode(bufferlist::const_iterator& bl) {
+  void decode(ceph::buffer::list::const_iterator& bl) {
     using ceph::decode;
     decode(v, bl);
   }
@@ -371,7 +384,7 @@ static inline bool operator>=(const client_t& l, const client_t& r) { return l.v
 static inline bool operator>=(const client_t& l, int64_t o) { return l.v >= o; }
 static inline bool operator<(const client_t& l, int64_t o) { return l.v < o; }
 
-inline ostream& operator<<(ostream& out, const client_t& c) {
+inline std::ostream& operator<<(std::ostream& out, const client_t& c) {
   return out << c.v;
 }
 
@@ -380,7 +393,7 @@ inline ostream& operator<<(ostream& out, const client_t& c) {
 // --
 
 namespace {
-  inline ostream& format_u(ostream& out, const uint64_t v, const uint64_t n,
+inline std::ostream& format_u(std::ostream& out, const uint64_t v, const uint64_t n,
       const int index, const uint64_t mult, const char* u)
   {
     char buffer[32];
@@ -420,7 +433,7 @@ struct si_u_t {
   explicit si_u_t(uint64_t _v) : v(_v) {};
 };
 
-inline ostream& operator<<(ostream& out, const si_u_t& b)
+inline std::ostream& operator<<(std::ostream& out, const si_u_t& b)
 {
   uint64_t n = b.v;
   int index = 0;
@@ -448,7 +461,7 @@ struct byte_u_t {
   explicit byte_u_t(uint64_t _v) : v(_v) {};
 };
 
-inline ostream& operator<<(ostream& out, const byte_u_t& b)
+inline std::ostream& operator<<(std::ostream& out, const byte_u_t& b)
 {
   uint64_t n = b.v;
   int index = 0;
@@ -462,9 +475,9 @@ inline ostream& operator<<(ostream& out, const byte_u_t& b)
   return format_u(out, b.v, n, index, 1ULL << (10 * index), u[index]);
 }
 
-inline ostream& operator<<(ostream& out, const ceph_mon_subscribe_item& i)
+inline std::ostream& operator<<(std::ostream& out, const ceph_mon_subscribe_item& i)
 {
-  return out << i.start
+  return out << (long)i.start
 	     << ((i.flags & CEPH_SUBSCRIBE_ONETIME) ? "" : "+");
 }
 
@@ -474,7 +487,7 @@ struct weightf_t {
   weightf_t(float _v) : v(_v) {}
 };
 
-inline ostream& operator<<(ostream& out, const weightf_t& w)
+inline std::ostream& operator<<(std::ostream& out, const weightf_t& w)
 {
   if (w.v < -0.01F) {
     return out << "-";
@@ -496,23 +509,27 @@ struct shard_id_t {
 
   const static shard_id_t NO_SHARD;
 
-  void encode(bufferlist &bl) const {
+  void encode(ceph::buffer::list &bl) const {
     using ceph::encode;
     encode(id, bl);
   }
-  void decode(bufferlist::const_iterator &bl) {
+  void decode(ceph::buffer::list::const_iterator &bl) {
     using ceph::decode;
     decode(id, bl);
   }
+
+  bool operator==(const shard_id_t&) const = default;
+  auto operator<=>(const shard_id_t&) const = default;
 };
 WRITE_CLASS_ENCODER(shard_id_t)
-WRITE_EQ_OPERATORS_1(shard_id_t, id)
-WRITE_CMP_OPERATORS_1(shard_id_t, id)
-ostream &operator<<(ostream &lhs, const shard_id_t &rhs);
+std::ostream &operator<<(std::ostream &lhs, const shard_id_t &rhs);
 
-#if defined(__sun) || defined(_AIX) || defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__sun) || defined(_AIX) || defined(__APPLE__) || \
+    defined(__FreeBSD__) || defined(_WIN32)
+extern "C" {
 __s32  ceph_to_hostos_errno(__s32 e);
 __s32  hostos_to_ceph_errno(__s32 e);
+}
 #else
 #define  ceph_to_hostos_errno(e) (e)
 #define  hostos_to_ceph_errno(e) (e)
@@ -523,30 +540,29 @@ struct errorcode32_t {
 
   errorcode32_t() : code(0) {}
   // cppcheck-suppress noExplicitConstructor
-  errorcode32_t(int32_t i) : code(i) {}
+  explicit errorcode32_t(int32_t i) : code(i) {}
 
   operator int() const  { return code; }
   int* operator&()      { return &code; }
-  int operator==(int i) { return code == i; }
-  int operator>(int i)  { return code > i; }
-  int operator>=(int i) { return code >= i; }
-  int operator<(int i)  { return code < i; }
-  int operator<=(int i) { return code <= i; }
+  errorcode32_t& operator=(int32_t i) {
+    code = i;
+    return *this;
+  }
+  bool operator==(const errorcode32_t&) const = default;
+  auto operator<=>(const errorcode32_t&) const = default;
 
-  void encode(bufferlist &bl) const {
+  void encode(ceph::buffer::list &bl) const {
     using ceph::encode;
     __s32 newcode = hostos_to_ceph_errno(code);
     encode(newcode, bl);
   }
-  void decode(bufferlist::const_iterator &bl) {
+  void decode(ceph::buffer::list::const_iterator &bl) {
     using ceph::decode;
     decode(code, bl);
     code = ceph_to_hostos_errno(code);
   }
 };
 WRITE_CLASS_ENCODER(errorcode32_t)
-WRITE_EQ_OPERATORS_1(errorcode32_t, code)
-WRITE_CMP_OPERATORS_1(errorcode32_t, code)
 
 template <uint8_t S>
 struct sha_digest_t {
@@ -555,13 +571,13 @@ struct sha_digest_t {
   // as sha_digest_t is a part of our public API.
   unsigned char v[S] = {0};
 
-  string to_str() const {
+  std::string to_str() const {
     char str[S * 2 + 1] = {0};
     str[0] = '\0';
     for (size_t i = 0; i < S; i++) {
       ::sprintf(&str[i * 2], "%02x", static_cast<int>(v[i]));
     }
-    return string(str);
+    return std::string(str);
   }
   sha_digest_t(const unsigned char *_v) { memcpy(v, _v, SIZE); };
   sha_digest_t() {}
@@ -573,14 +589,14 @@ struct sha_digest_t {
     return ::memcmp(v, r.v, SIZE) != 0;
   }
 
-  void encode(bufferlist &bl) const {
+  void encode(ceph::buffer::list &bl) const {
     // copy to avoid reinterpret_cast, is_pod and other nasty things
     using ceph::encode;
     std::array<unsigned char, SIZE> tmparr;
     memcpy(tmparr.data(), v, SIZE);
     encode(tmparr, bl);
   }
-  void decode(bufferlist::const_iterator &bl) {
+  void decode(ceph::buffer::list::const_iterator &bl) {
     using ceph::decode;
     std::array<unsigned char, SIZE> tmparr;
     decode(tmparr, bl);
@@ -588,17 +604,26 @@ struct sha_digest_t {
   }
 };
 
-template <uint8_t S>
-inline ostream &operator<<(ostream &out, const sha_digest_t<S> &b) {
-  string str = b.to_str();
+template<uint8_t S>
+inline std::ostream &operator<<(std::ostream &out, const sha_digest_t<S> &b) {
+  std::string str = b.to_str();
   return out << str;
 }
+
+#if FMT_VERSION >= 90000
+template <uint8_t S> struct fmt::formatter<sha_digest_t<S>> : fmt::ostream_formatter {};
+#endif
 
 using sha1_digest_t = sha_digest_t<20>;
 WRITE_CLASS_ENCODER(sha1_digest_t)
 
 using sha256_digest_t = sha_digest_t<32>;
 WRITE_CLASS_ENCODER(sha256_digest_t)
+
+using sha512_digest_t = sha_digest_t<64>;
+
+using md5_digest_t = sha_digest_t<16>;
+WRITE_CLASS_ENCODER(md5_digest_t)
 
 
 #endif

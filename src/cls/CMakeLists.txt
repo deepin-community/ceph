@@ -74,6 +74,10 @@ if (WITH_RADOSGW)
   set(cls_otp_srcs otp/cls_otp.cc)
   add_library(cls_otp SHARED ${cls_otp_srcs})
   target_link_libraries(cls_otp OATH::OATH)
+  target_include_directories(cls_otp
+	  PUBLIC "${CMAKE_SOURCE_DIR}/src/rgw/driver/rados"
+	  PUBLIC "${CMAKE_SOURCE_DIR}/src/rgw"
+	  PUBLIC "${CMAKE_SOURCE_DIR}/src/spawn/include")
   set_target_properties(cls_otp PROPERTIES
     VERSION "1.0.0"
     SOVERSION "1"
@@ -148,7 +152,9 @@ set_target_properties(cls_timeindex PROPERTIES
   CXX_VISIBILITY_PRESET hidden)
 install(TARGETS cls_timeindex DESTINATION ${cls_dir})
 
-set(cls_timeindex_client_srcs timeindex/cls_timeindex_client.cc)
+set(cls_timeindex_client_srcs
+  timeindex/cls_timeindex_types.cc
+  timeindex/cls_timeindex_client.cc)
 add_library(cls_timeindex_client STATIC ${cls_timeindex_client_srcs})
 
 
@@ -195,7 +201,11 @@ if (WITH_RADOSGW)
     rgw/cls_rgw_types.cc
     ${CMAKE_SOURCE_DIR}/src/common/ceph_json.cc)
   add_library(cls_rgw SHARED ${cls_rgw_srcs})
-  target_link_libraries(cls_rgw json_spirit)
+  target_link_libraries(cls_rgw fmt json_spirit)
+  target_include_directories(cls_rgw
+	  PUBLIC "${CMAKE_SOURCE_DIR}/src/rgw/driver/rados"
+	  PUBLIC "${CMAKE_SOURCE_DIR}/src/rgw"
+	  PUBLIC "${CMAKE_SOURCE_DIR}/src/spawn/include")
   set_target_properties(cls_rgw PROPERTIES
     VERSION "1.0.0"
     SOVERSION "1"
@@ -208,6 +218,10 @@ if (WITH_RADOSGW)
     rgw/cls_rgw_types.cc
     rgw/cls_rgw_ops.cc)
   add_library(cls_rgw_client STATIC ${cls_rgw_client_srcs})
+  target_include_directories(cls_rgw_client
+	  PUBLIC "${CMAKE_SOURCE_DIR}/src/rgw/driver/rados"
+	  PUBLIC "${CMAKE_SOURCE_DIR}/src/rgw"
+	  PUBLIC "${CMAKE_SOURCE_DIR}/src/spawn/include")
 
 endif (WITH_RADOSGW)
 
@@ -229,29 +243,41 @@ if (WITH_CEPHFS)
 
 endif (WITH_CEPHFS)
 
-# cls_lua
-set(cls_lua_srcs
-    lua/cls_lua.cc
-    lua/lua_bufferlist.cc)
-add_library(cls_lua SHARED ${cls_lua_srcs})
-set_target_properties(cls_lua PROPERTIES
-  VERSION "1.0.0"
-  SOVERSION "1"
-  INSTALL_RPATH ""
-  CXX_VISIBILITY_PRESET hidden)
-install(TARGETS cls_lua DESTINATION ${cls_dir})
-target_link_libraries(cls_lua
-    liblua
-    json_spirit)
+if (NOT WIN32)
+  # cls_lua
+  set(cls_lua_srcs
+      lua/cls_lua.cc
+      lua/lua_bufferlist.cc)
+  add_library(cls_lua SHARED ${cls_lua_srcs})
+  set_target_properties(cls_lua PROPERTIES
+    VERSION "1.0.0"
+    SOVERSION "1"
+    INSTALL_RPATH ""
+    CXX_VISIBILITY_PRESET hidden)
+  install(TARGETS cls_lua DESTINATION ${cls_dir})
+  target_link_libraries(cls_lua
+      ${LUA_LIBRARIES}
+      json_spirit)
+  target_include_directories(cls_lua PRIVATE "${LUA_INCLUDE_DIR}")
+endif (NOT WIN32)
 
 set(cls_lua_client_srcs
     lua/cls_lua_client.cc)
 add_library(cls_lua_client STATIC ${cls_lua_client_srcs})
 
 # cls_cas
+set(cls_cas_client_srcs
+  cas/cls_cas_client.cc)
+add_library(cls_cas_client STATIC ${cls_cas_client_srcs})
+
+set(cls_cas_internal_srcs
+  cas/cls_cas_internal.cc)
+add_library(cls_cas_internal STATIC ${cls_cas_internal_srcs})
+
 set(cls_cas_srcs 
   cas/cls_cas.cc)
 add_library(cls_cas SHARED ${cls_cas_srcs})
+target_link_libraries(cls_cas cls_cas_internal)
 set_target_properties(cls_cas PROPERTIES
   VERSION "1.0.0"
   SOVERSION "1"
@@ -259,6 +285,89 @@ set_target_properties(cls_cas PROPERTIES
   CXX_VISIBILITY_PRESET hidden)
 install(TARGETS cls_cas DESTINATION ${cls_dir})
 
-set(cls_cas_client_srcs
-  cas/cls_cas_client.cc)
-add_library(cls_cas_client STATIC ${cls_cas_client_srcs})
+
+
+#cls_queue
+set(cls_queue_srcs
+  queue/cls_queue.cc
+  queue/cls_queue_src.cc
+  ${CMAKE_SOURCE_DIR}/src/common/ceph_json.cc)
+add_library(cls_queue SHARED ${cls_queue_srcs})
+set_target_properties(cls_queue PROPERTIES
+  VERSION "1.0.0"
+  SOVERSION "1"
+  INSTALL_RPATH ""
+  CXX_VISIBILITY_PRESET hidden)
+install(TARGETS cls_queue DESTINATION ${cls_dir})
+
+set(cls_queue_client_srcs
+  queue/cls_queue_client.cc)
+add_library(cls_queue_client STATIC ${cls_queue_client_srcs})
+
+# cls_rgw_gc
+if (WITH_RADOSGW)
+  set(cls_rgw_gc_srcs
+    rgw_gc/cls_rgw_gc.cc
+    queue/cls_queue_src.cc
+    ${CMAKE_SOURCE_DIR}/src/common/ceph_json.cc)
+  add_library(cls_rgw_gc SHARED ${cls_rgw_gc_srcs})
+  target_include_directories(cls_rgw_gc
+	  PUBLIC "${CMAKE_SOURCE_DIR}/src/rgw/driver/rados"
+	  PUBLIC "${CMAKE_SOURCE_DIR}/src/rgw"
+	  PUBLIC "${CMAKE_SOURCE_DIR}/src/spawn/include")
+  set_target_properties(cls_rgw_gc PROPERTIES
+    VERSION "1.0.0"
+    SOVERSION "1"
+    INSTALL_RPATH ""
+    CXX_VISIBILITY_PRESET hidden)
+  install(TARGETS cls_rgw_gc DESTINATION ${cls_dir})
+
+  set(cls_rgw_gc_client_srcs
+    rgw_gc/cls_rgw_gc_client.cc)
+  add_library(cls_rgw_gc_client STATIC ${cls_rgw_gc_client_srcs})
+  target_include_directories(cls_rgw_gc_client
+	  PUBLIC "${CMAKE_SOURCE_DIR}/src/rgw/driver/rados"
+	  PUBLIC "${CMAKE_SOURCE_DIR}/src/rgw"
+	  PUBLIC "${CMAKE_SOURCE_DIR}/src/spawn/include")
+endif (WITH_RADOSGW)
+
+
+#cls_2pc_queue
+set(cls_2pc_queue_srcs
+  2pc_queue/cls_2pc_queue.cc
+  queue/cls_queue_src.cc
+  ${CMAKE_SOURCE_DIR}/src/common/ceph_json.cc)
+add_library(cls_2pc_queue SHARED ${cls_2pc_queue_srcs})
+set_target_properties(cls_2pc_queue PROPERTIES
+  VERSION "1.0.0"
+  SOVERSION "1"
+  INSTALL_RPATH ""
+  CXX_VISIBILITY_PRESET hidden)
+install(TARGETS cls_2pc_queue DESTINATION ${cls_dir})
+set(cls_2pc_queue_client_srcs
+  2pc_queue/cls_2pc_queue_client.cc)
+add_library(cls_2pc_queue_client STATIC ${cls_2pc_queue_client_srcs})
+
+
+add_subdirectory(cmpomap)
+
+# cls_fifo
+set(cls_fifo_srcs fifo/cls_fifo.cc)
+add_library(cls_fifo SHARED ${cls_fifo_srcs})
+set_target_properties(cls_fifo PROPERTIES
+  VERSION "1.0.0"
+  SOVERSION "1"
+  INSTALL_RPATH ""
+  CXX_VISIBILITY_PRESET hidden)
+target_link_libraries(cls_fifo fmt)
+install(TARGETS cls_fifo DESTINATION ${cls_dir})
+
+# cls_test_remote_reads
+set(cls_test_remote_reads_srcs test_remote_reads/cls_test_remote_reads.cc)
+add_library(cls_test_remote_reads SHARED ${cls_test_remote_reads_srcs})
+set_target_properties(cls_test_remote_reads PROPERTIES
+  VERSION "1.0.0"
+  SOVERSION "1"
+  INSTALL_RPATH ""
+  CXX_VISIBILITY_PRESET hidden)
+install(TARGETS cls_test_remote_reads DESTINATION ${cls_dir})

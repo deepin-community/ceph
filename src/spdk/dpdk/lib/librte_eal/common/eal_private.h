@@ -10,6 +10,62 @@
 #include <stdio.h>
 
 #include <rte_dev.h>
+#include <rte_lcore.h>
+
+/**
+ * Structure storing internal configuration (per-lcore)
+ */
+struct lcore_config {
+	pthread_t thread_id;       /**< pthread identifier */
+	int pipe_master2slave[2];  /**< communication pipe with master */
+	int pipe_slave2master[2];  /**< communication pipe with master */
+
+	lcore_function_t * volatile f; /**< function to call */
+	void * volatile arg;       /**< argument of function */
+	volatile int ret;          /**< return value of function */
+
+	volatile enum rte_lcore_state_t state; /**< lcore state */
+	unsigned int socket_id;    /**< physical socket id for this lcore */
+	unsigned int core_id;      /**< core number on socket for this lcore */
+	int core_index;            /**< relative index, starting from 0 */
+	uint8_t core_role;         /**< role of core eg: OFF, RTE, SERVICE */
+
+	rte_cpuset_t cpuset;       /**< cpu set which the lcore affinity to */
+};
+
+extern struct lcore_config lcore_config[RTE_MAX_LCORE];
+
+/**
+ * The global RTE configuration structure.
+ */
+struct rte_config {
+	uint32_t master_lcore;       /**< Id of the master lcore */
+	uint32_t lcore_count;        /**< Number of available logical cores. */
+	uint32_t numa_node_count;    /**< Number of detected NUMA nodes. */
+	uint32_t numa_nodes[RTE_MAX_NUMA_NODES]; /**< List of detected NUMA nodes. */
+	uint32_t service_lcore_count;/**< Number of available service cores. */
+	enum rte_lcore_role_t lcore_role[RTE_MAX_LCORE]; /**< State of cores. */
+
+	/** Primary or secondary configuration */
+	enum rte_proc_type_t process_type;
+
+	/** PA or VA mapping mode */
+	enum rte_iova_mode iova_mode;
+
+	/**
+	 * Pointer to memory configuration, which may be shared across multiple
+	 * DPDK instances
+	 */
+	struct rte_mem_config *mem_config;
+} __rte_packed;
+
+/**
+ * Get the global configuration structure.
+ *
+ * @return
+ *   A pointer to the global configuration structure.
+ */
+struct rte_config *rte_eal_get_configuration(void);
 
 /**
  * Initialize the memzone subsystem (private to eal).
@@ -255,20 +311,12 @@ struct rte_bus *rte_bus_find_by_device_name(const char *str);
  *   0 on success;
  *   (<0) on failure.
  */
-
 int rte_mp_channel_init(void);
 
 /**
- * Internal Executes all the user application registered callbacks for
- * the specific device. It is for DPDK internal user only. User
- * application should not call it directly.
- *
- * @param device_name
- *  The device name.
- * @param event
- *  the device event type.
+ * Primary/secondary communication cleanup.
  */
-void dev_callback_process(char *device_name, enum rte_dev_event_type event);
+void rte_mp_channel_cleanup(void);
 
 /**
  * @internal
@@ -303,5 +351,73 @@ void dev_callback_process(char *device_name, enum rte_dev_event_type event);
 int
 rte_devargs_layers_parse(struct rte_devargs *devargs,
 			 const char *devstr);
+
+/*
+ * probe a device at local process.
+ *
+ * @param devargs
+ *   Device arguments including bus, class and driver properties.
+ * @param new_dev
+ *   new device be probed as output.
+ * @return
+ *   0 on success, negative on error.
+ */
+int local_dev_probe(const char *devargs, struct rte_device **new_dev);
+
+/**
+ * Hotplug remove a given device from a specific bus at local process.
+ *
+ * @param dev
+ *   Data structure of the device to remove.
+ * @return
+ *   0 on success, negative on error.
+ */
+int local_dev_remove(struct rte_device *dev);
+
+/**
+ * Iterate over all buses to find the corresponding bus to handle the sigbus
+ * error.
+ * @param failure_addr
+ *	Pointer of the fault address of the sigbus error.
+ *
+ * @return
+ *	 0 success to handle the sigbus.
+ *	-1 failed to handle the sigbus
+ *	 1 no bus can handler the sigbus
+ */
+int rte_bus_sigbus_handler(const void *failure_addr);
+
+/**
+ * @internal
+ * Register the sigbus handler.
+ *
+ * @return
+ *   - On success, zero.
+ *   - On failure, a negative value.
+ */
+int
+dev_sigbus_handler_register(void);
+
+/**
+ * @internal
+ * Unregister the sigbus handler.
+ *
+ * @return
+ *   - On success, zero.
+ *   - On failure, a negative value.
+ */
+int
+dev_sigbus_handler_unregister(void);
+
+/**
+ * Get OS-specific EAL mapping base address.
+ */
+uint64_t
+eal_get_baseaddr(void);
+
+void *
+eal_malloc_no_trace(const char *type, size_t size, unsigned int align);
+
+void eal_free_no_trace(void *addr);
 
 #endif /* _EAL_PRIVATE_H_ */

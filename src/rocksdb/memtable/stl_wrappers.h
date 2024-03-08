@@ -12,7 +12,7 @@
 #include "rocksdb/slice.h"
 #include "util/coding.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 namespace stl_wrappers {
 
 class Base {
@@ -29,5 +29,5 @@ struct Compare : private Base {
   }
 };
 
-}
-}
+}  // namespace stl_wrappers
+}  // namespace ROCKSDB_NAMESPACE

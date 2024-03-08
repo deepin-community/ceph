@@ -1,3 +1,4 @@
+// Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 package org.rocksdb;
 
 import static org.rocksdb.AbstractMutableOptions.INT_ARRAY_INT_SEPARATOR;
@@ -16,7 +17,7 @@ public abstract class MutableOptionValue<T> {
       extends MutableOptionValue<T> {
     protected final T value;
 
-    private MutableOptionValueObject(final T value) {
+    protected MutableOptionValueObject(final T value) {
       this.value = value;
     }
 
@@ -152,10 +153,6 @@ public abstract class MutableOptionValue<T> {
 
     @Override
     double asDouble() {
-      if(value > Double.MAX_VALUE || value < Double.MIN_VALUE) {
-        throw new NumberFormatException(
-            "long value lies outside the bounds of int");
-      }
       return Long.valueOf(value).doubleValue();
     }
 
@@ -209,9 +206,6 @@ public abstract class MutableOptionValue<T> {
 
     @Override
     double asDouble() {
-      if(value > Double.MAX_VALUE || value < Double.MIN_VALUE) {
-        throw new NumberFormatException("int value lies outside the bounds of int");
-      }
       return Integer.valueOf(value).doubleValue();
     }
 
@@ -325,7 +319,7 @@ public abstract class MutableOptionValue<T> {
     String asString() {
       final StringBuilder builder = new StringBuilder();
       for(int i = 0; i < value.length; i++) {
-        builder.append(i);
+        builder.append(value[i]);
         if(i + 1 < value.length) {
           builder.append(INT_ARRAY_INT_SEPARATOR);
         }

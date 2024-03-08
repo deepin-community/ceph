@@ -2,6 +2,8 @@ import os
 import errno
 import logging
 
+from ceph.deployment.service_spec import ServiceSpec, PlacementSpec
+
 import cephfs
 import orchestrator
 
@@ -9,14 +11,20 @@ from .exception import VolumeException
 
 log = logging.getLogger(__name__)
 
-def create_pool(mgr, pool_name, pg_num):
+def create_pool(mgr, pool_name, **extra_args):
     # create the given pool
-    command = {'prefix': 'osd pool create', 'pool': pool_name, 'pg_num': pg_num}
+    command = extra_args
+    command.update({'prefix': 'osd pool create', 'pool': pool_name})
     return mgr.mon_command(command)
 
 def remove_pool(mgr, pool_name):
     command = {'prefix': 'osd pool rm', 'pool': pool_name, 'pool2': pool_name,
                'yes_i_really_really_mean_it': True}
+    return mgr.mon_command(command)
+
+def rename_pool(mgr, pool_name, new_pool_name):
+    command = {'prefix': 'osd pool rename', 'srcpool': pool_name,
+               'destpool': new_pool_name}
     return mgr.mon_command(command)
 
 def create_filesystem(mgr, fs_name, metadata_pool, data_pool):
@@ -33,12 +41,17 @@ def remove_filesystem(mgr, fs_name):
     command = {'prefix': 'fs rm', 'fs_name': fs_name, 'yes_i_really_mean_it': True}
     return mgr.mon_command(command)
 
-def create_mds(mgr, fs_name):
-    spec = orchestrator.StatelessServiceSpec()
-    spec.name = fs_name
+def rename_filesystem(mgr, fs_name, new_fs_name):
+    command = {'prefix': 'fs rename', 'fs_name': fs_name, 'new_fs_name': new_fs_name,
+               'yes_i_really_mean_it': True}
+    return mgr.mon_command(command)
+
+def create_mds(mgr, fs_name, placement):
+    spec = ServiceSpec(service_type='mds',
+                                    service_id=fs_name,
+                                    placement=PlacementSpec.from_string(placement))
     try:
-        completion = mgr.add_stateless_service("mds", spec)
-        mgr._orchestrator_wait([completion])
+        completion = mgr.apply([spec], no_overwrite=True)
         orchestrator.raise_if_exception(completion)
     except (ImportError, orchestrator.OrchestratorError):
         return 0, "", "Volume created successfully (no MDS daemons created)"
@@ -56,21 +69,51 @@ def volume_exists(mgr, fs_name):
             return True
     return False
 
-def listdir(fs, dirpath):
+def listdir(fs, dirpath, filter_entries=None, filter_files=True):
     """
-    Get the directory names (only dirs) for a given path
+    Get the directory entries for a given path. List only dirs if 'filter_files' is True.
+    Don't list the entries passed in 'filter_entries'
     """
-    dirs = []
+    entries = []
+    if filter_entries is None:
+        filter_entries = [b".", b".."]
+    else:
+        filter_entries.extend([b".", b".."])
     try:
         with fs.opendir(dirpath) as dir_handle:
             d = fs.readdir(dir_handle)
             while d:
-                if (d.d_name not in (b".", b"..")) and d.is_dir():
-                    dirs.append(d.d_name)
+                if (d.d_name not in filter_entries):
+                    if not filter_files:
+                        entries.append(d.d_name)
+                    elif d.is_dir():
+                        entries.append(d.d_name)
                 d = fs.readdir(dir_handle)
     except cephfs.Error as e:
         raise VolumeException(-e.args[0], e.args[1])
-    return dirs
+    return entries
+
+
+def has_subdir(fs, dirpath, filter_entries=None):
+    """
+    Check the presence of directory (only dirs) for a given path
+    """
+    res = False
+    if filter_entries is None:
+        filter_entries = [b".", b".."]
+    else:
+        filter_entries.extend([b".", b".."])
+    try:
+        with fs.opendir(dirpath) as dir_handle:
+            d = fs.readdir(dir_handle)
+            while d:
+                if (d.d_name not in filter_entries) and d.is_dir():
+                    res = True
+                    break
+                d = fs.readdir(dir_handle)
+    except cephfs.Error as e:
+        raise VolumeException(-e.args[0], e.args[1])
+    return res
 
 def is_inherited_snap(snapname):
     """
@@ -120,7 +163,7 @@ def copy_file(fs, src, dst, mode, cancel_check=None):
     """
     src_fd = dst_fd = None
     try:
-        src_fd = fs.open(src, os.O_RDONLY);
+        src_fd = fs.open(src, os.O_RDONLY)
         dst_fd = fs.open(dst, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, mode)
     except cephfs.Error as e:
         if src_fd is not None:
@@ -159,3 +202,15 @@ def get_ancestor_xattr(fs, path, attr):
             raise VolumeException(-e.args[0], e.args[1])
         else:
             return get_ancestor_xattr(fs, os.path.split(path)[0], attr)
+
+def create_base_dir(fs, path, mode):
+    """
+    Create volspec base/group directory if it doesn't exist
+    """
+    try:
+        fs.stat(path)
+    except cephfs.Error as e:
+        if e.args[0] == errno.ENOENT:
+            fs.mkdirs(path, mode)
+        else:
+            raise VolumeException(-e.args[0], e.args[1])

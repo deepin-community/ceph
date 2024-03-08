@@ -10,9 +10,10 @@
 #include <string>
 #include <vector>
 
+#include "rocksdb/customizable.h"
 #include "rocksdb/slice.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 class Slice;
 class Logger;
@@ -43,9 +44,16 @@ class Logger;
 //
 // Refer to rocksdb-merge wiki for more details and example implementations.
 //
-class MergeOperator {
+// Exceptions MUST NOT propagate out of overridden functions into RocksDB,
+// because RocksDB is not exception-safe. This could cause undefined behavior
+// including data loss, unreported corruption, deadlocks, and more.
+class MergeOperator : public Customizable {
  public:
   virtual ~MergeOperator() {}
+  static const char* Type() { return "MergeOperator"; }
+  static Status CreateFromString(const ConfigOptions& opts,
+                                 const std::string& id,
+                                 std::shared_ptr<MergeOperator>* result);
 
   // Gives the client a way to express the read -> modify -> write semantics
   // key:      (IN)    The key that's associated with this merge operation.
@@ -74,6 +82,7 @@ class MergeOperator {
   }
 
   struct MergeOperationInput {
+    // If user-defined timestamp is enabled, `_key` includes timestamp.
     explicit MergeOperationInput(const Slice& _key,
                                  const Slice* _existing_value,
                                  const std::vector<Slice>& _operand_list,
@@ -108,7 +117,7 @@ class MergeOperator {
     Slice& existing_operand;
   };
 
-  // This function applies a stack of merge operands in chrionological order
+  // This function applies a stack of merge operands in chronological order
   // on top of an existing value. There are two ways in which this method is
   // being used:
   // a) During Get() operation, it used to calculate the final value of a key
@@ -124,7 +133,7 @@ class MergeOperator {
   // In the example above, Get(K) operation will call FullMerge with a base
   // value of 2 and operands [+1, +2]. Compaction process might decide to
   // collapse the beginning of the history up to the snapshot by performing
-  // full Merge with base value of 0 and operands [+1, +2, +7, +3].
+  // full Merge with base value of 0 and operands [+1, +2, +7, +4].
   virtual bool FullMergeV2(const MergeOperationInput& merge_in,
                            MergeOperationOutput* merge_out) const;
 
@@ -175,7 +184,7 @@ class MergeOperator {
   // PartialMergeMulti should combine them into a single merge operation that is
   // saved into *new_value, and then it should return true.  *new_value should
   // be constructed such that a call to DB::Merge(key, *new_value) would yield
-  // the same result as subquential individual calls to DB::Merge(key, operand)
+  // the same result as sequential individual calls to DB::Merge(key, operand)
   // for each operand in operand_list from front() to back().
   //
   // The string that new_value is pointing to will be empty.
@@ -197,7 +206,7 @@ class MergeOperator {
   // TODO: the name is currently not stored persistently and thus
   //       no checking is enforced. Client is responsible for providing
   //       consistent MergeOperator between DB opens.
-  virtual const char* Name() const = 0;
+  virtual const char* Name() const override = 0;
 
   // Determines whether the PartialMerge can be called with just a single
   // merge operand.
@@ -253,4 +262,4 @@ class AssociativeMergeOperator : public MergeOperator {
                     Logger* logger) const override;
 };
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

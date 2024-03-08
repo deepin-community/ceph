@@ -19,9 +19,7 @@
 #include "messages/PaxosServiceMessage.h"
 
 
-class MOSDFailure : public MessageInstance<MOSDFailure, PaxosServiceMessage> {
-public:
-  friend factory;
+class MOSDFailure final : public PaxosServiceMessage {
 private:
   static constexpr int HEAD_VERSION = 4;
   static constexpr int COMPAT_VERSION = 4;
@@ -40,10 +38,10 @@ private:
   epoch_t epoch = 0;
   int32_t failed_for = 0;  // known to be failed since at least this long
 
-  MOSDFailure() : MessageInstance(MSG_OSD_FAILURE, 0, HEAD_VERSION) { }
+  MOSDFailure() : PaxosServiceMessage(MSG_OSD_FAILURE, 0, HEAD_VERSION) { }
   MOSDFailure(const uuid_d &fs, int osd, const entity_addrvec_t& av,
 	      int duration, epoch_t e)
-    : MessageInstance(MSG_OSD_FAILURE, e, HEAD_VERSION, COMPAT_VERSION),
+    : PaxosServiceMessage(MSG_OSD_FAILURE, e, HEAD_VERSION, COMPAT_VERSION),
       fsid(fs),
       target_osd(osd),
       target_addrs(av),
@@ -52,14 +50,14 @@ private:
   MOSDFailure(const uuid_d &fs, int osd, const entity_addrvec_t& av,
 	      int duration,
               epoch_t e, __u8 extra_flags)
-    : MessageInstance(MSG_OSD_FAILURE, e, HEAD_VERSION, COMPAT_VERSION),
+    : PaxosServiceMessage(MSG_OSD_FAILURE, e, HEAD_VERSION, COMPAT_VERSION),
       fsid(fs),
       target_osd(osd),
       target_addrs(av),
       flags(extra_flags),
       epoch(e), failed_for(duration) { }
 private:
-  ~MOSDFailure() override {}
+  ~MOSDFailure() final {}
 
 public:
   int get_target_osd() { return target_osd; }
@@ -73,18 +71,13 @@ public:
   epoch_t get_epoch() const { return epoch; }
 
   void decode_payload() override {
+    using ceph::decode;
     auto p = payload.cbegin();
     paxos_decode(p);
     decode(fsid, p);
-    if (header.version < 4) {
-      entity_inst_t i;
-      decode(i, p);
-      target_osd = i.name.num();
-      target_addrs.v.push_back(i.addr);
-    } else {
-      decode(target_osd, p);
-      decode(target_addrs, p);
-    }
+    assert(header.version >= 4);
+    decode(target_osd, p);
+    decode(target_addrs, p);
     decode(epoch, p);
     decode(flags, p);
     decode(failed_for, p);
@@ -93,17 +86,7 @@ public:
   void encode_payload(uint64_t features) override {
     using ceph::encode;
     paxos_encode();
-    if (!HAVE_FEATURE(features, SERVER_NAUTILUS)) {
-      header.version = 3;
-      header.compat_version = 3;
-      encode(fsid, payload);
-      encode(entity_inst_t(entity_name_t::OSD(target_osd),
-			   target_addrs.legacy_addr()), payload, features);
-      encode(epoch, payload);
-      encode(flags, payload);
-      encode(failed_for, payload);
-      return;
-    }
+    assert(HAVE_FEATURE(features, SERVER_NAUTILUS));
     header.version = HEAD_VERSION;
     header.compat_version = COMPAT_VERSION;
     encode(fsid, payload);
@@ -115,7 +98,7 @@ public:
   }
 
   std::string_view get_type_name() const override { return "osd_failure"; }
-  void print(ostream& out) const override {
+  void print(std::ostream& out) const override {
     out << "osd_failure("
 	<< (if_osd_failed() ? "failed " : "recovered ")
 	<< (is_immediate() ? "immediate " : "timeout ")
@@ -123,6 +106,9 @@ public:
 	<< " for " << failed_for << "sec e" << epoch
 	<< " v" << version << ")";
   }
+private:
+  template<class T, typename... Args>
+  friend boost::intrusive_ptr<T> ceph::make_message(Args&&... args);
 };
 
 #endif

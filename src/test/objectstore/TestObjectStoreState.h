@@ -31,7 +31,7 @@ public:
     coll_t m_cid;
     ghobject_t m_meta_obj;
     ObjectStore::CollectionHandle m_ch;
-    map<int, hobject_t*> m_objects;
+    std::map<int, hobject_t*> m_objects;
     int m_next_object_id;
 
     coll_entry_t(spg_t pgid, ObjectStore::CollectionHandle& ch,
@@ -62,16 +62,16 @@ public:
 
  protected:
   boost::shared_ptr<ObjectStore> m_store;
-  map<coll_t, coll_entry_t*> m_collections;
-  vector<coll_t> m_collections_ids;
+  std::map<coll_t, coll_entry_t*> m_collections;
+  std::vector<coll_t> m_collections_ids;
   int m_next_coll_nr;
   int m_num_objs_per_coll;
   int m_num_objects;
 
   int m_max_in_flight;
   std::atomic<int> m_in_flight = { 0 };
-  Mutex m_finished_lock;
-  Cond m_finished_cond;
+  ceph::mutex m_finished_lock = ceph::make_mutex("Finished Lock");
+  ceph::condition_variable m_finished_cond;
 
   void rebuild_id_vec() {
     m_collections_ids.clear();
@@ -82,15 +82,15 @@ public:
   }
 
   void wait_for_ready() {
-    Mutex::Locker locker(m_finished_lock);
-    while ((m_max_in_flight > 0) && (m_in_flight >= m_max_in_flight))
-      m_finished_cond.Wait(m_finished_lock);
+    std::unique_lock locker{m_finished_lock};
+    m_finished_cond.wait(locker, [this] {
+      return m_max_in_flight <= 0 || m_in_flight < m_max_in_flight;
+    });
   }
 
   void wait_for_done() {
-    Mutex::Locker locker(m_finished_lock);
-    while (m_in_flight)
-      m_finished_cond.Wait(m_finished_lock);
+    std::unique_lock locker{m_finished_lock};
+    m_finished_cond.wait(locker, [this] { return m_in_flight == 0; });
   }
 
   void set_max_in_flight(int max) {
@@ -112,7 +112,7 @@ public:
  public:
   explicit TestObjectStoreState(ObjectStore *store) :
     m_next_coll_nr(0), m_num_objs_per_coll(10), m_num_objects(0),
-    m_max_in_flight(0), m_finished_lock("Finished Lock"), m_next_pool(2) {
+    m_max_in_flight(0), m_next_pool(2) {
     m_store.reset(store);
   }
   ~TestObjectStoreState() { 
@@ -147,9 +147,9 @@ public:
     explicit C_OnFinished(TestObjectStoreState *state) : m_state(state) { }
 
     void finish(int r) override {
-      Mutex::Locker locker(m_state->m_finished_lock);
+      std::lock_guard locker{m_state->m_finished_lock};
       m_state->dec_in_flight();
-      m_state->m_finished_cond.Signal();
+      m_state->m_finished_cond.notify_all();
 
     }
   };

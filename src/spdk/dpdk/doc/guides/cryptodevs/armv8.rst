@@ -28,12 +28,11 @@ Installation
 
 In order to enable this virtual crypto PMD, user must:
 
-* Download ARMv8 crypto library source code from
-  `here <https://github.com/caviumnetworks/armv8_crypto>`_
+* Download AArch64 crypto library source code from
+  `here <https://github.com/ARM-software/AArch64cryptolib>`_
 
 * Export the environmental variable ARMV8_CRYPTO_LIB_PATH with
-  the path where the ``armv8_crypto`` library was downloaded
-  or cloned.
+  the path to ``AArch64cryptolib`` library.
 
 * Build the library by invoking:
 
@@ -42,7 +41,7 @@ In order to enable this virtual crypto PMD, user must:
 	make -C $ARMV8_CRYPTO_LIB_PATH/
 
 * Set CONFIG_RTE_LIBRTE_PMD_ARMV8_CRYPTO=y in
-  config/defconfig_arm64-armv8a-linuxapp-gcc
+  config/defconfig_arm64-armv8a-linux-gcc
 
 The corresponding device can be created only if the following features
 are supported by the CPU:
@@ -59,7 +58,6 @@ User can use app/test application to check how to use this PMD and to verify
 crypto processing.
 
 Test name is cryptodev_sw_armv8_autotest.
-For performance test cryptodev_sw_armv8_perftest can be used.
 
 Limitations
 -----------

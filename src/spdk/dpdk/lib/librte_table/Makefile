@@ -18,8 +18,6 @@ endif
 
 EXPORT_MAP := rte_table_version.map
 
-LIBABIVER := 3
-
 #
 # all source are stored in SRCS-y
 #
@@ -46,6 +44,8 @@ SYMLINK-$(CONFIG_RTE_LIBRTE_TABLE)-include += rte_table_acl.h
 endif
 SYMLINK-$(CONFIG_RTE_LIBRTE_TABLE)-include += rte_table_hash.h
 SYMLINK-$(CONFIG_RTE_LIBRTE_TABLE)-include += rte_table_hash_cuckoo.h
+SYMLINK-$(CONFIG_RTE_LIBRTE_TABLE)-include += rte_table_hash_func.h
+SYMLINK-$(CONFIG_RTE_LIBRTE_TABLE)-include += rte_table_hash_func_arm64.h
 SYMLINK-$(CONFIG_RTE_LIBRTE_TABLE)-include += rte_lru.h
 ifeq ($(CONFIG_RTE_ARCH_X86),y)
 SYMLINK-$(CONFIG_RTE_LIBRTE_TABLE)-include += rte_lru_x86.h

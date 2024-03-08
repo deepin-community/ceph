@@ -1,6 +1,6 @@
 overrides:
   ceph:
-    log-whitelist:
+    log-ignorelist:
     - reached quota
     - but it is still running
     - overall HEALTH_
@@ -10,11 +10,15 @@ overrides:
     - \(CACHE_POOL_NEAR_FULL\)
     - \(POOL_APP_NOT_ENABLED\)
     - \(PG_AVAILABILITY\)
+    - \(PG_DEGRADED\)
     conf:
       client:
         debug ms: 1
       mon:
         mon warn on pool no app: false
+      osd:
+        osd class load list: "*"
+        osd class default list: "*"
 tasks:
 - workunit:
     clients:

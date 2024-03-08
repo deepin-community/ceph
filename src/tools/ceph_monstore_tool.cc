@@ -23,6 +23,7 @@
 #include "auth/KeyRing.h"
 #include "auth/cephx/CephxKeyServer.h"
 #include "global/global_init.h"
+#include "include/scope_guard.h"
 #include "include/stringify.h"
 #include "mgr/mgr_commands.h"
 #include "mon/AuthMonitor.h"
@@ -37,13 +38,15 @@
 
 namespace po = boost::program_options;
 
+using namespace std;
+
 class TraceIter {
   int fd;
   unsigned idx;
   MonitorDBStore::TransactionRef t;
 public:
   explicit TraceIter(string fname) : fd(-1), idx(-1) {
-    fd = ::open(fname.c_str(), O_RDONLY);
+    fd = ::open(fname.c_str(), O_RDONLY|O_BINARY);
     t.reset(new MonitorDBStore::Transaction);
   }
   bool valid() {
@@ -473,13 +476,38 @@ static int update_auth(MonitorDBStore& st, const string& keyring_path)
       cerr << "no caps granted to: " << auth_inc.name << std::endl;
       return -EINVAL;
     }
+    map<string,string> caps;
+    std::transform(begin(auth_inc.auth.caps), end(auth_inc.auth.caps),
+		   inserter(caps, end(caps)),
+		   [](auto& cap) {
+		     string c;
+		     auto p = cap.second.cbegin();
+		     decode(c, p);
+		     return make_pair(cap.first, c);
+		   });
+    cout << "adding auth for '"
+	 << auth_inc.name << "': " << auth_inc.auth
+	 << " with caps(" << caps << ")" << std::endl;
     auth_inc.op = KeyServerData::AUTH_INC_ADD;
 
     AuthMonitor::Incremental inc;
     inc.inc_type = AuthMonitor::AUTH_DATA;
     encode(auth_inc, inc.auth_data);
     inc.auth_type = CEPH_AUTH_CEPHX;
+    inc.encode(bl, CEPH_FEATURES_ALL);
+  }
 
+  // prime rotating secrets
+  {
+    KeyServer ks(g_ceph_context, nullptr);
+    KeyServerData::Incremental auth_inc;
+    auth_inc.op = KeyServerData::AUTH_INC_SET_ROTATING;
+    bool r = ks.prepare_rotating_update(auth_inc.rotating_bl);
+    ceph_assert(r);
+    AuthMonitor::Incremental inc;
+    inc.inc_type = AuthMonitor::AUTH_DATA;
+    encode(auth_inc, inc.auth_data);
+    inc.auth_type = CEPH_AUTH_CEPHX;
     inc.encode(bl, CEPH_FEATURES_ALL);
   }
 
@@ -573,7 +601,7 @@ static int update_creating_pgs(MonitorDBStore& st)
   auto last_osdmap_epoch = st.get("osdmap", "last_committed");
   int r = st.get("osdmap", st.combine_strings("full", last_osdmap_epoch), bl);
   if (r < 0) {
-    cerr << "unable to losd osdmap e" << last_osdmap_epoch << std::endl;
+    cerr << "unable to load osdmap e" << last_osdmap_epoch << std::endl;
     return r;
   }
 
@@ -586,7 +614,7 @@ static int update_creating_pgs(MonitorDBStore& st)
   creating.last_scan_epoch = last_osdmap_epoch;
 
   bufferlist newbl;
-  ::encode(creating, newbl);
+  encode(creating, newbl, CEPH_FEATURES_ALL);
 
   auto t = make_shared<MonitorDBStore::Transaction>();
   t->put("osd_pg_creating", "creating", newbl);
@@ -629,6 +657,24 @@ static int update_mgrmap(MonitorDBStore& st)
 
 static int update_paxos(MonitorDBStore& st)
 {
+  const string prefix("paxos");
+  // a large enough version greater than the maximum possible `last_committed`
+  // that could be replied by the peons when the leader is collecting paxos
+  // transactions during recovery
+  constexpr version_t first_committed = 0x42;
+  constexpr version_t last_committed = first_committed;
+  for (version_t v = first_committed; v < last_committed + 1; v++) {
+    auto t = make_shared<MonitorDBStore::Transaction>();
+    if (v == first_committed) {
+      t->put(prefix, "first_committed", v);
+    }
+    bufferlist proposal;
+    MonitorDBStore::Transaction empty_txn;
+    empty_txn.encode(proposal);
+    t->put(prefix, v, proposal);
+    t->put(prefix, "last_committed", v);
+    st.apply_transaction(t);
+  }
   // build a pending paxos proposal from all non-permanent k/v pairs. once the
   // proposal is committed, it will gets applied. on the sync provider side, it
   // will be a no-op, but on its peers, the paxos commit will help to build up
@@ -647,11 +693,8 @@ static int update_paxos(MonitorDBStore& st)
     }
     t.encode(pending_proposal);
   }
-  const string prefix("paxos");
+  auto pending_v = last_committed + 1;
   auto t = make_shared<MonitorDBStore::Transaction>();
-  t->put(prefix, "first_committed", 0);
-  t->put(prefix, "last_committed", 0);
-  auto pending_v = 1;
   t->put(prefix, pending_v, pending_proposal);
   t->put(prefix, "pending_v", pending_v);
   t->put(prefix, "pending_pn", 400);
@@ -810,6 +853,10 @@ int main(int argc, char **argv) {
     }
   }
 
+  auto close_store = make_scope_guard([&] {
+    st.close();
+  });
+
   if (cmd == "dump-keys") {
     KeyValueDB::WholeSpaceIterator iter = st.get_iterator();
     while (iter->valid()) {
@@ -822,7 +869,6 @@ int main(int argc, char **argv) {
   } else if (cmd == "get") {
     unsigned v = 0;
     string outpath;
-    bool readable = false;
     string map_type;
     // visible options for this command
     po::options_description op_desc("Allowed 'get' options");
@@ -832,8 +878,7 @@ int main(int argc, char **argv) {
        "output file (default: stdout)")
       ("version,v", po::value<unsigned>(&v),
        "map version to obtain")
-      ("readable,r", po::value<bool>(&readable)->default_value(false),
-       "print the map information in human readable format")
+      ("readable,r", "print the map information in human readable format")
       ;
     // this is going to be a positional argument; we don't want to show
     // it as an option during --help, but we do want to have it captured
@@ -850,14 +895,12 @@ int main(int argc, char **argv) {
     int r = parse_cmd_args(&op_desc, &hidden_op_desc, &op_positional,
                            subcmds, &op_vm);
     if (r < 0) {
-      err = -r;
-      goto done;
+      return -r;
     }
 
     if (op_vm.count("help") || map_type.empty()) {
       usage(argv[0], op_desc);
-      err = 0;
-      goto done;
+      return 0;
     }
 
     if (v == 0) {
@@ -870,21 +913,20 @@ int main(int argc, char **argv) {
 
     int fd = STDOUT_FILENO;
     if (!outpath.empty()){
-      fd = ::open(outpath.c_str(), O_WRONLY|O_CREAT|O_TRUNC, 0666);
+      fd = ::open(outpath.c_str(), O_WRONLY|O_CREAT|O_TRUNC|O_BINARY, 0666);
       if (fd < 0) {
         std::cerr << "error opening output file: "
           << cpp_strerror(errno) << std::endl;
-        err = EINVAL;
-        goto done;
+        return EINVAL;
       }
     }
 
-    BOOST_SCOPE_EXIT((&r) (&fd) (&outpath)) {
+    auto close_fd = make_scope_guard([&] {
       ::close(fd);
       if (r < 0 && fd != STDOUT_FILENO) {
         ::remove(outpath.c_str());
       }
-    } BOOST_SCOPE_EXIT_END
+    });
 
     bufferlist bl;
     r = 0;
@@ -903,11 +945,10 @@ int main(int argc, char **argv) {
     }
     if (r < 0) {
       std::cerr << "Error getting map: " << cpp_strerror(r) << std::endl;
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
-    if (readable) {
+    if (op_vm.count("readable")) {
       stringstream ss;
       bufferlist out;
       try {
@@ -918,7 +959,7 @@ int main(int argc, char **argv) {
         } else if (map_type == "osdmap") {
           OSDMap osdmap;
           osdmap.decode(bl);
-          osdmap.print(ss);
+          osdmap.print(cct.get(), ss);
         } else if (map_type == "mdsmap") {
           FSMap fs_map;
           fs_map.decode(bl);
@@ -943,7 +984,7 @@ int main(int argc, char **argv) {
         }
       } catch (const buffer::error &err) {
         std::cerr << "Could not decode for human readable output (you may still"
-                     " use non-readable mode).  Detail: " << err << std::endl;
+	  " use non-readable mode).  Detail: " << err.what() << std::endl;
       }
 
       out.append(ss);
@@ -972,14 +1013,12 @@ int main(int argc, char **argv) {
     int r = parse_cmd_args(&op_desc, NULL, &op_positional,
                            subcmds, &op_vm);
     if (r < 0) {
-      err = -r;
-      goto done;
+      return -r;
     }
 
     if (op_vm.count("help") || map_type.empty()) {
       usage(argv[0], op_desc);
-      err = 0;
-      goto done;
+      return  0;
     }
 
     unsigned int v_first = 0;
@@ -1005,22 +1044,19 @@ int main(int argc, char **argv) {
     int r = parse_cmd_args(&op_desc, NULL, NULL,
                            subcmds, &op_vm);
     if (r < 0) {
-      err = -r;
-      goto done;
+      return -r;
     }
 
     if (op_vm.count("help")) {
       usage(argv[0], op_desc);
-      err = 0;
-      goto done;
+      return 0;
     }
 
     if (dstart > dstop) {
       std::cerr << "error: 'start' version (value: " << dstart << ") "
                 << " is greater than 'end' version (value: " << dstop << ")"
                 << std::endl;
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
     version_t v = dstart;
@@ -1068,28 +1104,24 @@ int main(int argc, char **argv) {
     int r = parse_cmd_args(&op_desc, &hidden_op_desc, &op_positional,
                            subcmds, &op_vm);
     if (r < 0) {
-      err = -r;
-      goto done;
+      return -r;
     }
 
     if (op_vm.count("help")) {
       usage(argv[0], op_desc);
-      err = 0;
-      goto done;
+      return 0;
     }
 
     if (outpath.empty()) {
       usage(argv[0], op_desc);
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
     if (dstart > dstop) {
       std::cerr << "error: 'start' version (value: " << dstart << ") "
                 << " is greater than 'stop' version (value: " << dstop << ")"
                 << std::endl;
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
     TraceIter iter(outpath.c_str());
@@ -1144,20 +1176,17 @@ int main(int argc, char **argv) {
       po::notify(op_vm);
     } catch (po::error &e) {
       std::cerr << "error: " << e.what() << std::endl;
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
     if (op_vm.count("help")) {
       usage(argv[0], op_desc);
-      err = 0;
-      goto done;
+      return 0;
     }
 
     if (inpath.empty()) {
       usage(argv[0], op_desc);
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
     unsigned num = 0;
@@ -1197,14 +1226,12 @@ int main(int argc, char **argv) {
       po::notify(op_vm);
     } catch (po::error &e) {
       std::cerr << "error: " << e.what() << std::endl;
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
     if (op_vm.count("help")) {
       usage(argv[0], op_desc);
-      err = 0;
-      goto done;
+      return 0;
     }
 
     unsigned num = 0;
@@ -1227,8 +1254,7 @@ int main(int argc, char **argv) {
   } else if (cmd == "store-copy") {
     if (subcmds.size() < 1 || subcmds[0].empty()) {
       usage(argv[0], desc);
-      err = EINVAL;
-      goto done;
+      return EINVAL;
     }
 
     string out_path = subcmds[0];
@@ -1239,7 +1265,7 @@ int main(int argc, char **argv) {
       int r = out_store.create_and_open(ss);
       if (r < 0) {
         std::cerr << ss.str() << std::endl;
-        goto done;
+        return err;
       }
     }
 
@@ -1288,10 +1314,6 @@ int main(int argc, char **argv) {
   } else {
     std::cerr << "Unrecognized command: " << cmd << std::endl;
     usage(argv[0], desc);
-    goto done;
+    return err;
   }
-
-  done:
-  st.close();
-  return err;
 }

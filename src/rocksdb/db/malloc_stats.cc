@@ -10,24 +10,20 @@
 #include "db/malloc_stats.h"
 
 #ifndef ROCKSDB_LITE
-#include <memory>
 #include <string.h>
+
+#include <memory>
 
 #include "port/jemalloc_helper.h"
 
-
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 #ifdef ROCKSDB_JEMALLOC
 
-#ifdef JEMALLOC_NO_RENAME
-#define malloc_stats_print je_malloc_stats_print
-#endif
-
-typedef struct {
+struct MallocStatus {
   char* cur;
   char* end;
-} MallocStatus;
+};
 
 static void GetJemallocStatus(void* mstat_arg, const char* status) {
   MallocStatus* mstat = reinterpret_cast<MallocStatus*>(mstat_arg);
@@ -55,5 +51,5 @@ void DumpMallocStats(std::string* stats) {
 #else
 void DumpMallocStats(std::string*) {}
 #endif  // ROCKSDB_JEMALLOC
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
 #endif  // !ROCKSDB_LITE

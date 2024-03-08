@@ -9,18 +9,6 @@
 #include <string>
 #include "json_spirit/json_spirit_value.h"
 
-enum blkdev_prop_t {
-  BLKDEV_PROP_DEV,
-  BLKDEV_PROP_DISCARD_GRANULARITY,
-  BLKDEV_PROP_MODEL,
-  BLKDEV_PROP_ROTATIONAL,
-  BLKDEV_PROP_SERIAL,
-  BLKDEV_PROP_VENDOR,
-  BLKDEV_PROP_NUMA_NODE,
-  BLKDEV_PROP_NUMA_CPUS,
-  BLKDEV_PROP_NUMPROPS,
-};
-
 extern int get_device_by_path(const char *path, char* partition, char* device, size_t max);
 
 extern std::string _decode_model_enc(const std::string& in);  // helper, exported only so we can unit test
@@ -48,12 +36,6 @@ extern int block_device_get_metrics(const std::string& devname, int timeout,
 extern void get_raw_devices(const std::string& in,
 			    std::set<std::string> *ls);
 
-// for VDO
-/// return an op fd for the sysfs stats dir, if this is a VDO device
-extern int get_vdo_stats_handle(const char *devname, std::string *vdo_name);
-extern int64_t get_vdo_stat(int fd, const char *property);
-extern bool get_vdo_utilization(int fd, uint64_t *total, uint64_t *avail);
-
 class BlkDev {
 public:
   BlkDev(int fd);
@@ -68,7 +50,7 @@ public:
   int partition(char* partition, size_t max) const;
   // from a device (e.g., "sdb")
   bool support_discard() const;
-  bool is_nvme() const;
+  int get_optimal_io_size() const;
   bool is_rotational() const;
   int get_numa_node(int *node) const;
   int dev(char *dev, size_t max) const;
@@ -90,8 +72,8 @@ public:
   }
 
 protected:
-  int64_t get_int_property(blkdev_prop_t prop) const;
-  int64_t get_string_property( blkdev_prop_t prop, char *val,
+  int64_t get_int_property(const char* prop) const;
+  int64_t get_string_property(const char* prop, char *val,
     size_t maxlen) const;
 
 private:

@@ -35,6 +35,15 @@
 #include "erasure-code/ErasureCode.h"
 #include "ceph_erasure_code_benchmark.h"
 
+using std::endl;
+using std::cerr;
+using std::cout;
+using std::map;
+using std::set;
+using std::string;
+using std::stringstream;
+using std::vector;
+
 namespace po = boost::program_options;
 
 int ErasureCodeBench::setup(int argc, char** argv) {
@@ -121,10 +130,15 @@ int ErasureCodeBench::setup(int argc, char** argv) {
     exhaustive_erasures = false;
   if (vm.count("erased") > 0)
     erased = vm["erased"].as<vector<int> >();
-
-  k = stoi(profile["k"]);
-  m = stoi(profile["m"]);
   
+  try {
+    k = stoi(profile["k"]);
+    m = stoi(profile["m"]);
+  } catch (const std::logic_error& e) {
+    cout << "Invalid k and/or m: k=" << profile["k"] << ", m=" << profile["m"] 
+         << " (" << e.what() << ")" << endl;
+    return -EINVAL;
+  }
   if (k <= 0) {
     cout << "parameter k is " << k << ". But k needs to be > 0." << endl;
     return -EINVAL;
@@ -170,7 +184,7 @@ int ErasureCodeBench::encode()
   }
   utime_t begin_time = ceph_clock_now();
   for (int i = 0; i < max_iterations; i++) {
-    map<int,bufferlist> encoded;
+    std::map<int,bufferlist> encoded;
     code = erasure_code->encode(want_to_encode, in, &encoded);
     if (code)
       return code;

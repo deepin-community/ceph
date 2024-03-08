@@ -1,28 +1,31 @@
+// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
+// vim: ts=8 sw=2 smarttab ft=cpp
 
-#ifndef CEPH_RGW_SERVICES_SYS_OBJ_CACHE_H
-#define CEPH_RGW_SERVICES_SYS_OBJ_CACHE_H
+#pragma once
 
-
-#include "rgw/rgw_service.h"
-#include "rgw/rgw_cache.h"
+#include "common/RWLock.h"
+#include "rgw_service.h"
+#include "rgw_cache.h"
 
 #include "svc_sys_obj_core.h"
 
 class RGWSI_Notify;
 
 class RGWSI_SysObj_Cache_CB;
+class RGWSI_SysObj_Cache_ASocketHook;
 
 class RGWSI_SysObj_Cache : public RGWSI_SysObj_Core
 {
   friend class RGWSI_SysObj_Cache_CB;
   friend class RGWServices_Def;
+  friend class ASocketHandler;
 
   RGWSI_Notify *notify_svc{nullptr};
   ObjectCache cache;
 
   std::shared_ptr<RGWSI_SysObj_Cache_CB> cb;
 
-  void normalize_pool_and_obj(const rgw_pool& src_pool, const string& src_obj, rgw_pool& dst_pool, string& dst_obj);
+  void normalize_pool_and_obj(const rgw_pool& src_pool, const std::string& src_obj, rgw_pool& dst_pool, std::string& dst_obj);
 protected:
   void init(RGWSI_RADOS *_rados_svc,
             RGWSI_Zone *_zone_svc,
@@ -31,49 +34,65 @@ protected:
     notify_svc = _notify_svc;
   }
 
-  int do_start() override;
+  int do_start(optional_yield, const DoutPrefixProvider *dpp) override;
+  void shutdown() override;
 
-  int raw_stat(const rgw_raw_obj& obj, uint64_t *psize, real_time *pmtime, uint64_t *epoch,
-               map<string, bufferlist> *attrs, bufferlist *first_chunk,
-               RGWObjVersionTracker *objv_tracker) override;
+  int raw_stat(const DoutPrefixProvider *dpp, const rgw_raw_obj& obj,
+               uint64_t *psize, real_time *pmtime,
+               std::map<std::string, bufferlist> *attrs,
+               RGWObjVersionTracker *objv_tracker,
+               optional_yield y) override;
 
-  int read(RGWSysObjectCtxBase& obj_ctx,
-           GetObjState& read_state,
+  int read(const DoutPrefixProvider *dpp,
+           RGWSI_SysObj_Obj_GetObjState& read_state,
            RGWObjVersionTracker *objv_tracker,
            const rgw_raw_obj& obj,
            bufferlist *bl, off_t ofs, off_t end,
-           map<string, bufferlist> *attrs,
+           ceph::real_time* pmtime, uint64_t* psize,
+           std::map<std::string, bufferlist> *attrs,
 	   bool raw_attrs,
            rgw_cache_entry_info *cache_info,
-           boost::optional<obj_version>) override;
+           boost::optional<obj_version>,
+           optional_yield y) override;
 
-  int get_attr(const rgw_raw_obj& obj, const char *name, bufferlist *dest) override;
+  int get_attr(const DoutPrefixProvider *dpp, const rgw_raw_obj& obj, const char *name, bufferlist *dest,
+               optional_yield y) override;
 
-  int set_attrs(const rgw_raw_obj& obj, 
-                map<string, bufferlist>& attrs,
-                map<string, bufferlist> *rmattrs,
-                RGWObjVersionTracker *objv_tracker);
+  int set_attrs(const DoutPrefixProvider *dpp, 
+                const rgw_raw_obj& obj, 
+                std::map<std::string, bufferlist>& attrs,
+                std::map<std::string, bufferlist> *rmattrs,
+                RGWObjVersionTracker *objv_tracker,
+                bool exclusive, optional_yield y) override;
 
-  int remove(RGWSysObjectCtxBase& obj_ctx,
+  int remove(const DoutPrefixProvider *dpp, 
              RGWObjVersionTracker *objv_tracker,
-             const rgw_raw_obj& obj) override;
+             const rgw_raw_obj& obj,
+             optional_yield y) override;
 
-  int write(const rgw_raw_obj& obj,
+  int write(const DoutPrefixProvider *dpp, 
+            const rgw_raw_obj& obj,
             real_time *pmtime,
-            map<std::string, bufferlist>& attrs,
+            std::map<std::string, bufferlist>& attrs,
             bool exclusive,
             const bufferlist& data,
             RGWObjVersionTracker *objv_tracker,
-            real_time set_mtime) override;
+            real_time set_mtime,
+            optional_yield y) override;
 
-  int write_data(const rgw_raw_obj& obj,
+  int write_data(const DoutPrefixProvider *dpp, 
+                 const rgw_raw_obj& obj,
                  const bufferlist& bl,
                  bool exclusive,
-                 RGWObjVersionTracker *objv_tracker);
+                 RGWObjVersionTracker *objv_tracker,
+                 optional_yield y);
 
-  int distribute_cache(const string& normal_name, const rgw_raw_obj& obj, ObjectCacheInfo& obj_info, int op);
+  int distribute_cache(const DoutPrefixProvider *dpp, const std::string& normal_name, const rgw_raw_obj& obj,
+                       ObjectCacheInfo& obj_info, int op,
+                       optional_yield y);
 
-  int watch_cb(uint64_t notify_id,
+  int watch_cb(const DoutPrefixProvider *dpp,
+               uint64_t notify_id,
                uint64_t cookie,
                uint64_t notifier_id,
                bufferlist& bl);
@@ -81,19 +100,48 @@ protected:
   void set_enabled(bool status);
 
 public:
-  RGWSI_SysObj_Cache(CephContext *cct) : RGWSI_SysObj_Core(cct) {
+  RGWSI_SysObj_Cache(const DoutPrefixProvider *dpp, CephContext *cct) : RGWSI_SysObj_Core(cct), asocket(dpp, this) {
     cache.set_ctx(cct);
   }
 
-  bool chain_cache_entry(std::initializer_list<rgw_cache_entry_info *> cache_info_entries,
+  bool chain_cache_entry(const DoutPrefixProvider *dpp,
+                         std::initializer_list<rgw_cache_entry_info *> cache_info_entries,
                          RGWChainedCache::Entry *chained_entry);
   void register_chained_cache(RGWChainedCache *cc);
   void unregister_chained_cache(RGWChainedCache *cc);
 
-  void call_list(const std::optional<std::string>& filter, Formatter* f);
-  int call_inspect(const std::string& target, Formatter* f);
-  int call_erase(const std::string& target);
-  int call_zap();
+  class ASocketHandler {
+    const DoutPrefixProvider *dpp;
+    RGWSI_SysObj_Cache *svc;
+
+    std::unique_ptr<RGWSI_SysObj_Cache_ASocketHook> hook;
+
+  public:
+    ASocketHandler(const DoutPrefixProvider *dpp, RGWSI_SysObj_Cache *_svc);
+    ~ASocketHandler();
+
+    int start();
+    void shutdown();
+
+    // `call_list` must iterate over all cache entries and call
+    // `cache_list_dump_helper` with the supplied Formatter on any that
+    // include `filter` as a substd::string.
+    //
+    void call_list(const std::optional<std::string>& filter, Formatter* f);
+
+    // `call_inspect` must look up the requested target and, if found,
+    // dump it to the supplied Formatter and return true. If not found,
+    // it must return false.
+    //
+    int call_inspect(const std::string& target, Formatter* f);
+
+    // `call_erase` must erase the requested target and return true. If
+    // the requested target does not exist, it should return false.
+    int call_erase(const std::string& target);
+
+    // `call_zap` must erase the cache.
+    int call_zap();
+  } asocket;
 };
 
 template <class T>
@@ -127,8 +175,8 @@ public:
 				    "rgw_cache_expiry_interval"));
   }
 
-  boost::optional<T> find(const string& key) {
-    RWLock::RLocker rl(lock);
+  boost::optional<T> find(const std::string& key) {
+    std::shared_lock rl{lock};
     auto iter = entries.find(key);
     if (iter == entries.end()) {
       return boost::none;
@@ -141,7 +189,7 @@ public:
     return iter->second.first;
   }
 
-  bool put(RGWSI_SysObj_Cache *svc, const string& key, T *entry,
+  bool put(const DoutPrefixProvider *dpp, RGWSI_SysObj_Cache *svc, const std::string& key, T *entry,
 	   std::initializer_list<rgw_cache_entry_info *> cache_info_entries) {
     if (!svc) {
       return false;
@@ -150,27 +198,25 @@ public:
     Entry chain_entry(this, key, entry);
 
     /* we need the svc cache to call us under its lock to maintain lock ordering */
-    return svc->chain_cache_entry(cache_info_entries, &chain_entry);
+    return svc->chain_cache_entry(dpp, cache_info_entries, &chain_entry);
   }
 
-  void chain_cb(const string& key, void *data) override {
+  void chain_cb(const std::string& key, void *data) override {
     T *entry = static_cast<T *>(data);
-    RWLock::WLocker wl(lock);
+    std::unique_lock wl{lock};
     entries[key].first = *entry;
     if (expiry.count() > 0) {
       entries[key].second = ceph::coarse_mono_clock::now();
     }
   }
 
-  void invalidate(const string& key) override {
-    RWLock::WLocker wl(lock);
+  void invalidate(const std::string& key) override {
+    std::unique_lock wl{lock};
     entries.erase(key);
   }
 
   void invalidate_all() override {
-    RWLock::WLocker wl(lock);
+    std::unique_lock wl{lock};
     entries.clear();
   }
 }; /* RGWChainedCacheImpl */
-
-#endif

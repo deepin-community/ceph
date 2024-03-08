@@ -2,7 +2,7 @@ Index: ceph/src/os/CMakeLists.txt
 ===================================================================
 --- ceph.orig/src/os/CMakeLists.txt
 +++ ceph/src/os/CMakeLists.txt
-@@ -110,8 +110,9 @@ endif()
+@@ -87,8 +87,9 @@ endif()
  target_link_libraries(os kv)
  
  add_dependencies(os compressor_plugins)

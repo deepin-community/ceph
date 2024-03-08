@@ -12,7 +12,9 @@
 #include "include/stringify.h"
 #include "common/errno.h"
 
-#include "os/bluestore/BlockDevice.h"
+#include "blk/BlockDevice.h"
+
+using namespace std;
 
 class TempBdev {
 public:
@@ -90,9 +92,7 @@ TEST(KernelDevice, Ticket45337) {
 }
 
 int main(int argc, char **argv) {
-  vector<const char*> args;
-  argv_to_vec(argc, (const char **)argv, args);
-
+  auto args = argv_to_vec(argc, argv);
   map<string,string> defaults = {
     { "debug_bdev", "1/20" }
   };

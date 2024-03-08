@@ -8,6 +8,7 @@
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
 #include "rocksdb/utilities/leveldb_options.h"
+
 #include "rocksdb/cache.h"
 #include "rocksdb/comparator.h"
 #include "rocksdb/env.h"
@@ -15,7 +16,7 @@
 #include "rocksdb/options.h"
 #include "rocksdb/table.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 LevelDBOptions::LevelDBOptions()
     : comparator(BytewiseComparator()),
@@ -53,4 +54,4 @@ Options ConvertOptions(const LevelDBOptions& leveldb_options) {
   return options;
 }
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

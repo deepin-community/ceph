@@ -83,9 +83,9 @@ Options
 
    will set all of capabilities associated with a given key, for all subsystems
 
- .. option:: --mode *mode*
+.. option:: --mode *mode*
 
-    will set the desired file mode to the keyring e.g: 0644, defaults to 0600
+   will set the desired file mode to the keyring e.g: 0644, defaults to 0600
 
 
 Capabilities
@@ -179,7 +179,7 @@ To create a new keyring containing a key for client.foo with a 0644 file mode::
         ceph-authtool -C -n client.foo --gen-key keyring --mode 0644
 
 To associate some capabilities with the key (namely, the ability to
-mount a Ceph filesystem)::
+mount a Ceph file system)::
 
         ceph-authtool -n client.foo --cap mds 'allow' --cap osd 'allow rw pool=data' --cap mon 'allow r' keyring
 
@@ -196,7 +196,7 @@ Availability
 ============
 
 **ceph-authtool** is part of Ceph, a massively scalable, open-source, distributed storage system. Please
-refer to the Ceph documentation at http://ceph.com/docs for more
+refer to the Ceph documentation at https://docs.ceph.com for more
 information.
 
 

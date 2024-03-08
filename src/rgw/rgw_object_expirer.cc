@@ -1,5 +1,5 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
-// vim: ts=8 sw=2 smarttab
+// vim: ts=8 sw=2 smarttab ft=cpp
 
 #include <errno.h>
 #include <iostream>
@@ -23,7 +23,6 @@
 
 #include "rgw_user.h"
 #include "rgw_bucket.h"
-#include "rgw_rados.h"
 #include "rgw_acl.h"
 #include "rgw_acl_s3.h"
 #include "rgw_log.h"
@@ -33,16 +32,16 @@
 
 #define dout_subsys ceph_subsys_rgw
 
-static RGWRados *store = NULL;
+static rgw::sal::Driver* driver = NULL;
 
 class StoreDestructor {
-  RGWRados *store;
+  rgw::sal::Driver* driver;
 
 public:
-  explicit StoreDestructor(RGWRados *_s) : store(_s) {}
+  explicit StoreDestructor(rgw::sal::Driver* _s) : driver(_s) {}
   ~StoreDestructor() {
-    if (store) {
-      RGWStoreManager::close_storage(store);
+    if (driver) {
+      DriverManager::close_storage(driver);
     }
   }
 };
@@ -54,10 +53,9 @@ static void usage()
 
 int main(const int argc, const char **argv)
 {
-  vector<const char *> args;
-  argv_to_vec(argc, argv, args);
+  auto args = argv_to_vec(argc, argv);
   if (args.empty()) {
-    cerr << argv[0] << ": -h or --help for usage" << std::endl;
+    std::cerr << argv[0] << ": -h or --help for usage" << std::endl;
     exit(1);
   }
   if (ceph_argparse_need_usage(args)) {
@@ -67,7 +65,7 @@ int main(const int argc, const char **argv)
 
   auto cct = global_init(NULL, args, CEPH_ENTITY_TYPE_CLIENT,
 			 CODE_ENVIRONMENT_DAEMON,
-			 CINIT_FLAG_UNPRIVILEGED_DAEMON_DEFAULTS, "rgw_data");
+			 CINIT_FLAG_UNPRIVILEGED_DAEMON_DEFAULTS);
 
   for (std::vector<const char *>::iterator i = args.begin(); i != args.end(); ) {
     if (ceph_argparse_double_dash(args, i)) {
@@ -81,19 +79,20 @@ int main(const int argc, const char **argv)
 
   common_init_finish(g_ceph_context);
 
-  store = RGWStoreManager::get_storage(g_ceph_context, false, false, false, false, false);
-  if (!store) {
+  const DoutPrefix dp(cct.get(), dout_subsys, "rgw object expirer: ");
+  DriverManager::Config cfg;
+  cfg.store_name = "rados";
+  cfg.filter_name = "none";
+  driver = DriverManager::get_storage(&dp, g_ceph_context, cfg, false, false, false, false, false);
+  if (!driver) {
     std::cerr << "couldn't init storage provider" << std::endl;
     return EIO;
   }
 
-  rgw_user_init(store);
-  rgw_bucket_init(store->meta_mgr);
+  /* Guard to not forget about closing the rados driver. */
+  StoreDestructor store_dtor(driver);
 
-  /* Guard to not forget about closing the rados store. */
-  StoreDestructor store_dtor(store);
-
-  RGWObjectExpirer objexp(store);
+  RGWObjectExpirer objexp(driver);
   objexp.start_processor();
 
   const utime_t interval(g_ceph_context->_conf->rgw_objexp_gc_interval, 0);

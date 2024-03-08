@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2008-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2020 Xilinx, Inc.
+ * Copyright(c) 2008-2019 Solarflare Communications Inc.
  */
 
 #include "efx.h"
@@ -45,7 +45,7 @@ static const efx_mcdi_ops_t	__efx_mcdi_siena_ops = {
 
 #endif	/* EFSYS_OPT_SIENA */
 
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
+#if EFX_OPTS_EF10()
 
 static const efx_mcdi_ops_t	__efx_mcdi_ef10_ops = {
 	ef10_mcdi_init,			/* emco_init */
@@ -58,7 +58,7 @@ static const efx_mcdi_ops_t	__efx_mcdi_ef10_ops = {
 	ef10_mcdi_get_timeout,		/* emco_get_timeout */
 };
 
-#endif	/* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */
+#endif	/* EFX_OPTS_EF10() */
 
 
 
@@ -360,7 +360,11 @@ efx_mcdi_read_response_header(
 		rc = EIO;
 		goto fail1;
 	}
+#if EFSYS_OPT_MCDI_PROXY_AUTH_SERVER
+	if (((cmd != emrp->emr_cmd) && (emrp->emr_cmd != MC_CMD_PROXY_CMD)) ||
+#else
 	if ((cmd != emrp->emr_cmd) ||
+#endif
 	    (seq != ((emip->emi_seq - 1) & EFX_MASK32(MCDI_HEADER_SEQ)))) {
 		/* Response is for a different request */
 		rc = EIO;
@@ -442,6 +446,11 @@ efx_mcdi_finish_response(
 	efx_dword_t hdr[2];
 	unsigned int hdr_len;
 	size_t bytes;
+	unsigned int resp_off;
+#if EFSYS_OPT_MCDI_PROXY_AUTH_SERVER
+	unsigned int resp_cmd;
+	boolean_t proxied_cmd_resp = B_FALSE;
+#endif /* EFSYS_OPT_MCDI_PROXY_AUTH_SERVER */
 
 	if (emrp->emr_out_buf == NULL)
 		return;
@@ -456,14 +465,35 @@ efx_mcdi_finish_response(
 		 */
 		efx_mcdi_read_response(enp, &hdr[1], hdr_len, sizeof (hdr[1]));
 		hdr_len += sizeof (hdr[1]);
+		resp_off = hdr_len;
 
 		emrp->emr_out_length_used = EFX_DWORD_FIELD(hdr[1],
-					    MC_CMD_V2_EXTN_IN_ACTUAL_LEN);
+						MC_CMD_V2_EXTN_IN_ACTUAL_LEN);
+#if EFSYS_OPT_MCDI_PROXY_AUTH_SERVER
+		/*
+		 * A proxy MCDI command is executed by PF on behalf of
+		 * one of its VFs. The command to be proxied follows
+		 * immediately afterward in the host buffer.
+		 * PROXY_CMD inner call complete response should be copied to
+		 * output buffer so that it can be returned to the requesting
+		 * function in MC_CMD_PROXY_COMPLETE payload.
+		 */
+		resp_cmd =
+			EFX_DWORD_FIELD(hdr[1], MC_CMD_V2_EXTN_IN_EXTENDED_CMD);
+		proxied_cmd_resp = ((emrp->emr_cmd == MC_CMD_PROXY_CMD) &&
+					(resp_cmd != MC_CMD_PROXY_CMD));
+		if (proxied_cmd_resp) {
+			resp_off = 0;
+			emrp->emr_out_length_used += hdr_len;
+		}
+#endif /* EFSYS_OPT_MCDI_PROXY_AUTH_SERVER */
+	} else {
+		resp_off = hdr_len;
 	}
 
 	/* Copy payload out into caller supplied buffer */
 	bytes = MIN(emrp->emr_out_length_used, emrp->emr_out_length);
-	efx_mcdi_read_response(enp, emrp->emr_out_buf, hdr_len, bytes);
+	efx_mcdi_read_response(enp, emrp->emr_out_buf, resp_off, bytes);
 
 #if EFSYS_OPT_MCDI_LOGGING
 	if (emtp->emt_logger != NULL) {
@@ -495,6 +525,12 @@ efx_mcdi_request_poll(
 	EFSYS_ASSERT(emip->emi_pending_req != NULL);
 	EFSYS_ASSERT(!emip->emi_ev_cpl);
 	emrp = emip->emi_pending_req;
+
+	/* Check if hardware is unavailable */
+	if (efx_nic_hw_unavailable(enp)) {
+		EFSYS_UNLOCK(enp->en_eslp, state);
+		return (B_FALSE);
+	}
 
 	/* Check for reboot atomically w.r.t efx_mcdi_request_start */
 	if (emip->emi_poll_cnt++ == 0) {
@@ -839,6 +875,18 @@ efx_mcdi_ev_proxy_response(
 }
 #endif /* EFSYS_OPT_MCDI_PROXY_AUTH */
 
+#if EFSYS_OPT_MCDI_PROXY_AUTH_SERVER
+			void
+efx_mcdi_ev_proxy_request(
+	__in		efx_nic_t *enp,
+	__in		unsigned int index)
+{
+	const efx_mcdi_transport_t *emtp = enp->en_mcdi.em_emtp;
+
+	if (emtp->emt_ev_proxy_request != NULL)
+		emtp->emt_ev_proxy_request(emtp->emt_context, index);
+}
+#endif /* EFSYS_OPT_MCDI_PROXY_AUTH_SERVER */
 			void
 efx_mcdi_ev_death(
 	__in		efx_nic_t *enp,
@@ -900,10 +948,10 @@ efx_mcdi_version(
 	__out_opt		efx_mcdi_boot_t *statusp)
 {
 	efx_mcdi_req_t req;
-	uint8_t payload[MAX(MAX(MC_CMD_GET_VERSION_IN_LEN,
-				MC_CMD_GET_VERSION_OUT_LEN),
-			    MAX(MC_CMD_GET_BOOT_STATUS_IN_LEN,
-				MC_CMD_GET_BOOT_STATUS_OUT_LEN))];
+	EFX_MCDI_DECLARE_BUF(payload,
+		MAX(MC_CMD_GET_VERSION_IN_LEN, MC_CMD_GET_BOOT_STATUS_IN_LEN),
+		MAX(MC_CMD_GET_VERSION_OUT_LEN,
+			MC_CMD_GET_BOOT_STATUS_OUT_LEN));
 	efx_word_t *ver_words;
 	uint16_t version[4];
 	uint32_t build;
@@ -912,7 +960,6 @@ efx_mcdi_version(
 
 	EFSYS_ASSERT3U(enp->en_features, &, EFX_FEATURE_MCDI);
 
-	(void) memset(payload, 0, sizeof (payload));
 	req.emr_cmd = MC_CMD_GET_VERSION;
 	req.emr_in_buf = payload;
 	req.emr_in_length = MC_CMD_GET_VERSION_IN_LEN;
@@ -1018,12 +1065,11 @@ efx_mcdi_get_capabilities(
 	__out_opt	uint32_t *tso2ncp)
 {
 	efx_mcdi_req_t req;
-	uint8_t payload[MAX(MC_CMD_GET_CAPABILITIES_IN_LEN,
-			    MC_CMD_GET_CAPABILITIES_V2_OUT_LEN)];
+	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_GET_CAPABILITIES_IN_LEN,
+		MC_CMD_GET_CAPABILITIES_V2_OUT_LEN);
 	boolean_t v2_capable;
 	efx_rc_t rc;
 
-	(void) memset(payload, 0, sizeof (payload));
 	req.emr_cmd = MC_CMD_GET_CAPABILITIES;
 	req.emr_in_buf = payload;
 	req.emr_in_length = MC_CMD_GET_CAPABILITIES_IN_LEN;
@@ -1086,7 +1132,8 @@ efx_mcdi_do_reboot(
 	__in		efx_nic_t *enp,
 	__in		boolean_t after_assertion)
 {
-	uint8_t payload[MAX(MC_CMD_REBOOT_IN_LEN, MC_CMD_REBOOT_OUT_LEN)];
+	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_REBOOT_IN_LEN,
+		MC_CMD_REBOOT_OUT_LEN);
 	efx_mcdi_req_t req;
 	efx_rc_t rc;
 
@@ -1099,7 +1146,6 @@ efx_mcdi_do_reboot(
 	 */
 	EFSYS_ASSERT3U(enp->en_magic, ==, EFX_NIC_MAGIC);
 
-	(void) memset(payload, 0, sizeof (payload));
 	req.emr_cmd = MC_CMD_REBOOT;
 	req.emr_in_buf = payload;
 	req.emr_in_length = MC_CMD_REBOOT_IN_LEN;
@@ -1150,8 +1196,8 @@ efx_mcdi_read_assertion(
 	__in		efx_nic_t *enp)
 {
 	efx_mcdi_req_t req;
-	uint8_t payload[MAX(MC_CMD_GET_ASSERTS_IN_LEN,
-			    MC_CMD_GET_ASSERTS_OUT_LEN)];
+	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_GET_ASSERTS_IN_LEN,
+		MC_CMD_GET_ASSERTS_OUT_LEN);
 	const char *reason;
 	unsigned int flags;
 	unsigned int index;
@@ -1252,14 +1298,17 @@ efx_mcdi_drv_attach(
 	__in		boolean_t attach)
 {
 	efx_mcdi_req_t req;
-	uint8_t payload[MAX(MC_CMD_DRV_ATTACH_IN_LEN,
-			    MC_CMD_DRV_ATTACH_EXT_OUT_LEN)];
+	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_DRV_ATTACH_IN_V2_LEN,
+		MC_CMD_DRV_ATTACH_EXT_OUT_LEN);
 	efx_rc_t rc;
 
-	(void) memset(payload, 0, sizeof (payload));
 	req.emr_cmd = MC_CMD_DRV_ATTACH;
 	req.emr_in_buf = payload;
-	req.emr_in_length = MC_CMD_DRV_ATTACH_IN_LEN;
+	if (enp->en_drv_version[0] == '\0') {
+		req.emr_in_length = MC_CMD_DRV_ATTACH_IN_LEN;
+	} else {
+		req.emr_in_length = MC_CMD_DRV_ATTACH_IN_V2_LEN;
+	}
 	req.emr_out_buf = payload;
 	req.emr_out_length = MC_CMD_DRV_ATTACH_EXT_OUT_LEN;
 
@@ -1279,6 +1328,14 @@ efx_mcdi_drv_attach(
 	    DRV_ATTACH_IN_SUBVARIANT_AWARE, EFSYS_OPT_FW_SUBVARIANT_AWARE);
 	MCDI_IN_SET_DWORD(req, DRV_ATTACH_IN_UPDATE, 1);
 	MCDI_IN_SET_DWORD(req, DRV_ATTACH_IN_FIRMWARE_ID, enp->efv);
+
+	if (req.emr_in_length >= MC_CMD_DRV_ATTACH_IN_V2_LEN) {
+		EFX_STATIC_ASSERT(sizeof (enp->en_drv_version) ==
+		    MC_CMD_DRV_ATTACH_IN_V2_DRIVER_VERSION_LEN);
+		memcpy(MCDI_IN2(req, char, DRV_ATTACH_IN_V2_DRIVER_VERSION),
+		    enp->en_drv_version,
+		    MC_CMD_DRV_ATTACH_IN_V2_DRIVER_VERSION_LEN);
+	}
 
 	efx_mcdi_execute(enp, &req);
 
@@ -1311,11 +1368,10 @@ efx_mcdi_get_board_cfg(
 {
 	efx_mcdi_iface_t *emip = &(enp->en_mcdi.em_emip);
 	efx_mcdi_req_t req;
-	uint8_t payload[MAX(MC_CMD_GET_BOARD_CFG_IN_LEN,
-			    MC_CMD_GET_BOARD_CFG_OUT_LENMIN)];
+	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_GET_BOARD_CFG_IN_LEN,
+		MC_CMD_GET_BOARD_CFG_OUT_LENMIN);
 	efx_rc_t rc;
 
-	(void) memset(payload, 0, sizeof (payload));
 	req.emr_cmd = MC_CMD_GET_BOARD_CFG;
 	req.emr_in_buf = payload;
 	req.emr_in_length = MC_CMD_GET_BOARD_CFG_IN_LEN;
@@ -1391,11 +1447,10 @@ efx_mcdi_get_resource_limits(
 	__out_opt	uint32_t *ntxqp)
 {
 	efx_mcdi_req_t req;
-	uint8_t payload[MAX(MC_CMD_GET_RESOURCE_LIMITS_IN_LEN,
-			    MC_CMD_GET_RESOURCE_LIMITS_OUT_LEN)];
+	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_GET_RESOURCE_LIMITS_IN_LEN,
+		MC_CMD_GET_RESOURCE_LIMITS_OUT_LEN);
 	efx_rc_t rc;
 
-	(void) memset(payload, 0, sizeof (payload));
 	req.emr_cmd = MC_CMD_GET_RESOURCE_LIMITS;
 	req.emr_in_buf = payload;
 	req.emr_in_length = MC_CMD_GET_RESOURCE_LIMITS_IN_LEN;
@@ -1438,8 +1493,8 @@ efx_mcdi_get_phy_cfg(
 	efx_port_t *epp = &(enp->en_port);
 	efx_nic_cfg_t *encp = &(enp->en_nic_cfg);
 	efx_mcdi_req_t req;
-	uint8_t payload[MAX(MC_CMD_GET_PHY_CFG_IN_LEN,
-			    MC_CMD_GET_PHY_CFG_OUT_LEN)];
+	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_GET_PHY_CFG_IN_LEN,
+		MC_CMD_GET_PHY_CFG_OUT_LEN);
 #if EFSYS_OPT_NAMES
 	const char *namep;
 	size_t namelen;
@@ -1447,7 +1502,6 @@ efx_mcdi_get_phy_cfg(
 	uint32_t phy_media_type;
 	efx_rc_t rc;
 
-	(void) memset(payload, 0, sizeof (payload));
 	req.emr_cmd = MC_CMD_GET_PHY_CFG;
 	req.emr_in_buf = payload;
 	req.emr_in_length = MC_CMD_GET_PHY_CFG_IN_LEN;
@@ -1642,7 +1696,7 @@ fail1:
 
 #if EFSYS_OPT_BIST
 
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
+#if EFX_OPTS_EF10()
 /*
  * Enter bist offline mode. This is a fw mode which puts the NIC into a state
  * where memory BIST tests can be run and not much else can interfere or happen.
@@ -1678,7 +1732,7 @@ fail1:
 
 	return (rc);
 }
-#endif /* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */
+#endif /* EFX_OPTS_EF10() */
 
 	__checkReturn		efx_rc_t
 efx_mcdi_bist_start(
@@ -1686,11 +1740,10 @@ efx_mcdi_bist_start(
 	__in			efx_bist_type_t type)
 {
 	efx_mcdi_req_t req;
-	uint8_t payload[MAX(MC_CMD_START_BIST_IN_LEN,
-			    MC_CMD_START_BIST_OUT_LEN)];
+	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_START_BIST_IN_LEN,
+		MC_CMD_START_BIST_OUT_LEN);
 	efx_rc_t rc;
 
-	(void) memset(payload, 0, sizeof (payload));
 	req.emr_cmd = MC_CMD_START_BIST;
 	req.emr_in_buf = payload;
 	req.emr_in_length = MC_CMD_START_BIST_IN_LEN;
@@ -1749,11 +1802,10 @@ efx_mcdi_log_ctrl(
 	__in		efx_nic_t *enp)
 {
 	efx_mcdi_req_t req;
-	uint8_t payload[MAX(MC_CMD_LOG_CTRL_IN_LEN,
-			    MC_CMD_LOG_CTRL_OUT_LEN)];
+	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_LOG_CTRL_IN_LEN,
+		MC_CMD_LOG_CTRL_OUT_LEN);
 	efx_rc_t rc;
 
-	(void) memset(payload, 0, sizeof (payload));
 	req.emr_cmd = MC_CMD_LOG_CTRL;
 	req.emr_in_buf = payload;
 	req.emr_in_length = MC_CMD_LOG_CTRL_IN_LEN;
@@ -1782,24 +1834,17 @@ fail1:
 
 #if EFSYS_OPT_MAC_STATS
 
-typedef enum efx_stats_action_e {
-	EFX_STATS_CLEAR,
-	EFX_STATS_UPLOAD,
-	EFX_STATS_ENABLE_NOEVENTS,
-	EFX_STATS_ENABLE_EVENTS,
-	EFX_STATS_DISABLE,
-} efx_stats_action_t;
-
-static	__checkReturn	efx_rc_t
+	__checkReturn	efx_rc_t
 efx_mcdi_mac_stats(
 	__in		efx_nic_t *enp,
+	__in		uint32_t vport_id,
 	__in_opt	efsys_mem_t *esmp,
 	__in		efx_stats_action_t action,
 	__in		uint16_t period_ms)
 {
 	efx_mcdi_req_t req;
-	uint8_t payload[MAX(MC_CMD_MAC_STATS_IN_LEN,
-			    MC_CMD_MAC_STATS_V2_OUT_DMA_LEN)];
+	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_MAC_STATS_IN_LEN,
+		MC_CMD_MAC_STATS_V2_OUT_DMA_LEN);
 	int clear = (action == EFX_STATS_CLEAR);
 	int upload = (action == EFX_STATS_UPLOAD);
 	int enable = (action == EFX_STATS_ENABLE_NOEVENTS);
@@ -1807,7 +1852,6 @@ efx_mcdi_mac_stats(
 	int disable = (action == EFX_STATS_DISABLE);
 	efx_rc_t rc;
 
-	(void) memset(payload, 0, sizeof (payload));
 	req.emr_cmd = MC_CMD_MAC_STATS;
 	req.emr_in_buf = payload;
 	req.emr_in_length = MC_CMD_MAC_STATS_IN_LEN;
@@ -1859,7 +1903,7 @@ efx_mcdi_mac_stats(
 	 *	 vadapter has already been deleted.
 	 */
 	MCDI_IN_SET_DWORD(req, MAC_STATS_IN_PORT_ID,
-	    (disable ? EVB_PORT_ID_NULL : enp->en_vport_id));
+		(disable ? EVB_PORT_ID_NULL : vport_id));
 
 	efx_mcdi_execute(enp, &req);
 
@@ -1892,7 +1936,8 @@ efx_mcdi_mac_stats_clear(
 {
 	efx_rc_t rc;
 
-	if ((rc = efx_mcdi_mac_stats(enp, NULL, EFX_STATS_CLEAR, 0)) != 0)
+	if ((rc = efx_mcdi_mac_stats(enp, enp->en_vport_id, NULL,
+			EFX_STATS_CLEAR, 0)) != 0)
 		goto fail1;
 
 	return (0);
@@ -1915,7 +1960,8 @@ efx_mcdi_mac_stats_upload(
 	 * avoid having to pull the statistics buffer into the cache to
 	 * maintain cumulative statistics.
 	 */
-	if ((rc = efx_mcdi_mac_stats(enp, esmp, EFX_STATS_UPLOAD, 0)) != 0)
+	if ((rc = efx_mcdi_mac_stats(enp, enp->en_vport_id, esmp,
+			EFX_STATS_UPLOAD, 0)) != 0)
 		goto fail1;
 
 	return (0);
@@ -1943,13 +1989,14 @@ efx_mcdi_mac_stats_periodic(
 	 * Medford uses a fixed 1sec period before v6.2.1.1033 firmware.
 	 */
 	if (period_ms == 0)
-		rc = efx_mcdi_mac_stats(enp, NULL, EFX_STATS_DISABLE, 0);
+		rc = efx_mcdi_mac_stats(enp, enp->en_vport_id, NULL,
+			EFX_STATS_DISABLE, 0);
 	else if (events)
-		rc = efx_mcdi_mac_stats(enp, esmp, EFX_STATS_ENABLE_EVENTS,
-		    period_ms);
+		rc = efx_mcdi_mac_stats(enp, enp->en_vport_id, esmp,
+			EFX_STATS_ENABLE_EVENTS, period_ms);
 	else
-		rc = efx_mcdi_mac_stats(enp, esmp, EFX_STATS_ENABLE_NOEVENTS,
-		    period_ms);
+		rc = efx_mcdi_mac_stats(enp, enp->en_vport_id, esmp,
+			EFX_STATS_ENABLE_NOEVENTS, period_ms);
 
 	if (rc != 0)
 		goto fail1;
@@ -1964,7 +2011,7 @@ fail1:
 
 #endif	/* EFSYS_OPT_MAC_STATS */
 
-#if EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2
+#if EFX_OPTS_EF10()
 
 /*
  * This function returns the pf and vf number of a function.  If it is a pf the
@@ -1979,11 +2026,10 @@ efx_mcdi_get_function_info(
 	__out_opt		uint32_t *vfp)
 {
 	efx_mcdi_req_t req;
-	uint8_t payload[MAX(MC_CMD_GET_FUNCTION_INFO_IN_LEN,
-			    MC_CMD_GET_FUNCTION_INFO_OUT_LEN)];
+	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_GET_FUNCTION_INFO_IN_LEN,
+		MC_CMD_GET_FUNCTION_INFO_OUT_LEN);
 	efx_rc_t rc;
 
-	(void) memset(payload, 0, sizeof (payload));
 	req.emr_cmd = MC_CMD_GET_FUNCTION_INFO;
 	req.emr_in_buf = payload;
 	req.emr_in_length = MC_CMD_GET_FUNCTION_INFO_IN_LEN;
@@ -2024,11 +2070,10 @@ efx_mcdi_privilege_mask(
 	__out			uint32_t *maskp)
 {
 	efx_mcdi_req_t req;
-	uint8_t payload[MAX(MC_CMD_PRIVILEGE_MASK_IN_LEN,
-			    MC_CMD_PRIVILEGE_MASK_OUT_LEN)];
+	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_PRIVILEGE_MASK_IN_LEN,
+		MC_CMD_PRIVILEGE_MASK_OUT_LEN);
 	efx_rc_t rc;
 
-	(void) memset(payload, 0, sizeof (payload));
 	req.emr_cmd = MC_CMD_PRIVILEGE_MASK;
 	req.emr_in_buf = payload;
 	req.emr_in_length = MC_CMD_PRIVILEGE_MASK_IN_LEN;
@@ -2063,7 +2108,7 @@ fail1:
 	return (rc);
 }
 
-#endif /* EFSYS_OPT_HUNTINGTON || EFSYS_OPT_MEDFORD || EFSYS_OPT_MEDFORD2 */
+#endif /* EFX_OPTS_EF10() */
 
 	__checkReturn		efx_rc_t
 efx_mcdi_set_workaround(
@@ -2073,11 +2118,10 @@ efx_mcdi_set_workaround(
 	__out_opt		uint32_t *flagsp)
 {
 	efx_mcdi_req_t req;
-	uint8_t payload[MAX(MC_CMD_WORKAROUND_IN_LEN,
-			    MC_CMD_WORKAROUND_EXT_OUT_LEN)];
+	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_WORKAROUND_IN_LEN,
+		MC_CMD_WORKAROUND_EXT_OUT_LEN);
 	efx_rc_t rc;
 
-	(void) memset(payload, 0, sizeof (payload));
 	req.emr_cmd = MC_CMD_WORKAROUND;
 	req.emr_in_buf = payload;
 	req.emr_in_length = MC_CMD_WORKAROUND_IN_LEN;
@@ -2117,10 +2161,9 @@ efx_mcdi_get_workarounds(
 	__out_opt		uint32_t *enabledp)
 {
 	efx_mcdi_req_t req;
-	uint8_t payload[MC_CMD_GET_WORKAROUNDS_OUT_LEN];
+	EFX_MCDI_DECLARE_BUF(payload, 0, MC_CMD_GET_WORKAROUNDS_OUT_LEN);
 	efx_rc_t rc;
 
-	(void) memset(payload, 0, sizeof (payload));
 	req.emr_cmd = MC_CMD_GET_WORKAROUNDS;
 	req.emr_in_buf = NULL;
 	req.emr_in_length = 0;
@@ -2157,6 +2200,14 @@ fail1:
  */
 #define	EFX_PHY_MEDIA_INFO_PAGE_SIZE		0x80
 
+/*
+ * Transceiver identifiers from SFF-8024 Table 4-1.
+ */
+#define	EFX_SFF_TRANSCEIVER_ID_SFP		0x03 /* SFP/SFP+/SFP28 */
+#define	EFX_SFF_TRANSCEIVER_ID_QSFP		0x0c /* QSFP */
+#define	EFX_SFF_TRANSCEIVER_ID_QSFP_PLUS	0x0d /* QSFP+ or later */
+#define	EFX_SFF_TRANSCEIVER_ID_QSFP28		0x11 /* QSFP28 or later */
+
 static	__checkReturn		efx_rc_t
 efx_mcdi_get_phy_media_info(
 	__in			efx_nic_t *enp,
@@ -2166,14 +2217,13 @@ efx_mcdi_get_phy_media_info(
 	__out_bcount(len)	uint8_t *data)
 {
 	efx_mcdi_req_t req;
-	uint8_t payload[MAX(MC_CMD_GET_PHY_MEDIA_INFO_IN_LEN,
-			    MC_CMD_GET_PHY_MEDIA_INFO_OUT_LEN(
-				EFX_PHY_MEDIA_INFO_PAGE_SIZE))];
+	EFX_MCDI_DECLARE_BUF(payload, MC_CMD_GET_PHY_MEDIA_INFO_IN_LEN,
+		MC_CMD_GET_PHY_MEDIA_INFO_OUT_LEN(
+			EFX_PHY_MEDIA_INFO_PAGE_SIZE));
 	efx_rc_t rc;
 
 	EFSYS_ASSERT((uint32_t)offset + len <= EFX_PHY_MEDIA_INFO_PAGE_SIZE);
 
-	(void) memset(payload, 0, sizeof (payload));
 	req.emr_cmd = MC_CMD_GET_PHY_MEDIA_INFO;
 	req.emr_in_buf = payload;
 	req.emr_in_length = MC_CMD_GET_PHY_MEDIA_INFO_IN_LEN;
@@ -2218,39 +2268,19 @@ fail1:
 	return (rc);
 }
 
-/*
- * 2-wire device address of the base information in accordance with SFF-8472
- * Diagnostic Monitoring Interface for Optical Transceivers section
- * 4 Memory Organization.
- */
-#define	EFX_PHY_MEDIA_INFO_DEV_ADDR_SFP_BASE	0xA0
-
-/*
- * 2-wire device address of the digital diagnostics monitoring interface
- * in accordance with SFF-8472 Diagnostic Monitoring Interface for Optical
- * Transceivers section 4 Memory Organization.
- */
-#define	EFX_PHY_MEDIA_INFO_DEV_ADDR_SFP_DDM	0xA2
-
-/*
- * Hard wired 2-wire device address for QSFP+ in accordance with SFF-8436
- * QSFP+ 10 Gbs 4X PLUGGABLE TRANSCEIVER section 7.4 Device Addressing and
- * Operation.
- */
-#define	EFX_PHY_MEDIA_INFO_DEV_ADDR_QSFP	0xA0
-
 	__checkReturn		efx_rc_t
 efx_mcdi_phy_module_get_info(
 	__in			efx_nic_t *enp,
 	__in			uint8_t dev_addr,
-	__in			uint8_t offset,
-	__in			uint8_t len,
+	__in			size_t offset,
+	__in			size_t len,
 	__out_bcount(len)	uint8_t *data)
 {
 	efx_port_t *epp = &(enp->en_port);
 	efx_rc_t rc;
 	uint32_t mcdi_lower_page;
 	uint32_t mcdi_upper_page;
+	uint8_t id;
 
 	EFSYS_ASSERT3U(enp->en_mod_flags, &, EFX_MOD_PROBE);
 
@@ -2264,6 +2294,26 @@ efx_mcdi_phy_module_get_info(
 	 */
 	switch (epp->ep_fixed_port_type) {
 	case EFX_PHY_MEDIA_SFP_PLUS:
+	case EFX_PHY_MEDIA_QSFP_PLUS:
+		/* Port type supports modules */
+		break;
+	default:
+		rc = ENOTSUP;
+		goto fail1;
+	}
+
+	/*
+	 * For all supported port types, MCDI page 0 offset 0 holds the
+	 * transceiver identifier. Probe to determine the data layout.
+	 * Definitions from SFF-8024 Table 4-1.
+	 */
+	rc = efx_mcdi_get_phy_media_info(enp,
+		    0, 0, sizeof(id), &id);
+	if (rc != 0)
+		goto fail2;
+
+	switch (id) {
+	case EFX_SFF_TRANSCEIVER_ID_SFP:
 		/*
 		 * In accordance with SFF-8472 Diagnostic Monitoring
 		 * Interface for Optical Transceivers section 4 Memory
@@ -2298,10 +2348,12 @@ efx_mcdi_phy_module_get_info(
 			break;
 		default:
 			rc = ENOTSUP;
-			goto fail1;
+			goto fail3;
 		}
 		break;
-	case EFX_PHY_MEDIA_QSFP_PLUS:
+	case EFX_SFF_TRANSCEIVER_ID_QSFP:
+	case EFX_SFF_TRANSCEIVER_ID_QSFP_PLUS:
+	case EFX_SFF_TRANSCEIVER_ID_QSFP28:
 		switch (dev_addr) {
 		case EFX_PHY_MEDIA_INFO_DEV_ADDR_QSFP:
 			/*
@@ -2317,22 +2369,24 @@ efx_mcdi_phy_module_get_info(
 			break;
 		default:
 			rc = ENOTSUP;
-			goto fail1;
+			goto fail3;
 		}
 		break;
 	default:
 		rc = ENOTSUP;
-		goto fail1;
+		goto fail3;
 	}
 
+	EFX_STATIC_ASSERT(EFX_PHY_MEDIA_INFO_PAGE_SIZE <= 0xFF);
+
 	if (offset < EFX_PHY_MEDIA_INFO_PAGE_SIZE) {
-		uint8_t read_len =
+		size_t read_len =
 		    MIN(len, EFX_PHY_MEDIA_INFO_PAGE_SIZE - offset);
 
 		rc = efx_mcdi_get_phy_media_info(enp,
-		    mcdi_lower_page, offset, read_len, data);
+		    mcdi_lower_page, (uint8_t)offset, (uint8_t)read_len, data);
 		if (rc != 0)
-			goto fail2;
+			goto fail4;
 
 		data += read_len;
 		len -= read_len;
@@ -2347,13 +2401,17 @@ efx_mcdi_phy_module_get_info(
 		EFSYS_ASSERT3U(offset, <, EFX_PHY_MEDIA_INFO_PAGE_SIZE);
 
 		rc = efx_mcdi_get_phy_media_info(enp,
-		    mcdi_upper_page, offset, len, data);
+		    mcdi_upper_page, (uint8_t)offset, (uint8_t)len, data);
 		if (rc != 0)
-			goto fail3;
+			goto fail5;
 	}
 
 	return (0);
 
+fail5:
+	EFSYS_PROBE(fail5);
+fail4:
+	EFSYS_PROBE(fail4);
 fail3:
 	EFSYS_PROBE(fail3);
 fail2:

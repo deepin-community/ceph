@@ -8,7 +8,6 @@
 #include <boost/scoped_ptr.hpp>
 #include <gtest/gtest.h>
 
-#include "common/Mutex.h"
 #include "common/Cond.h"
 #include "common/errno.h"
 #include "include/stringify.h"
@@ -22,7 +21,7 @@ typedef boost::mt11213b gen_type;
 #define dout_context g_ceph_context
 #define dout_subsys ceph_subsys_
 
-#if GTEST_HAS_PARAM_TEST
+using namespace std;
 
 class AllocTest : public ::testing::TestWithParam<const char*> {
 
@@ -31,7 +30,7 @@ public:
   AllocTest(): alloc(0) { }
   void init_alloc(int64_t size, uint64_t min_alloc_size) {
     std::cout << "Creating alloc type " << string(GetParam()) << " \n";
-    alloc.reset(Allocator::create(g_ceph_context, string(GetParam()), size,
+    alloc.reset(Allocator::create(g_ceph_context, GetParam(), size,
 				  min_alloc_size));
   }
 
@@ -336,7 +335,7 @@ TEST_P(AllocTest, mempoolAccounting)
 
   uint64_t alloc_size = 4 * 1024;
   uint64_t capacity = 512ll * 1024 * 1024 * 1024;
-  Allocator* alloc = Allocator::create(g_ceph_context, string(GetParam()),
+  Allocator* alloc = Allocator::create(g_ceph_context, GetParam(),
 				       capacity, alloc_size);
   ASSERT_NE(alloc, nullptr);
   alloc->init_add_free(0, capacity);
@@ -346,8 +345,10 @@ TEST_P(AllocTest, mempoolAccounting)
     PExtentVector tmp;
     alloc->allocate(alloc_size, alloc_size, 0, 0, &tmp);
     all_allocs[rand()] = tmp;
+    tmp.clear();
     alloc->allocate(alloc_size, alloc_size, 0, 0, &tmp);
     all_allocs[rand()] = tmp;
+    tmp.clear();
 
     auto it = all_allocs.upper_bound(rand());
     if (it != all_allocs.end()) {
@@ -361,12 +362,7 @@ TEST_P(AllocTest, mempoolAccounting)
   ASSERT_EQ(mempool::bluestore_alloc::allocated_items(), items);
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
   Allocator,
   AllocTest,
-  ::testing::Values("stupid", "bitmap", "avl", "hybrid"));
-
-#else
-
-TEST(DummyTest, ValueParameterizedTestsAreNotSupportedOnThisPlatform) {}
-#endif
+  ::testing::Values("stupid", "bitmap", "avl", "btree", "hybrid"));

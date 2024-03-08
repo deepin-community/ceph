@@ -20,12 +20,12 @@
 
 #include "global/global_init.h"
 #include "global/global_context.h"
+#include "common/async/context_pool.h"
 #include "common/ceph_argparse.h"
 #include "common/version.h"
 #include "common/dout.h"
 #include "common/debug.h"
-#include "common/Cond.h"
-#include "common/Mutex.h"
+#include "common/ceph_mutex.h"
 #include "common/Timer.h"
 #include "common/errno.h"
 #include "mon/MonClient.h"
@@ -48,14 +48,17 @@
 #undef dout_prefix
 #define dout_prefix *_dout << "test-mon-msg "
 
+using namespace std;
+
 class MonClientHelper : public Dispatcher
 {
 protected:
   CephContext *cct;
+  ceph::async::io_context_pool poolctx;
   Messenger *msg;
   MonClient monc;
 
-  Mutex lock;
+  ceph::mutex lock = ceph::make_mutex("mon-msg-test::lock");
 
   set<int> wanted;
 
@@ -64,9 +67,9 @@ public:
   explicit MonClientHelper(CephContext *cct_)
     : Dispatcher(cct_),
       cct(cct_),
+      poolctx(1),
       msg(NULL),
-      monc(cct_),
-      lock("mon-msg-test::lock")
+      monc(cct_, poolctx)
   { }
 
 
@@ -83,7 +86,7 @@ public:
 
     std::string public_msgr_type = cct->_conf->ms_public_type.empty() ? cct->_conf.get_val<std::string>("ms_type") : cct->_conf->ms_public_type;
     msg = Messenger::create(cct, public_msgr_type, entity_name_t::CLIENT(-1),
-                            "test-mon-msg", 0, 0);
+                            "test-mon-msg", 0);
     ceph_assert(msg != NULL);
     msg->set_default_policy(Messenger::Policy::lossy_client(0));
     dout(0) << __func__ << " starting messenger at "
@@ -222,12 +225,11 @@ class MonMsgTest : public MonClientHelper,
 protected:
   int reply_type = 0;
   Message *reply_msg = nullptr;
-  Mutex lock;
-  Cond cond;
+  ceph::mutex lock = ceph::make_mutex("lock");
+  ceph::condition_variable cond;
 
   MonMsgTest() :
-    MonClientHelper(g_ceph_context),
-    lock("lock") { }
+    MonClientHelper(g_ceph_context) { }
 
 public:
   void SetUp() override {
@@ -248,36 +250,33 @@ public:
   }
 
   void handle_wanted(Message *m) override {
-    lock.Lock();
+    std::lock_guard l{lock};
     // caller will put() after they call us, so hold on to a ref
     m->get();
     reply_msg = m;
-    cond.Signal();
-    lock.Unlock();
+    cond.notify_all();
   }
 
   Message *send_wait_reply(Message *m, int t, double timeout=30.0) {
-    lock.Lock();
+    std::unique_lock l{lock};
     reply_type = t;
     add_wanted(t);
     send_message(m);
 
-    int err = 0;
+    std::cv_status status = std::cv_status::no_timeout;
     if (timeout > 0) {
-      utime_t cond_timeout;
-      cond_timeout.set_from_double(timeout);
       utime_t s = ceph_clock_now();
-      err = cond.WaitInterval(lock, cond_timeout);
+      status = cond.wait_for(l, ceph::make_timespan(timeout));
       utime_t e = ceph_clock_now();
       dout(20) << __func__ << " took " << (e-s) << " seconds" << dendl;
     } else {
-      err = cond.Wait(lock);
+      cond.wait(l);
     }
     rm_wanted(t);
-    lock.Unlock();
-    if (err > 0) {
-      dout(20) << __func__ << " error: " << cpp_strerror(err) << dendl;
-      return (Message*)((long)-err);
+    l.unlock();
+    if (status == std::cv_status::timeout) {
+      dout(20) << __func__ << " error: " << cpp_strerror(ETIMEDOUT) << dendl;
+      return (Message*)((long)-ETIMEDOUT);
     }
 
     if (!reply_msg)
@@ -326,8 +325,7 @@ TEST_F(MonMsgTest, MMonJoin)
 
 int main(int argc, char *argv[])
 {
-  vector<const char*> args;
-  argv_to_vec(argc, (const char **)argv, args);
+  auto args = argv_to_vec(argc, argv);
 
   auto cct = global_init(nullptr, args,
 			 CEPH_ENTITY_TYPE_CLIENT, CODE_ENVIRONMENT_UTILITY,

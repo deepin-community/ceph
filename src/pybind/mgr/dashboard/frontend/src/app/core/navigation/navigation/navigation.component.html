@@ -1,163 +1,237 @@
-<nav class="navbar navbar-default navbar-main">
-  <!-- Brand and toggle get grouped for better mobile display -->
+<div class="cd-navbar-main">
+  <cd-pwd-expiration-notification></cd-pwd-expiration-notification>
+  <cd-telemetry-notification></cd-telemetry-notification>
+  <cd-motd></cd-motd>
+  <cd-notifications-sidebar></cd-notifications-sidebar>
+  <div class="cd-navbar-top">
+    <nav class="navbar navbar-expand-md navbar-dark cd-navbar-brand">
+      <button class="btn btn-link py-0 ms-3"
+              (click)="showMenuSidebar = !showMenuSidebar"
+              aria-label="toggle sidebar visibility">
+        <i class="fa fa-bars fa-2x"
+           aria-hidden="true"></i>
+      </button>
 
-  <div class="navbar-header tc_logo_component">
-    <a class="navbar-brand"
-       href="#">
-      <img src="assets/Ceph_Logo_Standard_RGB_White_120411_fa.png"
-           alt="Ceph">
-    </a>
+      <a class="navbar-brand ms-2"
+         href="#">
+        <img src="assets/Ceph_Ceph_Logo_with_text_white.svg"
+             alt="Ceph" />
+      </a>
 
-    <button type="button"
-            class="navbar-toggle collapsed"
-            (click)="isCollapsed = !isCollapsed">
-      <span i18n
-            class="sr-only">Toggle navigation</span>
-      <span class="icon-bar"></span>
-      <span class="icon-bar"></span>
-      <span class="icon-bar"></span>
-    </button>
+      <button type="button"
+              class="navbar-toggler"
+              (click)="toggleRightSidebar()">
+        <span i18n
+              class="sr-only">Toggle navigation</span>
+        <span class="">
+          <i class="fa fa-navicon fa-lg"></i>
+        </span>
+      </button>
+
+      <div class="collapse navbar-collapse"
+           [ngClass]="{'show': rightSidebarOpen}">
+        <ul class="nav navbar-nav cd-navbar-utility my-2 my-md-0">
+          <ng-container *ngTemplateOutlet="cd_utilities"> </ng-container>
+        </ul>
+      </div>
+    </nav>
   </div>
 
-  <!-- Collect the nav links, forms, and other content for toggling -->
-  <div *ngIf="enabledFeature$ | async as enabledFeature"
-       class="collapse navbar-collapse"
-       id="bs-example-navbar-collapse-1"
-       [collapse]="isCollapsed">
-    <ul class="nav navbar-nav navbar-primary">
+  <div class="wrapper">
+    <!-- Content -->
+    <nav id="sidebar"
+         [ngClass]="{'active': !showMenuSidebar}">
+      <ngx-simplebar [options]="simplebar">
+        <ul class="list-unstyled components cd-navbar-primary">
+          <ng-container *ngTemplateOutlet="cd_menu"> </ng-container>
+        </ul>
+      </ngx-simplebar>
+    </nav>
 
+    <!-- Page Content -->
+    <div id="content"
+         [ngClass]="{'active': !showMenuSidebar}">
+      <ng-content></ng-content>
+    </div>
+  </div>
+
+  <ng-template #cd_utilities>
+    <li class="nav-item">
+      <cd-language-selector class="cd-navbar"></cd-language-selector>
+    </li>
+    <li class="nav-item">
+      <cd-notifications class="cd-navbar"
+                        (click)="toggleRightSidebar()"></cd-notifications>
+    </li>
+    <li class="nav-item">
+      <cd-dashboard-help class="cd-navbar"></cd-dashboard-help>
+    </li>
+    <li class="nav-item">
+      <cd-administration class="cd-navbar"></cd-administration>
+    </li>
+    <li class="nav-item">
+      <cd-identity class="cd-navbar"></cd-identity>
+    </li>
+  </ng-template>
+
+  <ng-template #cd_menu>
+    <ng-container *ngIf="enabledFeature$ | async as enabledFeature">
       <!-- Dashboard -->
       <li routerLinkActive="active"
-          class="tc_menuitem tc_menuitem_dashboard">
-        <a routerLink="/dashboard">
-          <i class="fa fa-heartbeat fa-fw"
+          class="nav-item tc_menuitem_dashboard">
+        <a routerLink="/dashboard"
+           class="nav-link">
+          <span i18n>Dashboard</span>&nbsp;
+          <i [ngClass]="[icons.health]"
              [ngStyle]="summaryData?.health_status | healthColor"></i>
-          <span i18n>Dashboard</span>
         </a>
       </li>
 
       <!-- Cluster -->
-      <li dropdown
-          routerLinkActive="active"
-          class="dropdown tc_menuitem tc_menuitem_cluster"
-          *ngIf="permissions.hosts.read || permissions.monitor.read || permissions.osd.read || permissions.configOpt.read">
-        <a dropdownToggle
-           class="dropdown-toggle"
-           data-toggle="dropdown">
+      <li routerLinkActive="active"
+          class="nav-item tc_menuitem_cluster"
+          *ngIf="permissions.hosts.read || permissions.monitor.read ||
+          permissions.osd.read || permissions.configOpt.read ||
+          permissions.log.read || permissions.prometheus.read">
+        <a (click)="toggleSubMenu('cluster')"
+           class="nav-link dropdown-toggle"
+           [attr.aria-expanded]="displayedSubMenu === 'cluster'"
+           aria-controls="cluster-nav"
+           role="button">
           <ng-container i18n>Cluster</ng-container>
-          <span class="caret"></span>
         </a>
-        <ul *dropdownMenu
-            class="dropdown-menu">
+        <ul class="list-unstyled"
+            id="cluster-nav"
+            [ngbCollapse]="displayedSubMenu !== 'cluster'">
           <li routerLinkActive="active"
               class="tc_submenuitem tc_submenuitem_hosts"
               *ngIf="permissions.hosts.read">
             <a i18n
-               class="dropdown-item"
                routerLink="/hosts">Hosts</a>
+          </li>
+          <li routerLinkActive="active"
+              class="tc_submenuitem tc_submenuitem_cluster_inventory"
+              *ngIf="permissions.hosts.read">
+            <a i18n
+               routerLink="/inventory">Physical Disks</a>
           </li>
           <li routerLinkActive="active"
               class="tc_submenuitem tc_submenuitem_cluster_monitor"
               *ngIf="permissions.monitor.read">
             <a i18n
-               class="dropdown-item"
                routerLink="/monitor/">Monitors</a>
           </li>
           <li routerLinkActive="active"
-              class="tc_submenuitem tc_submenuitem_hosts"
+              class="tc_submenuitem tc_submenuitem_cluster_services"
+              *ngIf="permissions.hosts.read">
+            <a i18n
+               routerLink="/services/">Services</a>
+          </li>
+          <li routerLinkActive="active"
+              class="tc_submenuitem tc_submenuitem_osds"
               *ngIf="permissions.osd.read">
             <a i18n
-               class="dropdown-item"
                routerLink="/osd">OSDs</a>
           </li>
           <li routerLinkActive="active"
               class="tc_submenuitem tc_submenuitem_configuration"
               *ngIf="permissions.configOpt.read">
             <a i18n
-               class="dropdown-item"
                routerLink="/configuration">Configuration</a>
           </li>
           <li routerLinkActive="active"
               class="tc_submenuitem tc_submenuitem_crush"
-              *ngIf="permissions.hosts.read && permissions.osd.read">
+              *ngIf="permissions.osd.read">
             <a i18n
-               class="dropdown-item"
                routerLink="/crush-map">CRUSH map</a>
           </li>
           <li routerLinkActive="active"
               class="tc_submenuitem tc_submenuitem_modules"
               *ngIf="permissions.configOpt.read">
             <a i18n
-               class="dropdown-item"
-               routerLink="/mgr-modules">Manager modules</a>
+               routerLink="/mgr-modules">Manager Modules</a>
+          </li>
+          <li routerLinkActive="active"
+              class="tc_submenuitem tc_submenuitem_users"
+              *ngIf="permissions.configOpt.read">
+            <a i18n
+               routerLink="/ceph-users">Ceph Users</a>
           </li>
           <li routerLinkActive="active"
               class="tc_submenuitem tc_submenuitem_log"
               *ngIf="permissions.log.read">
             <a i18n
-               class="dropdown-item"
                routerLink="/logs">Logs</a>
           </li>
           <li routerLinkActive="active"
               class="tc_submenuitem tc_submenuitem_monitoring"
-              *ngIf="(isAlertmanagerConfigured || isPrometheusConfigured) && permissions.prometheus.read">
+              *ngIf="permissions.prometheus.read">
             <a routerLink="/monitoring">
-              <ng-container i18n>Monitoring</ng-container>
-              <small *ngIf="prometheusAlertService.alerts.length > 0"
-                     class="badge badge-danger">{{ prometheusAlertService.alerts.length }}</small>
+              <ng-container i18n>Alerts</ng-container>
+              <small *ngIf="prometheusAlertService.activeCriticalAlerts > 0"
+                     class="badge badge-danger ms-1">{{ prometheusAlertService.activeCriticalAlerts }}</small>
+              <small *ngIf="prometheusAlertService.activeWarningAlerts > 0"
+                     class="badge badge-warning ms-1">{{ prometheusAlertService.activeWarningAlerts }}</small>
             </a>
+          </li>
+          <li routerLinkActive="active"
+              class="tc_submenuitem tc_submenuitem_upgrade"
+              *ngIf="permissions.configOpt.read">
+            <a i18n
+               routerLink="/upgrade">Upgrade</a>
           </li>
         </ul>
       </li>
 
       <!-- Pools -->
       <li routerLinkActive="active"
-          class="tc_menuitem tc_menuitem_pool"
+          class="nav-item tc_menuitem_pool"
           *ngIf="permissions.pool.read">
-        <a i18n
+        <a class="nav-link"
+           i18n
            routerLink="/pool">Pools</a>
       </li>
 
       <!-- Block -->
-      <li dropdown
-          routerLinkActive="active"
-          class="dropdown tc_menuitem tc_menuitem_block"
-          *ngIf="
-          (enabledFeature.rbd || enabledFeature.mirroring || enabledFeature.iscsi) &&
-          (permissions.rbdImage.read || permissions.rbdMirroring.read || permissions.iscsi.read)">
-        <a dropdownToggle
-           class="dropdown-toggle"
-           data-toggle="dropdown"
+      <li routerLinkActive="active"
+          class="nav-item tc_menuitem_block"
+          *ngIf="(permissions.rbdImage.read || permissions.rbdMirroring.read || permissions.iscsi.read) &&
+          (enabledFeature.rbd || enabledFeature.mirroring || enabledFeature.iscsi)">
+        <a class="nav-link dropdown-toggle"
+           (click)="toggleSubMenu('block')"
+           [attr.aria-expanded]="displayedSubMenu === 'block'"
+           aria-controls="block-nav"
+           role="button"
            [ngStyle]="blockHealthColor()">
           <ng-container i18n>Block</ng-container>
-          <span class="caret"></span>
         </a>
 
-        <ul class="dropdown-menu">
+        <ul class="list-unstyled"
+            id="block-nav"
+            [ngbCollapse]="displayedSubMenu !== 'block'">
           <li routerLinkActive="active"
-              *ngIf="enabledFeature.rbd && permissions.rbdImage.read">
+              class="tc_submenuitem tc_submenuitem_block_images"
+              *ngIf="permissions.rbdImage.read && enabledFeature.rbd">
             <a i18n
-               class="dropdown-item"
                routerLink="/block/rbd">Images</a>
           </li>
 
           <li routerLinkActive="active"
               class="tc_submenuitem tc_submenuitem_block_mirroring"
-              *ngIf="enabledFeature.mirroring && permissions.rbdMirroring.read">
-            <a class="dropdown-item"
-               routerLink="/block/mirroring">
+              *ngIf="permissions.rbdMirroring.read && enabledFeature.mirroring">
+            <a routerLink="/block/mirroring">
               <ng-container i18n>Mirroring</ng-container>
               <small *ngIf="summaryData?.rbd_mirroring?.warnings !== 0"
-                     class="label label-warning">{{ summaryData?.rbd_mirroring?.warnings }}</small>
+                     class="badge badge-warning">{{ summaryData?.rbd_mirroring?.warnings }}</small>
               <small *ngIf="summaryData?.rbd_mirroring?.errors !== 0"
-                     class="label label-danger">{{ summaryData?.rbd_mirroring?.errors }}</small>
+                     class="badge badge-danger">{{ summaryData?.rbd_mirroring?.errors }}</small>
             </a>
           </li>
 
           <li routerLinkActive="active"
-              *ngIf="enabledFeature.iscsi && permissions.iscsi.read">
+              class="tc_submenuitem tc_submenuitem_block_iscsi"
+              *ngIf="permissions.iscsi.read && enabledFeature.iscsi">
             <a i18n
-               class="dropdown-item"
                routerLink="/block/iscsi">iSCSI</a>
           </li>
         </ul>
@@ -165,77 +239,64 @@
 
       <!-- NFS -->
       <li routerLinkActive="active"
-          class="tc_menuitem tc_menuitem_nfs"
-          *ngIf="permissions?.nfs?.read">
+          class="nav-item tc_menuitem_nfs"
+          *ngIf="permissions.nfs.read && enabledFeature.nfs">
         <a i18n
+           class="nav-link"
            routerLink="/nfs">NFS</a>
       </li>
 
       <!-- Filesystem -->
       <li routerLinkActive="active"
-          class="tc_menuitem tc_menuitem_cephs"
-          *ngIf="enabledFeature.cephfs && permissions.cephfs.read">
+          class="nav-item tc_menuitem_cephfs"
+          *ngIf="permissions.cephfs.read && enabledFeature.cephfs">
         <a i18n
-           routerLink="/cephfs">Filesystems</a>
+           class="nav-link"
+           routerLink="/cephfs">File Systems</a>
       </li>
 
       <!-- Object Gateway -->
-      <li dropdown
-          routerLinkActive="active"
-          class="dropdown tc_menuitem tc_menuitem_rgw"
-          *ngIf="enabledFeature.rgw && permissions.rgw.read">
-        <a dropdownToggle
-           class="dropdown-toggle"
-           data-toggle="dropdown">
+      <li routerLinkActive="active"
+          class="nav-item tc_menuitem_rgw"
+          *ngIf="permissions.rgw.read && enabledFeature.rgw">
+        <a class="nav-link dropdown-toggle"
+           (click)="toggleSubMenu('rgw')"
+           [attr.aria-expanded]="displayedSubMenu === 'rgw'"
+           aria-controls="gateway-nav"
+           role="button">
           <ng-container i18n>Object Gateway</ng-container>
-          <span class="caret"></span>
         </a>
-        <ul *dropdownMenu
-            class="dropdown-menu">
+        <ul class="list-unstyled"
+            id="gateway-nav"
+            [ngbCollapse]="displayedSubMenu !== 'rgw'">
+          <li routerLinkActive="active"
+              class="tc_submenuitem tc_submenuitem_rgw_overview">
+            <a i18n
+               routerLink="/rgw/overview">Overview</a>
+          </li>
           <li routerLinkActive="active"
               class="tc_submenuitem tc_submenuitem_rgw_daemons">
             <a i18n
-               class="dropdown-item"
-               routerLink="/rgw/daemon">Daemons</a>
+               routerLink="/rgw/daemon">Gateways</a>
           </li>
           <li routerLinkActive="active"
               class="tc_submenuitem tc_submenuitem_rgw_users">
             <a i18n
-               class="dropdown-item"
                routerLink="/rgw/user">Users</a>
           </li>
           <li routerLinkActive="active"
               class="tc_submenuitem tc_submenuitem_rgw_buckets">
             <a i18n
-               class="dropdown-item"
                routerLink="/rgw/bucket">Buckets</a>
+          </li>
+          <li routerLinkActive="active"
+              class="tc_submenuitem tc_submenuitem_rgw_buckets">
+            <a i18n
+               routerLink="/rgw/multisite">Multi-Site</a>
           </li>
         </ul>
       </li>
-    </ul>
-    <!-- /.navbar-primary -->
+    </ng-container>
+  </ng-template>
 
-    <ul class="nav navbar-nav navbar-utility">
-      <li>
-        <cd-language-selector class="oa-navbar"></cd-language-selector>
-      </li>
-      <li>
-        <cd-task-manager class="oa-navbar"></cd-task-manager>
-      </li>
-      <li>
-        <cd-notifications class="oa-navbar"></cd-notifications>
-      </li>
-      <li>
-        <cd-dashboard-help class="oa-navbar"></cd-dashboard-help>
-      </li>
-      <li>
-        <cd-administration class="oa-navbar"></cd-administration>
-      </li>
-      <li>
-        <cd-identity class="oa-navbar"></cd-identity>
-      </li>
-    </ul>
-    <!-- /.navbar-utility -->
-  </div>
-  <!-- /.navbar-collapse -->
-</nav>
+</div>
