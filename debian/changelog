@@ -1,3 +1,10 @@
+ceph (18.2.1+ds-1deepin1) unstable; urgency=medium
+
+  * Fix build with fmtlib-10.
+    Apply patch from https://github.com/ceph/ceph/pull/53698
+
+ -- Tianyu Chen <sweetyfish@deepin.org>  Wed, 13 Mar 2024 12:08:36 +0800
+
 ceph (18.2.1+ds-1) unstable; urgency=medium
 
   * Uploading to unstable.

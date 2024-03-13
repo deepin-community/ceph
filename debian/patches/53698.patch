@@ -1,0 +1,321 @@
+From c3e05b5732af6a0722591f59b991178de3042e45 Mon Sep 17 00:00:00 2001
+From: Paul Stemmet <github@luxolus.com>
+Date: Wed, 27 Sep 2023 09:09:06 +0000
+Subject: [PATCH 1/4] src: fmtlib 10 fixes
+
+This is fairly wide ranging series of patches, fixing multiple compile
+errors owing changes in fmtlib 9 and 10.
+
+Care was taken to attempt to not introduce #includes for fmtlib headers
+in the public headers of the project, largely through defining a sister
+<header file>_fmt.h header that just contains the necessary fmtlib
+definitions, along with importing these files into src/... files as
+needed. This appears to be the convention (at least, in some parts) of
+the codebase.
+
+References: https://github.com/fmtlib/fmt/releases/tag/10.0.0
+References: https://github.com/fmtlib/fmt/releases/tag/8.0.0
+Signed-off-by: Paul Stemmet <github@luxolus.com>
+---
+ src/common/LogEntry.h              | 11 ++++++++---
+ src/include/byteorder.h            |  5 +++++
+ src/include/neorados/RADOS_fmt.hpp | 15 +++++++++++++++
+ src/include/types_fmt.h            | 15 +++++++++++++++
+ src/osd/SnapMapper.cc              |  6 +++---
+ src/osd/osd_types.h                |  1 +
+ src/tools/neorados.cc              |  1 +
+ 7 files changed, 48 insertions(+), 6 deletions(-)
+ create mode 100644 src/include/neorados/RADOS_fmt.hpp
+ create mode 100644 src/include/types_fmt.h
+
+diff --git a/src/common/LogEntry.h b/src/common/LogEntry.h
+index 3ddebbd3043c0..a8733a12d63ab 100644
+--- a/src/common/LogEntry.h
++++ b/src/common/LogEntry.h
+@@ -16,6 +16,9 @@
+ #define CEPH_LOGENTRY_H
+ 
+ #include <fmt/format.h>
++#if FMT_VERSION >= 90000
++#include <fmt/ostream.h>
++#endif
+ 
+ #include "include/utime.h"
+ #include "msg/msg_fmt.h"
+@@ -187,6 +190,8 @@ inline std::ostream& operator<<(std::ostream& out, const clog_type t)
+   }
+ }
+ 
++template <> struct fmt::formatter<clog_type> : fmt::ostream_formatter {};
++
+ inline std::ostream& operator<<(std::ostream& out, const LogEntry& e)
+ {
+   return out << e.stamp << " " << e.name << " (" << e.rank << ") "
+@@ -196,14 +201,14 @@ inline std::ostream& operator<<(std::ostream& out, const LogEntry& e)
+ 
+ template <> struct fmt::formatter<EntityName> : fmt::formatter<std::string_view> {
+   template <typename FormatContext>
+-  auto format(const EntityName& e, FormatContext& ctx) {
+-    return formatter<std::string_view>::format(e.to_str(), ctx);
++  auto format(const EntityName& e, FormatContext& ctx) const {
++    return fmt::formatter<std::string_view>::format(e.to_str(), ctx);
+   }
+ };
+ 
+ template <> struct fmt::formatter<LogEntry> : fmt::formatter<std::string_view> {
+   template <typename FormatContext>
+-  auto format(const LogEntry& e, FormatContext& ctx) {
++  auto format(const LogEntry& e, FormatContext& ctx) const {
+     return fmt::format_to(ctx.out(), "{} {} ({}) {} : {} {} {}",
+ 			  e.stamp, e.name, e.rank, e.seq, e.channel, e.prio, e.msg);
+   }
+diff --git a/src/include/byteorder.h b/src/include/byteorder.h
+index 25b06db982da7..9abe2070890a3 100644
+--- a/src/include/byteorder.h
++++ b/src/include/byteorder.h
+@@ -53,3 +53,8 @@ inline ceph_les16 init_les16(__s16 x) {
+   v = x;
+   return v;
+ }
++
++template <typename T>
++auto format_as(ceph_le<T> c) {
++  return static_cast<T>(c);
++}
+diff --git a/src/include/neorados/RADOS_fmt.hpp b/src/include/neorados/RADOS_fmt.hpp
+new file mode 100644
+index 0000000000000..961ddca0bb626
+--- /dev/null
++++ b/src/include/neorados/RADOS_fmt.hpp
+@@ -0,0 +1,15 @@
++// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
++// vim: ts=8 sw=2 smarttab
++#pragma once
++/**
++ * \file fmtlib formatters for some neorados types
++ */
++
++#include <fmt/core.h>
++#if FMT_VERSION >= 90000
++#include <fmt/ostream.h>
++#endif
++
++#include <include/neorados/RADOS.hpp>
++
++template <> struct fmt::formatter<neorados::Object> : fmt::ostream_formatter {};
+diff --git a/src/include/types_fmt.h b/src/include/types_fmt.h
+new file mode 100644
+index 0000000000000..314b1c16604ab
+--- /dev/null
++++ b/src/include/types_fmt.h
+@@ -0,0 +1,15 @@
++// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:t -*-
++// vim: ts=8 sw=2 smarttab
++#pragma once
++/**
++ * \file fmtlib formatters for some types.h classes
++ */
++
++#include <fmt/core.h>
++#if FMT_VERSION >= 90000
++#include <fmt/ostream.h>
++#endif
++
++#include <include/types.h>
++
++template <> struct fmt::formatter<shard_id_t> : fmt::ostream_formatter {};
+diff --git a/src/osd/SnapMapper.cc b/src/osd/SnapMapper.cc
+index 7893bc08fdcb6..aaf55887a2021 100644
+--- a/src/osd/SnapMapper.cc
++++ b/src/osd/SnapMapper.cc
+@@ -211,7 +211,7 @@ string SnapMapper::get_prefix(int64_t pool, snapid_t snap)
+   return fmt::sprintf("%s%lld_%.16X_",
+ 		      MAPPING_PREFIX,
+ 		      pool,
+-		      snap);
++		      static_cast<uint64_t>(snap));
+ }
+ 
+ string SnapMapper::to_raw_key(
+@@ -650,7 +650,7 @@ string SnapMapper::make_purged_snap_key(int64_t pool, snapid_t last)
+   return fmt::sprintf("%s_%lld_%016llx",
+ 		      PURGED_SNAP_PREFIX,
+ 		      pool,
+-		      last);
++		      static_cast<uint64_t>(last));
+ }
+ 
+ void SnapMapper::make_purged_snap_key_value(
+@@ -866,7 +866,7 @@ string SnapMapper::get_legacy_prefix(snapid_t snap)
+ {
+   return fmt::sprintf("%s%.16X_",
+ 		      LEGACY_MAPPING_PREFIX,
+-		      snap);
++		      static_cast<uint64_t>(snap));
+ }
+ 
+ string SnapMapper::to_legacy_raw_key(
+diff --git a/src/osd/osd_types.h b/src/osd/osd_types.h
+index 16955ef5ef4d7..c518f0c66766e 100644
+--- a/src/osd/osd_types.h
++++ b/src/osd/osd_types.h
+@@ -36,6 +36,7 @@
+ #include "msg/msg_types.h"
+ #include "include/compat.h"
+ #include "include/types.h"
++#include "include/types_fmt.h"
+ #include "include/utime.h"
+ #include "include/CompatSet.h"
+ #include "common/ceph_context.h"
+diff --git a/src/tools/neorados.cc b/src/tools/neorados.cc
+index 16eed9ba9ff7f..1f2de3817c239 100644
+--- a/src/tools/neorados.cc
++++ b/src/tools/neorados.cc
+@@ -36,6 +36,7 @@
+ #include "include/buffer.h" // :(
+ 
+ #include "include/neorados/RADOS.hpp"
++#include "include/neorados/RADOS_fmt.hpp"
+ 
+ using namespace std::literals;
+ 
+
+From 3ab8c1104740d164219b424ef4f6e377dad4646f Mon Sep 17 00:00:00 2001
+From: Paul Stemmet <github@luxolus.com>
+Date: Wed, 27 Sep 2023 11:30:06 +0000
+Subject: [PATCH 2/4] src/common: wrap LogEntry.h fmt impls in namespace
+
+Signed-off-by: Paul Stemmet <github@luxolus.com>
+---
+ src/common/LogEntry.h | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/src/common/LogEntry.h b/src/common/LogEntry.h
+index a8733a12d63ab..f4c9ea403988b 100644
+--- a/src/common/LogEntry.h
++++ b/src/common/LogEntry.h
+@@ -190,8 +190,6 @@ inline std::ostream& operator<<(std::ostream& out, const clog_type t)
+   }
+ }
+ 
+-template <> struct fmt::formatter<clog_type> : fmt::ostream_formatter {};
+-
+ inline std::ostream& operator<<(std::ostream& out, const LogEntry& e)
+ {
+   return out << e.stamp << " " << e.name << " (" << e.rank << ") "
+@@ -199,19 +197,24 @@ inline std::ostream& operator<<(std::ostream& out, const LogEntry& e)
+              << e.channel << " " << e.prio << " " << e.msg;
+ }
+ 
+-template <> struct fmt::formatter<EntityName> : fmt::formatter<std::string_view> {
++namespace fmt {
++
++template <> struct formatter<clog_type> : ostream_formatter {};
++
++template <> struct formatter<EntityName> : formatter<std::string_view> {
+   template <typename FormatContext>
+   auto format(const EntityName& e, FormatContext& ctx) const {
+     return fmt::formatter<std::string_view>::format(e.to_str(), ctx);
+   }
+ };
+ 
+-template <> struct fmt::formatter<LogEntry> : fmt::formatter<std::string_view> {
++template <> struct formatter<LogEntry> : formatter<std::string_view> {
+   template <typename FormatContext>
+   auto format(const LogEntry& e, FormatContext& ctx) const {
+     return fmt::format_to(ctx.out(), "{} {} ({}) {} : {} {} {}",
+ 			  e.stamp, e.name, e.rank, e.seq, e.channel, e.prio, e.msg);
+   }
+ };
++} // namespace fmt
+ 
+ #endif
+
+From 99c750e6f667edaac34f3d9e34ac3dea74d86357 Mon Sep 17 00:00:00 2001
+From: Paul Stemmet <github@luxolus.com>
+Date: Wed, 27 Sep 2023 13:10:21 +0000
+Subject: [PATCH 3/4] src/include: use namespace fmt for fmt impls
+
+Signed-off-by: Paul Stemmet <github@luxolus.com>
+---
+ src/include/neorados/RADOS_fmt.hpp | 5 ++++-
+ src/include/types_fmt.h            | 5 ++++-
+ 2 files changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/src/include/neorados/RADOS_fmt.hpp b/src/include/neorados/RADOS_fmt.hpp
+index 961ddca0bb626..0b9dd039be8ca 100644
+--- a/src/include/neorados/RADOS_fmt.hpp
++++ b/src/include/neorados/RADOS_fmt.hpp
+@@ -12,4 +12,7 @@
+ 
+ #include <include/neorados/RADOS.hpp>
+ 
+-template <> struct fmt::formatter<neorados::Object> : fmt::ostream_formatter {};
++namespace fmt {
++
++template <> struct formatter<neorados::Object> : ostream_formatter {};
++} // namespace fmt
+diff --git a/src/include/types_fmt.h b/src/include/types_fmt.h
+index 314b1c16604ab..fde44d999c226 100644
+--- a/src/include/types_fmt.h
++++ b/src/include/types_fmt.h
+@@ -12,4 +12,7 @@
+ 
+ #include <include/types.h>
+ 
+-template <> struct fmt::formatter<shard_id_t> : fmt::ostream_formatter {};
++namespace fmt {
++
++template <> struct formatter<shard_id_t> : ostream_formatter {};
++} // namespace fmt
+
+From 23ba8f2779b11078e26ed10c5b77d72888d27517 Mon Sep 17 00:00:00 2001
+From: Paul Stemmet <github@luxolus.com>
+Date: Wed, 27 Sep 2023 14:43:07 +0000
+Subject: [PATCH 4/4] src: ifdef ostream_formatter impls to >= fmtlib 9
+
+Signed-off-by: Paul Stemmet <github@luxolus.com>
+---
+ src/common/LogEntry.h              | 2 ++
+ src/include/neorados/RADOS_fmt.hpp | 2 ++
+ src/include/types_fmt.h            | 2 ++
+ 3 files changed, 6 insertions(+)
+
+diff --git a/src/common/LogEntry.h b/src/common/LogEntry.h
+index f4c9ea403988b..b2a22350f4428 100644
+--- a/src/common/LogEntry.h
++++ b/src/common/LogEntry.h
+@@ -199,7 +199,9 @@ inline std::ostream& operator<<(std::ostream& out, const LogEntry& e)
+ 
+ namespace fmt {
+ 
++#if FMT_VERSION >= 90000
+ template <> struct formatter<clog_type> : ostream_formatter {};
++#endif
+ 
+ template <> struct formatter<EntityName> : formatter<std::string_view> {
+   template <typename FormatContext>
+diff --git a/src/include/neorados/RADOS_fmt.hpp b/src/include/neorados/RADOS_fmt.hpp
+index 0b9dd039be8ca..0d62cc888c608 100644
+--- a/src/include/neorados/RADOS_fmt.hpp
++++ b/src/include/neorados/RADOS_fmt.hpp
+@@ -14,5 +14,7 @@
+ 
+ namespace fmt {
+ 
++#if FMT_VERSION >= 90000
+ template <> struct formatter<neorados::Object> : ostream_formatter {};
++#endif
+ } // namespace fmt
+diff --git a/src/include/types_fmt.h b/src/include/types_fmt.h
+index fde44d999c226..f1642533d352f 100644
+--- a/src/include/types_fmt.h
++++ b/src/include/types_fmt.h
+@@ -14,5 +14,7 @@
+ 
+ namespace fmt {
+ 
++#if FMT_VERSION >= 90000
+ template <> struct formatter<shard_id_t> : ostream_formatter {};
++#endif
+ } // namespace fmt
