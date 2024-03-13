@@ -18,3 +18,5 @@ fix-CheckCxxAtomic-riscv64.patch
 try-fix-fmt-call.patch
 add-mips-support-to-toku-time.patch
 pybind-rbd-make-cdef-functions-not-propagate-excepti.patch
+
+53698.patch
