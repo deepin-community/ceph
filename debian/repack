@@ -63,11 +63,11 @@ done
 # right away when building the orig tarball.
 rm -f ${TEMP_DIR}/${UNPACK_DIR}/src/erasure-code/jerasure/jerasure/Examples/makefile.orig
 rm -f ${TEMP_DIR}/${UNPACK_DIR}/src/erasure-code/jerasure/jerasure/include/config.h.in~
-rm -f ${TEMP_DIR}/${UNPACK_DIR}src/erasure-code/jerasure/jerasure/makefile.orig
-rm -f ${TEMP_DIR}/${UNPACK_DIR}src/jaegertracing/opentelemetry-cpp/third_party/prometheus-cpp/3rdparty/civetweb/resources/cert/client.key.orig
-rm -f ${TEMP_DIR}/${UNPACK_DIR}src/jaegertracing/opentelemetry-cpp/third_party/prometheus-cpp/3rdparty/civetweb/resources/cert/server.key.orig
-rm -f ${TEMP_DIR}/${UNPACK_DIR}src/jaegertracing/opentelemetry-cpp/third_party/prometheus-cpp/3rdparty/civetweb/resources/cert/server_bkup.key.orig
-rm -f ${TEMP_DIR}/${UNPACK_DIR}src/pybind/mgr/rook/rook-client-python/rook_client/_helper.py.orig
+rm -f ${TEMP_DIR}/${UNPACK_DIR}/src/erasure-code/jerasure/jerasure/makefile.orig
+rm -f ${TEMP_DIR}/${UNPACK_DIR}/src/jaegertracing/opentelemetry-cpp/third_party/prometheus-cpp/3rdparty/civetweb/resources/cert/client.key.orig
+rm -f ${TEMP_DIR}/${UNPACK_DIR}/src/jaegertracing/opentelemetry-cpp/third_party/prometheus-cpp/3rdparty/civetweb/resources/cert/server.key.orig
+rm -f ${TEMP_DIR}/${UNPACK_DIR}/src/jaegertracing/opentelemetry-cpp/third_party/prometheus-cpp/3rdparty/civetweb/resources/cert/server_bkup.key.orig
+rm -f ${TEMP_DIR}/${UNPACK_DIR}/src/pybind/mgr/rook/rook-client-python/rook_client/_helper.py.orig
 
 cd ${MYPWD}
 tar -C ${TEMP_DIR} --owner=root --group=root --mode=a+rX -c ${UNPACK_DIR} | xz -6 >${DEST_DIR}/${PKG_NAME}_${UPSTREAM_VERS}+ds.orig.tar.xz

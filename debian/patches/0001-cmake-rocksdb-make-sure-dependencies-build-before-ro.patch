@@ -1,0 +1,55 @@
+From 3a5f06fedbfe86f18bf61788c8355afb2b917f42 Mon Sep 17 00:00:00 2001
+From: Casey Bodley <cbodley@redhat.com>
+Date: Thu, 23 Nov 2023 00:12:29 -0500
+Subject: cmake/rocksdb: make sure dependencies build before rocksdb
+
+some of rocksdb's dependencies may not have built by the time its
+ExternalProject starts, so it can fail with missing headers or
+libraries. for example, `uring::uring` may itself be an ExternalProject,
+and its include directory won't exist until it starts building:
+
+```
+[89/1345] Performing configure step for 'rocksdb_ext'
+FAILED: src/rocksdb_ext-prefix/src/rocksdb_ext-stamp/rocksdb_ext-configure build/src/rocksdb_ext-prefix/src/rocksdb_ext-stamp/rocksdb_ext-configure
+...
+CMake Error in CMakeLists.txt:
+  Imported target "uring::uring" includes non-existent path
+
+    "build/src/liburing/src/include"
+
+  in its INTERFACE_INCLUDE_DIRECTORIES.  Possible reasons include:
+
+  * The path was deleted, renamed, or moved to another location.
+
+  * An install or uninstall procedure did not complete successfully.
+
+  * The installation package was faulty and references files it does not
+  provide.
+...
+[91/1345] Performing download step (git clone) for 'liburing_ext'
+Cloning into 'liburing'...
+```
+
+use `add_dependencies(rocksdb_ext)` to make sure all of its dependencies
+are available before starting the build
+
+Signed-off-by: Casey Bodley <cbodley@redhat.com>
+(cherry picked from commit 353360581a0b802435ecf4273ba79f53deb710e6)
+---
+ cmake/modules/BuildRocksDB.cmake | 3 +++
+ 1 file changed, 3 insertions(+)
+
+Index: ceph/cmake/modules/BuildRocksDB.cmake
+===================================================================
+--- ceph.orig/cmake/modules/BuildRocksDB.cmake
++++ ceph/cmake/modules/BuildRocksDB.cmake
+@@ -102,6 +102,9 @@ function(build_rocksdb)
+   # make sure all the link libraries are built first
+   add_dependencies(rocksdb_ext ${rocksdb_INTERFACE_LINK_LIBRARIES})
+ 
++  # make sure all the link libraries are built first
++  add_dependencies(rocksdb_ext ${rocksdb_INTERFACE_LINK_LIBRARIES})
++
+   add_library(RocksDB::RocksDB STATIC IMPORTED)
+   add_dependencies(RocksDB::RocksDB rocksdb_ext)
+   set(rocksdb_INCLUDE_DIR "${rocksdb_SOURCE_DIR}/include")

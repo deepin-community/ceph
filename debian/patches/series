@@ -17,6 +17,11 @@ fix-CheckCxxAtomic-riscv64.patch
 #do-not-include-mgr_legacy_options.h.patch
 try-fix-fmt-call.patch
 add-mips-support-to-toku-time.patch
-pybind-rbd-make-cdef-functions-not-propagate-excepti.patch
-
-53698.patch
+0001-build-Bump-boost-to-1.82.patch
+0001-cmake-fix-Finduring.cmake.patch
+0001-cmake-populate-liburing-include-and-library-paths-do.patch
+0001-cmake-promote-uring-package-search-to-top-level.patch
+0001-cmake-rocksdb-make-sure-dependencies-build-before-ro.patch
+remove-usage-of-distutils.patch
+fix-for-cmake-3.29.2.patch
+fix-ftbfs-with-newer-snappy.patch

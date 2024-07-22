@@ -1,9 +1,97 @@
-ceph (18.2.1+ds-1deepin1) unstable; urgency=medium
+ceph (18.2.3+ds-3) unstable; urgency=medium
 
-  * Fix build with fmtlib-10.
-    Apply patch from https://github.com/ceph/ceph/pull/53698
+  * mips64el: Use -mxgot on CFLAGS, not LDFLAGS, thanks to Adrian Bunk for the
+    tip.
 
- -- Tianyu Chen <sweetyfish@deepin.org>  Wed, 13 Mar 2024 12:08:36 +0800
+ -- Thomas Goirand <zigo@debian.org>  Sun, 26 May 2024 11:07:21 +0200
+
+ceph (18.2.3+ds-2) unstable; urgency=medium
+
+  * Up the max number of build processes on computers with more than 48 GB.
+  * Add "export DEB_LDFLAGS_MAINT_APPEND= -mxgot" for mips64el to avoid FTBFS.
+
+ -- Thomas Goirand <zigo@debian.org>  Fri, 24 May 2024 21:23:32 +0200
+
+ceph (18.2.3+ds-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Add fix-ftbfs-with-newer-snappy.patch (Closes: #1071300).
+  * Fix d/copyright syntax.
+  * Fix some scripts flags (they were not executable).
+  * debian/repack: fix deleting files from upstream.
+  * Rebase, refresh, drop applied upstream, rework patches:
+    - pybind-rbd-make-cdef-functions-not-propagate-excepti.patch: drop.
+    - remove-usage-of-distutils.patch drop cephfs-shell part.
+    - 0001-cmake-promote-uring-package-search-to-top-level.patch partially
+      dropped (partially applied upstream).
+    - 0001-cmake-populate-liburing-include-and-library-paths-do.patch refresh.
+    - 0001-cmake-promote-uring-package-search-to-top-level.patch refresh.
+    - 0001-cmake-rocksdb-make-sure-dependencies-build-before-ro.patch refresh.
+    - 32bit-fixes.patch refresh.
+    - enable-strsignal.patch refresh.
+
+ -- Thomas Goirand <zigo@debian.org>  Wed, 22 May 2024 08:12:10 +0200
+
+ceph (18.2.1+ds-9) unstable; urgency=medium
+
+  * Do not chmod +x ceph-osd-prestart.sh if we're building arch:all.
+
+ -- Thomas Goirand <zigo@debian.org>  Fri, 26 Apr 2024 09:00:30 +0200
+
+ceph (18.2.1+ds-8) unstable; urgency=medium
+
+  * Add missing depends: libsqlite3-mod-ceph for ceph-mgr.
+  * Fix executable rights of /usr/lib/ceph/ceph-osd-prestart.sh that was
+    preventing osd to start.
+  * Fix prefix of path of ceph-osd-prestart.sh.
+
+ -- Thomas Goirand <zigo@debian.org>  Thu, 25 Apr 2024 14:48:30 +0200
+
+ceph (18.2.1+ds-7) unstable; urgency=medium
+
+  * Add fix-for-cmake-3.29.2.patch.
+
+ -- Thomas Goirand <zigo@debian.org>  Thu, 25 Apr 2024 08:57:27 +0200
+
+ceph (18.2.1+ds-6) unstable; urgency=medium
+
+  * Add patch to fix removal of python3-distutils.
+
+ -- Thomas Goirand <zigo@debian.org>  Wed, 24 Apr 2024 14:24:31 +0200
+
+ceph (18.2.1+ds-5) unstable; urgency=medium
+
+  * Removed python3-distutils from depends (Closes: #1065838).
+  * Refreshed 0001-cmake-promote-uring-package-search-to-top-level.patch.
+
+ -- Thomas Goirand <zigo@debian.org>  Sun, 10 Mar 2024 15:52:49 +0100
+
+ceph (18.2.1+ds-4) unstable; urgency=medium
+
+  * Re-enable system's liburing as it doesn't fix anything, and instead,
+    use dh_auto_build --buildsystem=cmake -- legacy-option-headers before
+    building to avoid a race condition where build happens before generating
+    headers.
+
+ -- Thomas Goirand <zigo@debian.org>  Fri, 08 Mar 2024 13:21:05 +0100
+
+ceph (18.2.1+ds-3) unstable; urgency=medium
+
+  * Increase --max-parallel to 12 if having 32 GB of RAM.
+  * Temporarily revert using system's liburing, as it broke on ppc64el,
+    possibly because of a race condition also affecting other arch.
+
+ -- Thomas Goirand <zigo@debian.org>  Thu, 07 Mar 2024 13:35:40 +0100
+
+ceph (18.2.1+ds-2) unstable; urgency=medium
+
+  [ Adrian Bunk ]
+  * Use system liburing again
+  * Use system boost again
+  * Remove obsolete WITH_BOOST_CONTEXT setting. The variable is no longer used
+    upstream, and the build dependency is already unconditional.
+
+ -- Thomas Goirand <zigo@debian.org>  Wed, 06 Mar 2024 23:20:09 +0100
 
 ceph (18.2.1+ds-1) unstable; urgency=medium
 
@@ -138,6 +226,33 @@ ceph (18.2.0+ds-1) experimental; urgency=medium
   * [97eafc2] Add ceph-fuse-dbg.
 
  -- Thomas Goirand <zigo@debian.org>  Mon, 25 Sep 2023 11:02:26 +0200
+
+ceph (16.2.11+ds-5) unstable; urgency=high
+
+  * CVE-2023-43040: security issue with RGW with improperly verified POST keys.
+    Applied upstream fix: rgw: Fix bucket validation against POST policies
+    (Closes: #1053690).
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 09 Oct 2023 08:53:31 +0200
+
+ceph (16.2.11+ds-4) unstable; urgency=medium
+
+  * [5e0eaf6] Add -latomic for riscv.
+  * [44ebe5f] Modify fix-CheckCxxAtomic-riscv64.patch so that it works as
+    expected.
+
+ -- Thomas Goirand <zigo@debian.org>  Fri, 29 Sep 2023 10:36:19 +0200
+
+ceph (16.2.11+ds-3) unstable; urgency=medium
+
+  * Fix gcc-13 FTBFS. (Closes: #1037602):
+    - fix-gcc-13-issue.patch (thanks to Bo YU).
+    - Add -fpermissive to DEB_CXXFLAGS_MAINT_APPEND.
+    - include-cstdint-in-subsys_types.h.patch.
+  * Fix debian/calc-max-parallel.sh to allow building on more core on
+    (very) big systems.
+
+ -- Thomas Goirand <zigo@debian.org>  Tue, 26 Sep 2023 09:41:32 +0200
 
 ceph (16.2.11+ds-2) unstable; urgency=medium
 

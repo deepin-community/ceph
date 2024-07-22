@@ -7,7 +7,7 @@ Index: ceph/CMakeLists.txt
 ===================================================================
 --- ceph.orig/CMakeLists.txt
 +++ ceph/CMakeLists.txt
-@@ -522,7 +522,7 @@ if(WITH_THREAD_SAFE_RES_QUERY)
+@@ -531,7 +531,7 @@ if(WITH_THREAD_SAFE_RES_QUERY)
    set(HAVE_THREAD_SAFE_RES_QUERY 1 CACHE INTERNAL "Thread safe res_query supported.")
  endif()
  

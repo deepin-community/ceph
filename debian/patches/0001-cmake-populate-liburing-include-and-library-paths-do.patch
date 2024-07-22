@@ -1,0 +1,58 @@
+From f0bd801083444eb46eb10e331f9027c3db8ddbf6 Mon Sep 17 00:00:00 2001
+From: Patrick Donnelly <pdonnell@redhat.com>
+Date: Mon, 16 Oct 2023 10:07:04 -0400
+Subject: cmake: populate liburing include and library paths down to rocksdb
+ external project
+
+There are two problems:
+
+1) The librocksdb does not use the built liburing if present.
+2) You cannot turn off rocksdb's use of liburing with WITH_LIBURING=OFF.
+
+This is to fix errors like:
+
+	FAILED: bin/ceph_test_keyvaluedb_iterators
+	: && /opt/rh/gcc-toolset-11/root/usr/bin/g++ -Og -g -rdynamic -pie src/test/ObjectMap/CMakeFiles/ceph_test_keyvaluedb_iterators.dir/test_keyvaluedb_iterators.cc.o src/test/ObjectMap/CMakeFiles/ceph_test_keyvaluedb_iterators.dir/KeyValueDBMemory.cc.o -o bin/ceph_test_keyvaluedb_iterators  -Wl,-rpath,/home/pdonnell/scratch/build/lib  lib/libos.a  lib/libgmock_maind.a  lib/libgmockd.	a  lib/libgtestd.a  -lpthread  -ldl  lib/libglobal.a  -ldl  /usr/lib64/librt.so  -lresolv  -ldl  lib/libblk.a  /lib64/libaio.so  src/liburing/src/liburing.a  lib/libkv.a  lib/libheap_profiler.a  /lib64/libtcmalloc.so  src/rocksdb/librocksdb.a  /lib64/libsnappy.so  /usr/lib64/liblz4.so  /usr/lib64/libz.so  /usr/lib64/libfuse.so  lib/libceph-common.so.2  src/opentelemetry-cpp/sdk/src/trace/libopentelemetry_trace.a  src/opentelemetry-cpp/sdk/src/resource/libopentelemetry_resources.a  src/opentelemetry-cpp/sdk/src/common/libopentelemetry_common.a  src/opentelemetry-cpp/exporters/jaeger/libopentelemetry_exporter_jaeger_trace.a  src/opentelemetry-cpp/ext/src/http/client/curl/libopentelemetry_http_client_curl.a  /usr/lib64/libcurl.so  /usr/lib64/libthrift.so  lib/libjson_spirit.a  lib/libcommon_utf8.a  lib/liberasure_code.a  lib/libextblkdev.a  -lcap  boost/lib/libboost_thread.a  boost/lib/libboost_chrono.a  boost/lib/libboost_atomic.a  boost/lib/libboost_system.a  boost/lib/libboost_random.a  boost/lib/libboost_program_options.a  boost/lib/libboost_date_time.a  boost/lib/libboost_iostreams.a  boost/lib/libboost_regex.a  lib/libfmtd.a  /usr/lib64/libblkid.so  -lpthread  /usr/lib64/libcrypto.so  /usr/lib64/libudev.so  /usr/lib64/libz.so  -ldl  -lresolv   -Wl,--as-needed -latomic && :
+	/opt/rh/gcc-toolset-11/root/usr/bin/ld: src/rocksdb/librocksdb.a(fs_posix.cc.o): in function `io_uring_wait_cqe_nr':
+	/home/pdonnell/scratch/build/src/liburing/src/include/liburing.h:494: undefined reference to `__io_uring_get_cqe'
+	/opt/rh/gcc-toolset-11/root/usr/bin/ld: src/rocksdb/librocksdb.a(fs_posix.cc.o): in function `rocksdb::(anonymous namespace)::PosixFileSystem::AbortIO(std::vector<void*, std::allocator<void*> >&)':
+	/home/pdonnell/ceph/src/rocksdb/env/fs_posix.cc:1125: undefined reference to `io_uring_get_sqe'
+	/opt/rh/gcc-toolset-11/root/usr/bin/ld: /home/pdonnell/ceph/src/rocksdb/env/fs_posix.cc:1134: undefined reference to `io_uring_submit'
+	/opt/rh/gcc-toolset-11/root/usr/bin/ld: src/rocksdb/librocksdb.a(fs_posix.cc.o): in function `rocksdb::CreateIOUring()':
+	/home/pdonnell/ceph/src/rocksdb/env/io_posix.h:272: undefined reference to `io_uring_queue_init'
+	/opt/rh/gcc-toolset-11/root/usr/bin/ld: src/rocksdb/librocksdb.a(io_posix.cc.o): in function `io_uring_wait_cqe_nr':
+	/home/pdonnell/scratch/build/src/liburing/src/include/liburing.h:494: undefined reference to `__io_uring_get_cqe'
+	/opt/rh/gcc-toolset-11/root/usr/bin/ld: src/rocksdb/librocksdb.a(io_posix.cc.o): in function `rocksdb::PosixRandomAccessFile::MultiRead(rocksdb::FSReadRequest*, unsigned long, rocksdb::IOOptions const&, rocksdb::IODebugContext*)':
+	/home/pdonnell/ceph/src/rocksdb/env/io_posix.cc:674: undefined reference to `io_uring_get_sqe'
+	/opt/rh/gcc-toolset-11/root/usr/bin/ld: /home/pdonnell/ceph/src/rocksdb/env/io_posix.cc:684: undefined reference to `io_uring_submit_and_wait'
+	/opt/rh/gcc-toolset-11/root/usr/bin/ld: src/rocksdb/librocksdb.a(io_posix.cc.o): in function `rocksdb::PosixRandomAccessFile::ReadAsync(rocksdb::FSReadRequest&, rocksdb::IOOptions const&, std::function<void (rocksdb::FSReadRequest const&, void*)>, void*, void**, std::function<void (void*)>*, rocksdb::IODebugContext*)':
+	/home/pdonnell/ceph/src/rocksdb/env/io_posix.cc:901: undefined reference to `io_uring_get_sqe'
+	/opt/rh/gcc-toolset-11/root/usr/bin/ld: /home/pdonnell/ceph/src/rocksdb/env/io_posix.cc:910: undefined reference to `io_uring_submit'
+	collect2: error: ld returned 1 exit status
+
+Fixes: https://tracker.ceph.com/issues/63218
+Signed-off-by: Patrick Donnelly <pdonnell@redhat.com>
+(cherry picked from commit 8addb3598701410002688ce8ca8bdfcde2026ece)
+---
+ cmake/modules/BuildRocksDB.cmake | 7 +++++++
+ cmake/modules/Builduring.cmake   | 2 ++
+ 2 files changed, 9 insertions(+)
+
+Index: ceph/cmake/modules/BuildRocksDB.cmake
+===================================================================
+--- ceph.orig/cmake/modules/BuildRocksDB.cmake
++++ ceph/cmake/modules/BuildRocksDB.cmake
+@@ -18,6 +18,13 @@ function(build_rocksdb)
+     list(APPEND rocksdb_INTERFACE_LINK_LIBRARIES uring::uring)
+   endif()
+ 
++  list(APPEND rocksdb_CMAKE_ARGS -DWITH_LIBURING=${WITH_LIBURING})
++  if(WITH_LIBURING)
++    list(APPEND rocksdb_CMAKE_ARGS -During_INCLUDE_DIR=${URING_INCLUDE_DIR})
++    list(APPEND rocksdb_CMAKE_ARGS -During_LIBRARIES=${URING_LIBRARY_DIR})
++    list(APPEND rocksdb_INTERFACE_LINK_LIBRARIES uring::uring)
++  endif()
++
+   if(ALLOCATOR STREQUAL "jemalloc")
+     list(APPEND rocksdb_CMAKE_ARGS -DWITH_JEMALLOC=ON)
+     list(APPEND rocksdb_INTERFACE_LINK_LIBRARIES JeMalloc::JeMalloc)
