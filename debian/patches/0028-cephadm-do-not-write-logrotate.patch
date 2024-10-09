@@ -1,0 +1,23 @@
+Author: Daniel Baumann <daniel@debian.org>
+Description: Avoid having cephadm writing its own logrotate copy of what is
+ already in ceph-common (Closes: #1041092).
+ .
+ This is not ideal and needs proper fix later on because if cephadm is used
+ without ceph-common, no logrotate is in place. However, having cephadm
+ writing the file even worse, so with disabling it we're still better off.
+
+diff -Naurp ceph.orig/src/cephadm/cephadm.py ceph/src/cephadm/cephadm.py
+--- ceph.orig/src/cephadm/cephadm.py
++++ ceph/src/cephadm/cephadm.py
+@@ -4477,9 +4477,8 @@ def install_base_units(ctx, fsid):
+         call_throws(ctx, ['systemctl', 'enable', 'ceph-%s.target' % fsid])
+         call_throws(ctx, ['systemctl', 'start', 'ceph-%s.target' % fsid])
+ 
+-    # don't overwrite file in order to allow users to manipulate it
+-    if os.path.exists(ctx.logrotate_dir + f'/ceph-{fsid}'):
+-        return
++    # don't write logrotate file, already included in ceph-common
++    return
+ 
+     # logrotate for the cluster
+     with write_new(ctx.logrotate_dir + f'/ceph-{fsid}', perms=None) as f:

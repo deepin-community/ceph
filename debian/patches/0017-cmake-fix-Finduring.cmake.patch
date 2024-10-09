@@ -1,0 +1,64 @@
+From 670118abfb9ef6135972a56514173e72b64ef8f4 Mon Sep 17 00:00:00 2001
+From: Casey Bodley <cbodley@redhat.com>
+Date: Fri, 31 Mar 2023 14:18:21 -0400
+Subject: cmake: fix Finduring.cmake
+
+liburing-devel package provides `/usr/lib64/liburing.so`. without this
+fix, `find_package(uring)` failed with this `CMAKE_FIND_DEBUG_MODE`
+output:
+```
+  find_library considered the following locations:
+
+    /home/cbodley/ceph/build/virtualenv/bin//(lib)liburing.a(\.so|\.a)
+    /home/cbodley/ceph/build/virtualenv/bin/(lib)liburing.a(\.so|\.a)
+    /usr/local/bin//(lib)liburing.a(\.so|\.a)
+    /usr/local/bin/(lib)liburing.a(\.so|\.a)
+    /usr/local/sbin//(lib)liburing.a(\.so|\.a)
+    /usr/local/sbin/(lib)liburing.a(\.so|\.a)
+    /usr/bin//(lib)liburing.a(\.so|\.a)
+    /usr/bin/(lib)liburing.a(\.so|\.a)
+    /usr/sbin//(lib)liburing.a(\.so|\.a)
+    /usr/sbin/(lib)liburing.a(\.so|\.a)
+    /usr/local/lib64//(lib)liburing.a(\.so|\.a)
+    /usr/local/lib64/(lib)liburing.a(\.so|\.a)
+    /usr/local/lib//(lib)liburing.a(\.so|\.a)
+    /usr/local/lib/(lib)liburing.a(\.so|\.a)
+    /usr/local//(lib)liburing.a(\.so|\.a)
+    /usr/local/(lib)liburing.a(\.so|\.a)
+    /usr/lib64//(lib)liburing.a(\.so|\.a)
+    /usr/lib64/(lib)liburing.a(\.so|\.a)
+    /usr/lib//(lib)liburing.a(\.so|\.a)
+    /usr/lib/(lib)liburing.a(\.so|\.a)
+    /usr//(lib)liburing.a(\.so|\.a)
+    /usr/(lib)liburing.a(\.so|\.a)
+    /lib64//(lib)liburing.a(\.so|\.a)
+    /lib64/(lib)liburing.a(\.so|\.a)
+    /lib//(lib)liburing.a(\.so|\.a)
+    /lib/(lib)liburing.a(\.so|\.a)
+    /opt//(lib)liburing.a(\.so|\.a)
+    /opt/(lib)liburing.a(\.so|\.a)
+    /usr/lib64/X11//(lib)liburing.a(\.so|\.a)
+    /usr/lib64/X11/(lib)liburing.a(\.so|\.a)
+```
+
+Signed-off-by: Casey Bodley <cbodley@redhat.com>
+---
+ cmake/modules/Finduring.cmake | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/cmake/modules/Finduring.cmake b/cmake/modules/Finduring.cmake
+index 10c8de42550..8a6267ef2f3 100644
+--- a/cmake/modules/Finduring.cmake
++++ b/cmake/modules/Finduring.cmake
+@@ -5,7 +5,7 @@
+ # uring_FOUND - True if uring found.
+ 
+ find_path(URING_INCLUDE_DIR liburing.h)
+-find_library(URING_LIBRARIES liburing.a liburing)
++find_library(URING_LIBRARIES uring)
+ 
+ include(FindPackageHandleStandardArgs)
+ find_package_handle_standard_args(uring DEFAULT_MSG URING_LIBRARIES URING_INCLUDE_DIR)
+-- 
+2.30.2
+

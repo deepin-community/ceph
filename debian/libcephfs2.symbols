@@ -16,6 +16,7 @@ libcephfs.so.2 libcephfs2 #MINVER#
  ceph_chown@Base 12.0.3
  ceph_chownat@Base 16.2.6+ds
  ceph_close@Base 12.0.3
+ ceph_close_snapdiff@Base 18.2.4+ds-4
  ceph_closedir@Base 12.0.3
  ceph_conf_get@Base 12.0.3
  ceph_conf_parse_argv@Base 12.0.3
@@ -161,6 +162,7 @@ libcephfs.so.2 libcephfs2 #MINVER#
  ceph_mount_perms_set@Base 13.2.0
  ceph_open@Base 12.0.3
  ceph_open_layout@Base 12.0.3
+ ceph_open_snapdiff@Base 18.2.4+ds-4
  ceph_openat@Base 16.2.6+ds
  ceph_opendir@Base 12.0.3
  ceph_preadv@Base 12.0.3
@@ -168,6 +170,7 @@ libcephfs.so.2 libcephfs2 #MINVER#
  ceph_read@Base 12.0.3
  ceph_readdir@Base 12.0.3
  ceph_readdir_r@Base 12.0.3
+ ceph_readdir_snapdiff@Base 18.2.4+ds-4
  ceph_readdirplus_r@Base 12.0.3
  ceph_readlink@Base 12.0.3
  ceph_readlinkat@Base 16.2.6+ds

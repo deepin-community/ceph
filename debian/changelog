@@ -1,9 +1,172 @@
-ceph (18.2.1+ds-1deepin1) unstable; urgency=medium
+ceph (18.2.4+ds-7) unstable; urgency=medium
 
-  * Fix build with fmtlib-10.
-    Apply patch from https://github.com/ceph/ceph/pull/53698
+  * Removing superfluous dependency on python3-six in ceph-mgr-rook
+    (Closes: #1079864).
 
- -- Tianyu Chen <sweetyfish@deepin.org>  Wed, 13 Mar 2024 12:08:36 +0800
+ -- Daniel Baumann <mail@daniel-baumann.ch>  Wed, 18 Sep 2024 09:47:35 +0200
+
+ceph (18.2.4+ds-6) unstable; urgency=medium
+
+  * Removing manually specifing zero jvm on mips64el as it doesn't work
+    and we better wait for the proper fix in cmake itself (#1078712).
+  * Building with fixed cmake (Closes: #1078446).
+  * Trimming unused entry in last changelog.
+
+ -- Daniel Baumann <daniel@debian.org>  Thu, 15 Aug 2024 12:53:10 +0200
+
+ceph (18.2.4+ds-5) unstable; urgency=medium
+
+  * Updating libcephfs2.symbols.
+  * Using fuse3 instead of fuse.
+  * Trying to fix FTBFS on mips64el (#1078446) since openjdk-21 became
+    default-jdk by manually specifing the zero jvm as there's no hotspot
+    jvm anymore on this architecture.
+
+ -- Daniel Baumann <daniel@debian.org>  Wed, 14 Aug 2024 18:45:20 +0200
+
+ceph (18.2.4+ds-4) unstable; urgency=medium
+
+  * Correcting execution order of dh_movetousr, thanks to Helmut Grohne
+    <helmut@subdivi.de> (Closes: #1073640).
+  * Updating update-java-source-target-flags.patch for openjdk 21.
+  * Correcting accidentally wrong email address in previous changelog
+    entry.
+
+ -- Daniel Baumann <daniel@debian.org>  Thu, 08 Aug 2024 17:01:36 +0200
+
+ceph (18.2.4+ds-3) unstable; urgency=medium
+
+  * Renumbering patches sequentially.
+  * Removing unused do-not-include-mgr_legacy_options.h.patch.
+  * Rediffing and harmonizing enable-strsignal.patch.
+  * Rediffing and harmonizing update-java-source-target-flags.patch.
+  * Rediffing and harmonizing disable-crypto.patch.
+  * Adding patch to avoid cephadm writing its own logrotate configuration
+    (Closes: #1041092).
+  * Adding patch from Dandan Zhang <zhangdandan@loongson.cn> to fix FTBFS
+    on loong64 (Closes: #1055047, #1069022).
+  * Trimming whitespaces in debian changelog.
+  * Wrap-and-sorting debian packaging files.
+
+ -- Daniel Baumann <daniel@debian.org>  Sat, 27 Jul 2024 07:25:47 +0200
+
+ceph (18.2.4+ds-2) unstable; urgency=medium
+
+  * Removing unneeded depends in ceph-mds for shorter dependency chains.
+  * Removing unneeded depends in ceph-mgr for shorter dependency chains.
+  * Removing unneeded depends in ceph-mon for shorter dependency chains.
+  * Moving systemd units to /usr (Closes: #1073640)
+  * Adding udev rules for rbd to activate LUKS volumes, thanks to Daniel
+    Schreiber <daniel.schreiber@hrz.tu-chemnitz.de> (Closes: #1064970).
+
+ -- Daniel Baumann <daniel@debian.org>  Fri, 26 Jul 2024 14:15:31 +0200
+
+ceph (18.2.4+ds-1) unstable; urgency=medium
+
+  [ Thomas Goirand ]
+  * Add Daniel as uploader. Remove Gaudenz (not active anymore).
+
+  [ Daniel Baumann ]
+  * Merging upstream version 18.2.4+ds.
+  * Cherry-picking patches from upstream to fix FTBFS with gcc-14 (Closes:
+    #1074874).
+
+ -- Daniel Baumann <daniel@debian.org>  Fri, 26 Jul 2024 07:00:05 +0200
+
+ceph (18.2.3+ds-3) unstable; urgency=medium
+
+  * mips64el: Use -mxgot on CFLAGS, not LDFLAGS, thanks to Adrian Bunk for the
+    tip.
+
+ -- Thomas Goirand <zigo@debian.org>  Sun, 26 May 2024 11:07:21 +0200
+
+ceph (18.2.3+ds-2) unstable; urgency=medium
+
+  * Up the max number of build processes on computers with more than 48 GB.
+  * Add "export DEB_LDFLAGS_MAINT_APPEND= -mxgot" for mips64el to avoid FTBFS.
+
+ -- Thomas Goirand <zigo@debian.org>  Fri, 24 May 2024 21:23:32 +0200
+
+ceph (18.2.3+ds-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Add fix-ftbfs-with-newer-snappy.patch (Closes: #1071300).
+  * Fix d/copyright syntax.
+  * Fix some scripts flags (they were not executable).
+  * debian/repack: fix deleting files from upstream.
+  * Rebase, refresh, drop applied upstream, rework patches:
+    - pybind-rbd-make-cdef-functions-not-propagate-excepti.patch: drop.
+    - remove-usage-of-distutils.patch drop cephfs-shell part.
+    - 0001-cmake-promote-uring-package-search-to-top-level.patch partially
+      dropped (partially applied upstream).
+    - 0001-cmake-populate-liburing-include-and-library-paths-do.patch refresh.
+    - 0001-cmake-promote-uring-package-search-to-top-level.patch refresh.
+    - 0001-cmake-rocksdb-make-sure-dependencies-build-before-ro.patch refresh.
+    - 32bit-fixes.patch refresh.
+    - enable-strsignal.patch refresh.
+
+ -- Thomas Goirand <zigo@debian.org>  Wed, 22 May 2024 08:12:10 +0200
+
+ceph (18.2.1+ds-9) unstable; urgency=medium
+
+  * Do not chmod +x ceph-osd-prestart.sh if we're building arch:all.
+
+ -- Thomas Goirand <zigo@debian.org>  Fri, 26 Apr 2024 09:00:30 +0200
+
+ceph (18.2.1+ds-8) unstable; urgency=medium
+
+  * Add missing depends: libsqlite3-mod-ceph for ceph-mgr.
+  * Fix executable rights of /usr/lib/ceph/ceph-osd-prestart.sh that was
+    preventing osd to start.
+  * Fix prefix of path of ceph-osd-prestart.sh.
+
+ -- Thomas Goirand <zigo@debian.org>  Thu, 25 Apr 2024 14:48:30 +0200
+
+ceph (18.2.1+ds-7) unstable; urgency=medium
+
+  * Add fix-for-cmake-3.29.2.patch.
+
+ -- Thomas Goirand <zigo@debian.org>  Thu, 25 Apr 2024 08:57:27 +0200
+
+ceph (18.2.1+ds-6) unstable; urgency=medium
+
+  * Add patch to fix removal of python3-distutils.
+
+ -- Thomas Goirand <zigo@debian.org>  Wed, 24 Apr 2024 14:24:31 +0200
+
+ceph (18.2.1+ds-5) unstable; urgency=medium
+
+  * Removed python3-distutils from depends (Closes: #1065838).
+  * Refreshed 0001-cmake-promote-uring-package-search-to-top-level.patch.
+
+ -- Thomas Goirand <zigo@debian.org>  Sun, 10 Mar 2024 15:52:49 +0100
+
+ceph (18.2.1+ds-4) unstable; urgency=medium
+
+  * Re-enable system's liburing as it doesn't fix anything, and instead,
+    use dh_auto_build --buildsystem=cmake -- legacy-option-headers before
+    building to avoid a race condition where build happens before generating
+    headers.
+
+ -- Thomas Goirand <zigo@debian.org>  Fri, 08 Mar 2024 13:21:05 +0100
+
+ceph (18.2.1+ds-3) unstable; urgency=medium
+
+  * Increase --max-parallel to 12 if having 32 GB of RAM.
+  * Temporarily revert using system's liburing, as it broke on ppc64el,
+    possibly because of a race condition also affecting other arch.
+
+ -- Thomas Goirand <zigo@debian.org>  Thu, 07 Mar 2024 13:35:40 +0100
+
+ceph (18.2.1+ds-2) unstable; urgency=medium
+
+  [ Adrian Bunk ]
+  * Use system liburing again
+  * Use system boost again
+  * Remove obsolete WITH_BOOST_CONTEXT setting. The variable is no longer used
+    upstream, and the build dependency is already unconditional.
+
+ -- Thomas Goirand <zigo@debian.org>  Wed, 06 Mar 2024 23:20:09 +0100
 
 ceph (18.2.1+ds-1) unstable; urgency=medium
 
@@ -105,7 +268,7 @@ ceph (18.2.0+ds-1) experimental; urgency=medium
   * [3803693] d/rules:
     - include /usr/share/dpkg/default.mk
     - Add extraopts += -DWITH_SYSTEM_UTF8PROC=ON
-    - always do extraopts += -DWITH_SYSTEM_PMDK=ON 
+    - always do extraopts += -DWITH_SYSTEM_PMDK=ON
     - do not install usr/sbin/cephadm from debian/rules, but with d/*.install
     - dh_shlibdeps: add --exclude=ceph_crypto
   * [c2b24a8] d/patches/*: rebase/refresh/delete for use with latest upstream
@@ -138,6 +301,33 @@ ceph (18.2.0+ds-1) experimental; urgency=medium
   * [97eafc2] Add ceph-fuse-dbg.
 
  -- Thomas Goirand <zigo@debian.org>  Mon, 25 Sep 2023 11:02:26 +0200
+
+ceph (16.2.11+ds-5) unstable; urgency=high
+
+  * CVE-2023-43040: security issue with RGW with improperly verified POST keys.
+    Applied upstream fix: rgw: Fix bucket validation against POST policies
+    (Closes: #1053690).
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 09 Oct 2023 08:53:31 +0200
+
+ceph (16.2.11+ds-4) unstable; urgency=medium
+
+  * [5e0eaf6] Add -latomic for riscv.
+  * [44ebe5f] Modify fix-CheckCxxAtomic-riscv64.patch so that it works as
+    expected.
+
+ -- Thomas Goirand <zigo@debian.org>  Fri, 29 Sep 2023 10:36:19 +0200
+
+ceph (16.2.11+ds-3) unstable; urgency=medium
+
+  * Fix gcc-13 FTBFS. (Closes: #1037602):
+    - fix-gcc-13-issue.patch (thanks to Bo YU).
+    - Add -fpermissive to DEB_CXXFLAGS_MAINT_APPEND.
+    - include-cstdint-in-subsys_types.h.patch.
+  * Fix debian/calc-max-parallel.sh to allow building on more core on
+    (very) big systems.
+
+ -- Thomas Goirand <zigo@debian.org>  Tue, 26 Sep 2023 09:41:32 +0200
 
 ceph (16.2.11+ds-2) unstable; urgency=medium
 
@@ -655,7 +845,7 @@ ceph (14.2.5-3) unstable; urgency=medium
  -- Bernd Zeimetz <bzed@debian.org>  Tue, 07 Jan 2020 20:50:28 +0100
 
 ceph (14.2.5-2) experimental; urgency=medium
-  
+
   * [8c74414] lower --max-parallel for >=16GB
     g++ loves to eat ram
   * [b15dcdd] Build-dep. on python3-dev instead python3-all-dev.
@@ -832,7 +1022,7 @@ ceph (14.2.4-1) unstable; urgency=medium
       * d/p/issue37490.patch: Cherry pick fix to optimize LVM queries in
         ceph-volume, resolving performance issues in systems under heavy load
         or with large numbers of disks (LP: #1850754).
-    
+
       [ James Page ]
       * d/p/issue40114.patch: Cherry pick endian fixes to resolve issues
         using Ceph on big-endian architectures such as s390x (LP: #1851290).
@@ -846,31 +1036,31 @@ ceph (14.2.4-1) unstable; urgency=medium
         compatible with older CPU's (LP: #1842020).
       * d/p/issue40781.patch: Cherry pick fix for py3 compatibility in ceph-
         crash.
-    
+
       [ Eric Desrochers ]
       * Ensure that daemons are not automatically restarted during package
         upgrades (LP: #1840347):
         - d/rules: Use "--no-restart-after-upgrade" and "--no-stop-on-upgrade"
           instead of "--no-restart-on-upgrade".
         - d/rules: Drop exclusion for ceph-[osd,mon,mds] for restarts.
-    
+
       [ Jesse Williamson ]
       * d/p/civetweb-755-1.8-somaxconn-configurable*.patch: Backport changes
         to civetweb to allow tuning of SOMAXCONN in Ceph RADOS Gateway
         deployments (LP: #1838109).
-    
+
       [ James Page ]
       * d/p/ceph-volume-wait-for-lvs.patch: Cherry pick inflight fix to
         ensure that required wal and db devices are present before
         activating OSD's (LP: #1828617).
-    
+
       [ Steve Beattie ]
       * SECURITY UPDATE: RADOS gateway remote denial of service
         - d/p/CVE-2019-10222.patch: rgw: asio: check the remote endpoint
           before processing requests.
         - CVE-2019-10222
         - Closes: #936015
-    
+
       [ James Page ]
       * New upstream release.
       * d/p/fix-py3-encoding-fsid.patch: Drop, no longer required.
@@ -880,7 +1070,7 @@ ceph (14.2.4-1) unstable; urgency=medium
       * d/p/pybind-auto-encode-decode-cstr.patch: Cherry pick fix to ensure
         that encoding/decoding of strings is correctly performed under
         Python 3 (LP: #1833079).
-    
+
       * New upstream release.
       * d/p/misc-32-bit-fixes.patch: Drop, included upstream.
       * d/p/py37-compat.patch: Drop, included upstream.
@@ -896,17 +1086,17 @@ ceph (14.2.4-1) unstable; urgency=medium
         compilation failures on armhf and i386 architectures.
       * d/control: Add Breaks/Replaces on ceph-common for ceph-argparse to
         deal with move of Python module.
-    
+
       * New upstream release (LP: #1810766).
       * d/p/*: Refresh.
-    
+
       * d/p/more-py3-compat.patch: Add more py3 fixes.
-    
+
       * d/p/more-py3-compat.patch: Misc Python 3 fixes in ceph-create-keys.
-    
+
       * d/tests/python-ceph: Fix python3 test support resolving
         autopkgtest failure.
-    
+
       * New upstream point release.
       * d/p/*: Refresh.
       * d/control,python-*.install,rules: Drop Python 2 support.
@@ -918,10 +1108,10 @@ ceph (14.2.4-1) unstable; urgency=medium
       * d/p/collections.abc-compat.patch: Selective cherry-pick of upstream
         fix for future compatibility with Python 3.8, avoiding deprecation
         warnings under Python 3.7.
-    
+
       * d/ceph-mds.install: Install missing systemd configuration
         (LP: #1789927).
-    
+
       * Re-instate 32bit architectures.
         - d/control: Switch back to linux-any
         - d/p/misc-32-bit-fixes.patch: Misc fixes for compilation
@@ -934,12 +1124,12 @@ ceph (14.2.4-1) unstable; urgency=medium
       * d/control,rules: Drop requirement for gcc-7 for arm64.
       * d/ceph-osd.udev: Add udev rules for sample LVM layout for OSD's,
         ensuring that LV's have ceph:ceph ownership (LP: #1767087).
-    
+
       * d/copyright,source.lintian-overrides: Exclude jsonchecker component
         of rapidjson avoiding license-problem-json-evil non-free issue.
       * New upstream point release.
       * d/control: Remove obsolete X{S}-* fields.
-    
+
       * New upstream release.
       * Sync with changes in upstream packaging:
         - d/*.install,rules: Use generated systemd unit files for install
@@ -1678,7 +1868,7 @@ ceph (0.72.2-1) unstable; urgency=medium
 
 ceph (0.72.1-3) unstable; urgency=low
 
-  * d/rules,ceph.install: Correct install paths for ceph-* helpers. 
+  * d/rules,ceph.install: Correct install paths for ceph-* helpers.
   * d/p/modules: Mark libcls_kvs.so as module.
   * d/rules: Rename radosgw upstart configuration to radosgw-instance to
     avoid namespace conflict with init script which breaks backwards
@@ -1728,7 +1918,7 @@ ceph (0.67.3-1) unstable; urgency=low
   * d/librbd-dev.install: Pickup new features.h file.
   * Remove manual calls to ldconfig:
     - d/lib{rados2|rbd1|cephfs1}.post*: Dropped - all these do is call
-      ldconfig which will automatically be done. 
+      ldconfig which will automatically be done.
     - d/rules: Let dh_makeshlibs do its magic with postinst/postrm.
   * d/tests/*: Added autopkgtests for librbd, librados, python-ceph
     and the ceph CLI.

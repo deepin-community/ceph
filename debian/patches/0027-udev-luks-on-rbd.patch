@@ -1,0 +1,15 @@
+Author: Daniel Schreiber <daniel.schreiber@hrz.tu-chemnitz.de>
+Description: udev rules for rbd to activate LUKS volumes (Closes: #1064970)
+
+diff -Naurp ceph.orig/udev/50-rbd.rules ceph/udev/50-rbd.rules
+--- ceph.orig/udev/50-rbd.rules
++++ ceph/udev/50-rbd.rules
+@@ -1,5 +1,8 @@
+ KERNEL=="rbd[0-9]*", ENV{DEVTYPE}=="disk", PROGRAM="/usr/bin/ceph-rbdnamer %k", SYMLINK+="rbd/%c"
+ KERNEL=="rbd[0-9]*", ENV{DEVTYPE}=="partition", PROGRAM="/usr/bin/ceph-rbdnamer %k", SYMLINK+="rbd/%c-part%n"
+ 
++KERNEL=="rbd*", ENV{DEVTYPE}=="partition", IMPORT{builtin}="blkid --noraid"
++KERNEL=="rbd*", ENV{DEVTYPE}=="partition", ENV{ID_FS_USAGE}=="filesystem|other|crypto", ENV{ID_FS_UUID_ENC}=="?*", SYMLINK+="disk/by-uuid/$env{ID_FS_UUID_ENC}"
++
+ # This is a placeholder, uncomment and edit as necessary
+ #KERNEL=="rbd[0-9]*", ENV{DEVTYPE}=="disk", ACTION=="add|change", ATTR{bdi/read_ahead_kb}="128"
