@@ -31,19 +31,19 @@ elif [ ${total_ram} -le ${eight_g} ]; then
 elif [ ${total_ram} -le ${sixteen_g} ]; then
     echo "--max-parallel=3"
 elif [ ${total_ram} -le ${thirtytwo_g} ]; then
-    echo "--max-parallel=8"
+    echo "--max-parallel=12"
 elif [ ${total_ram} -le ${fourtyheight_g} ]; then
-    echo "--max-parallel=14"
+    echo "--max-parallel=20"
 elif [ ${total_ram} -le ${sixtyfour_g} ]; then
-    echo "--max-parallel=18"
+    echo "--max-parallel=32"
 elif [ ${total_ram} -le ${nightysix_g} ]; then
-    echo "--max-parallel=24"
+    echo "--max-parallel=48"
 elif [ ${total_ram} -le ${hundredtwenty_g} ]; then
-    echo "--max-parallel=36"
+    echo "--max-parallel=64"
 elif [ ${total_ram} -le ${twohundredtwentysix_g} ]; then
-    echo "--max-parallel=72"
+    echo "--max-parallel=128"
 elif [ ${total_ram} -le ${fivehundred_g} ]; then
-    echo "--max-parallel=144"
-else
     echo "--max-parallel=256"
+else
+    echo "--max-parallel=512"
 fi

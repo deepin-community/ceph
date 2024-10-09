@@ -1,0 +1,17 @@
+Description: Fix FTBFS with newer snappy
+Author: Thomas Goirand <zigo@debian.org>
+Bug-Debian: https://bugs.debian.org/1071300
+Forwarded: no
+Last-Update: 2024-05-22
+
+--- ceph-18.2.1+ds.orig/src/compressor/snappy/SnappyCompressor.h
++++ ceph-18.2.1+ds/src/compressor/snappy/SnappyCompressor.h
+@@ -75,7 +75,7 @@ class SnappyCompressor : public Compress
+     ceph::bufferptr ptr = ceph::buffer::create_small_page_aligned(
+       snappy::MaxCompressedLength(src.length()));
+     snappy::UncheckedByteArraySink sink(ptr.c_str());
+-    snappy::Compress(&source, &sink);
++    snappy::Compress(&source, &sink, {});
+     dst.append(ptr, 0, sink.CurrentDestination() - ptr.c_str());
+     return 0;
+   }

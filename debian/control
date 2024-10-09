@@ -4,12 +4,12 @@ Priority: optional
 Maintainer: Ceph Packaging Team <team+ceph@tracker.debian.org>
 Uploaders:
  James Page <jamespage@debian.org>,
- Gaudenz Steinlin <gaudenz@debian.org>,
+ Daniel Baumann <daniel@debian.org>,
  Bernd Zeimetz <bzed@debian.org>,
  Thomas Goirand <zigo@debian.org>,
 Build-Depends:
  architecture-is-64-bit,
- cmake,
+ cmake (>= 3.30.2-2~),
  cython3,
  debhelper-compat (= 11),
  default-jdk,
@@ -52,10 +52,10 @@ Build-Depends:
  libevent-dev,
  libexpat1-dev,
  libfmt-dev,
- libfuse-dev,
+ libfuse3-dev,
  libgf-complete-dev,
  libgnutls28-dev,
- libgoogle-perftools-dev [amd64 arm64 armel armhf i386 mips64el mipsel ppc64 ppc64el riscv64 powerpc s390x],
+ libgoogle-perftools-dev [amd64 arm64 armel armhf i386 loong64 mips64el mipsel ppc64 ppc64el riscv64 powerpc s390x],
  libhwloc-dev,
  libibverbs-dev,
  libicu-dev,
@@ -85,7 +85,7 @@ Build-Depends:
  libthrift-dev,
  libtool,
  libudev-dev,
-# liburing-dev,
+ liburing-dev,
  libutf8proc-dev,
  libxml2-dev,
  libyaml-cpp-dev,
@@ -105,6 +105,7 @@ Build-Depends:
  python3-jwt,
  python3-natsort,
  python3-openssl,
+ python3-packaging,
  python3-pecan,
  python3-prettytable,
  python3-requests,
@@ -199,7 +200,6 @@ Depends:
  python3-ceph-common (<< ${source:Version}.1~),
  python3-ceph-common (>= ${source:Version}),
  python3-cephfs (= ${binary:Version}),
- python3-distutils,
  python3-prettytable,
  python3-rados (= ${binary:Version}),
  python3-rbd (= ${binary:Version}),
@@ -241,7 +241,7 @@ Depends:
  ${python3:Depends},
  ${shlibs:Depends},
 Recommends:
- fuse,
+ fuse3,
 Description: FUSE-based client for the Ceph distributed file system
  Ceph is a distributed network file system designed to provide
  excellent performance, reliability, and scalability.  This is a
@@ -262,7 +262,7 @@ Depends:
  ${python3:Depends},
  ${shlibs:Depends},
 Recommends:
- fuse,
+ fuse3,
 Description: FUSE-based client for the Ceph distributed file system - debug
  Ceph is a distributed network file system designed to provide
  excellent performance, reliability, and scalability.  This is a
@@ -319,8 +319,7 @@ Description: debugging symbols for ceph-immutable-object-cache
 Package: ceph-mds
 Architecture: linux-any
 Depends:
- ceph,
- ceph-base (= ${binary:Version}),
+ ceph-common (= ${binary:Version}),
  ${misc:Depends},
  ${shlibs:Depends},
 Recommends:
@@ -350,14 +349,15 @@ Description: debugging symbols for ceph-mds
 Package: ceph-mgr
 Architecture: linux-any
 Depends:
- ceph-base (= ${binary:Version}),
+ ceph-common (= ${binary:Version}),
  ceph-mgr-modules-core (<< ${source:Version}.1~),
  ceph-mgr-modules-core (>= ${source:Version}),
+ libsqlite3-mod-ceph (<< ${source:Version}.1~),
+ libsqlite3-mod-ceph (>= ${source:Version}),
  python3-bcrypt,
  python3-ceph-argparse (= ${binary:Version}),
  python3-cephfs (= ${binary:Version}),
  python3-cherrypy3,
- python3-distutils,
  python3-jwt,
  python3-openssl,
  python3-pecan,
@@ -410,7 +410,6 @@ Depends:
  ceph-mgr (>= ${binary:Version}),
  python3-bcrypt,
  python3-cherrypy3,
- python3-distutils,
  python3-jwt,
  python3-more-itertools,
  python3-openssl,
@@ -468,14 +467,15 @@ Description: kubernetes events plugin for ceph-mgr
 Package: ceph-mgr-modules-core
 Architecture: all
 Depends:
- python3-requests,
- python3-werkzeug,
  python3-cherrypy3,
  python3-dateutil,
  python3-natsort,
  python3-openssl,
+ python3-packaging,
  python3-pecan,
  python3-pkg-resources,
+ python3-requests,
+ python3-werkzeug,
  ${misc:Depends},
  ${python3:Depends},
  ${shlibs:Depends},
@@ -497,7 +497,6 @@ Depends:
  ceph-mgr (>= ${binary:Version}),
  python3-jsonpatch,
  python3-kubernetes,
- python3-six,
  ${misc:Depends},
  ${python3:Depends},
  ${shlibs:Depends},
@@ -513,7 +512,7 @@ Description: rook plugin for ceph-mgr
 Package: ceph-mon
 Architecture: linux-any
 Depends:
- ceph-base (= ${binary:Version}),
+ ceph-common (= ${binary:Version}),
  ${misc:Depends},
  ${python3:Depends},
  ${shlibs:Depends},
@@ -1227,7 +1226,7 @@ Depends:
  ${misc:Depends},
  ${shlibs:Depends},
 Recommends:
- fuse,
+ fuse3,
 Description: FUSE-based rbd client for the Ceph distributed file system
  Ceph is a distributed network file system designed to provide
  excellent performance, reliability, and scalability.  This is a

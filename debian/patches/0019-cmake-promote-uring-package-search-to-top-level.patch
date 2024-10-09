@@ -1,0 +1,34 @@
+From 35ee17a2135d732e811c4316c161c4e44a3c943f Mon Sep 17 00:00:00 2001
+From: Patrick Donnelly <pdonnell@redhat.com>
+Date: Tue, 17 Oct 2023 12:59:41 -0400
+Subject: cmake: promote uring package search to top-level
+
+For use by multiple projects, rocksdb in particular.
+
+Signed-off-by: Patrick Donnelly <pdonnell@redhat.com>
+(cherry picked from commit 3438de58f2af599901a19cf984e2e7cb1e9f6944)
+---
+ CMakeLists.txt         | 9 +++++++++
+ src/blk/CMakeLists.txt | 6 ------
+ 2 files changed, 9 insertions(+), 6 deletions(-)
+
+Index: ceph/CMakeLists.txt
+===================================================================
+--- ceph.orig/CMakeLists.txt
++++ ceph/CMakeLists.txt
+@@ -257,6 +257,15 @@ if(WITH_LIBURING)
+   endif()
+ endif()
+ 
++if(WITH_LIBURING)
++  if(WITH_SYSTEM_LIBURING)
++    find_package(uring REQUIRED)
++  else()
++    include(Builduring)
++    build_uring()
++  endif()
++endif()
++
+ CMAKE_DEPENDENT_OPTION(WITH_BLUESTORE_PMEM "Enable PMDK libraries" OFF
+   "WITH_BLUESTORE" OFF)
+ if(WITH_BLUESTORE_PMEM)

@@ -51,6 +51,16 @@ ifneq (,$(filter $(DEB_HOST_ARCH), riscv64))
 export DEB_LDFLAGS_MAINT_APPEND= -Wl,--as-needed -latomic
 endif
 
+# This avoids:
+# d: not enough GOT space for local GOT entries
+# /usr/bin/ld: BFD (GNU Binutils for Debian) 2.42 internal error, aborting at ../../bfd/elfxx-mips.c:10719 in _bfd_mips_elf_relocate_section
+# /usr/bin/ld: Please report this bug.
+# collect2: error: ld returned 1 exit status
+ifneq (,$(filter $(DEB_HOST_ARCH), mips64el))
+export DEB_CFLAGS_MAINT_APPEND = -mxgot
+export DEB_CXXFLAGS_MAINT_APPEND = -mxgot
+endif
+
 # Fix build with fmt 9
 export DEB_CXXFLAGS_MAINT_APPEND += -DFMT_DEPRECATED_OSTREAM -fpermissive
 
@@ -77,8 +87,8 @@ extraopts += -DWITH_PYTHON3=3
 extraopts += -DWITH_CEPHFS_JAVA=ON
 extraopts += -DWITH_CEPHFS_SHELL=ON
 extraopts += -DWITH_TESTS=ON
-extraopts += -DWITH_SYSTEM_BOOST=OFF
-extraopts += -DWITH_SYSTEM_LIBURING=OFF
+extraopts += -DWITH_SYSTEM_BOOST=ON
+extraopts += -DWITH_SYSTEM_LIBURING=ON
 extraopts += -DWITH_EMBEDDED=OFF
 extraopts += -DCMAKE_INSTALL_LIBEXECDIR=/usr/lib/${DEB_HOST_MULTIARCH}
 extraopts += -DWITH_SYSTEMD=ON -DCEPH_SYSTEMD_ENV_DIR=/etc/default
@@ -113,13 +123,6 @@ ifneq (,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
   extraopts += -DBOOST_J=$(NUMJOBS)
 endif
 
-ifneq (,$(filter $(DEB_HOST_ARCH),ia64 m68k ppc64 sh4 sparc64 x32 alpha mips64el))
-  # beast depends on libboost_{context,coroutine} which is not supported on s390x
-  extraopts += -DWITH_BOOST_CONTEXT=OFF
-else
-  extraopts += -DWITH_BOOST_CONTEXT=ON
-endif
-
 # Disable SPDK as it generates a build which is no compatible
 # with older CPU's which are still supported by Ubuntu.
 extraopts += -DWITH_SPDK=OFF
@@ -140,6 +143,14 @@ override_dh_auto_clean:
 	rm -f src/liburing/src/liburing.so.* src/liburing/src/queue.ol src/liburing/src/queue.os src/liburing/src/register.ol src/liburing/src/register.os
 	rm -f src/liburing/src/setup.ol src/liburing/src/setup.os src/liburing/src/syscall.ol src/liburing/src/syscall.os
 	rm -rf src/pybind/mgr/rook/rook_client/ceph
+
+override_dh_auto_build:
+	# Generate headers first, as it seems there's a race condition
+	# that appears on slower build hosts where the build happens
+	# before the headers are built.
+	dh_auto_build --buildsystem=cmake -- legacy-option-headers
+	# Start the actual build
+	dh_auto_build --buildsystem=cmake 
 
 override_dh_auto_configure:
 	env | sort
@@ -249,6 +260,7 @@ override_dh_installinit:
 	install -m0644 systemd/ceph-osd@.service.in debian/ceph-osd/lib/systemd/system
 	mv debian/ceph-osd/lib/systemd/system/ceph-osd@.service.in debian/ceph-osd/lib/systemd/system/ceph-osd@.service
 	sed -i 's#@SYSTEMD_ENV_FILE@#/etc/default/ceph#' debian/ceph-osd/lib/systemd/system/ceph-osd@.service
+	sed -i 's#@CMAKE_INSTALL_FULL_LIBEXECDIR@#/usr/lib#' debian/ceph-osd/lib/systemd/system/ceph-osd@.service
 	install -m0644 systemd/ceph-osd.target debian/ceph-osd/lib/systemd/system/
 
 	# ceph-volume
@@ -344,3 +356,29 @@ override_dh_builddeb:
 override_dh_gencontrol:
 	dh_gencontrol ${skip_packages}
 
+override_dh_fixperms:
+	dh_fixperms
+	# If the package builds on buildd, the file will not exists for arch:all,
+	# so we must make this a conditional.
+	if [ -e $(CURDIR)/debian/ceph-osd/usr/lib/ceph/ceph-osd-prestart.sh ] ; then \
+		chmod +x $(CURDIR)/debian/ceph-osd/usr/lib/ceph/ceph-osd-prestart.sh ; \
+	fi
+	for i in 	$(CURDIR)/debian/ceph-base/usr/lib/ceph/ceph_common.sh \
+			$(CURDIR)/debian/ceph-mgr-dashboard/usr/share/ceph/mgr/dashboard/ci/cephadm/bootstrap-cluster.sh \
+			$(CURDIR)/debian/ceph-mgr-dashboard/usr/share/ceph/mgr/dashboard/ci/cephadm/run-cephadm-e2e-tests.sh \
+			$(CURDIR)/debian/ceph-mgr-dashboard/usr/share/ceph/mgr/dashboard/ci/cephadm/start-cluster.sh \
+			$(CURDIR)/debian/ceph-mgr-dashboard/usr/share/ceph/mgr/dashboard/run-backend-api-request.sh \
+			$(CURDIR)/debian/ceph-mgr-dashboard/usr/share/ceph/mgr/dashboard/run-backend-api-tests.sh \
+			$(CURDIR)/debian/ceph-mgr-dashboard/usr/share/ceph/mgr/dashboard/run-backend-rook-api-request.sh \
+			$(CURDIR)/debian/ceph-mgr-dashboard/usr/share/ceph/mgr/dashboard/run-frontend-e2e-tests.sh \
+			$(CURDIR)/debian/ceph-mgr-dashboard/usr/share/ceph/mgr/dashboard/run-frontend-unittests.sh \
+			$(CURDIR)/debian/ceph-mgr-rook/usr/share/ceph/mgr/rook/ci/run-rook-e2e-tests.sh \
+			$(CURDIR)/debian/ceph-mgr-rook/usr/share/ceph/mgr/rook/ci/scripts/bootstrap-rook-cluster.sh \
+			$(CURDIR)/debian/ceph-mgr-rook/usr/share/ceph/mgr/rook/generate_rook_ceph_client.sh ; do \
+		if [ -e $$i ] ; then \
+			chmod +x $$i ; \
+		fi ; \
+	done
+
+execute_before_dh_installdeb:
+	if command -v dh_movetousr > /dev/null 2>&1; then dh_movetousr; fi
