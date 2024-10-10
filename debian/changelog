@@ -1,3 +1,9 @@
+ceph (18.2.4+ds-7deepin1) unstable; urgency=medium
+
+  * fix fmt error, add ceph-18.2.0-fmt10-fixes.patch.
+
+ -- LiChengGang <lichenggang@uniontech.com>  Thu, 10 Oct 2024 10:27:58 +0800
+
 ceph (18.2.4+ds-7) unstable; urgency=medium
 
   * Removing superfluous dependency on python3-six in ceph-mgr-rook
