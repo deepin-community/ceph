@@ -30,3 +30,4 @@
 0027-udev-luks-on-rbd.patch
 0028-cephadm-do-not-write-logrotate.patch
 0029-fix-ftbfs-loongson64.patch
+ceph-18.2.0-fmt10-fixes.patch
