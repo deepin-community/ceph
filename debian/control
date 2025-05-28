@@ -55,7 +55,7 @@ Build-Depends:
  libfuse3-dev,
  libgf-complete-dev,
  libgnutls28-dev,
- libgoogle-perftools-dev [amd64 arm64 armel armhf i386 loong64 mips64el mipsel ppc64 ppc64el riscv64 powerpc s390x],
+ libgoogle-perftools-dev [amd64 arm64 armel armhf i386 loong64 mips64el mipsel ppc64 ppc64el riscv64 powerpc s390x sw64],
  libhwloc-dev,
  libibverbs-dev,
  libicu-dev,

@@ -1,3 +1,9 @@
+ceph (18.2.4+ds-7deepin1.1) unstable; urgency=medium
+
+  * feat: add sw64 support.
+
+ -- hudeng <hudeng@deepin.org>  Wed, 28 May 2025 11:27:03 +0800
+
 ceph (18.2.4+ds-7deepin1) unstable; urgency=medium
 
   * fix fmt error, add ceph-18.2.0-fmt10-fixes.patch.
