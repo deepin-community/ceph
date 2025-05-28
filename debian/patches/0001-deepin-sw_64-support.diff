@@ -1,0 +1,482 @@
+From 4e68ef5c438e533d1c09eb1306aac0facdce6f99 Mon Sep 17 00:00:00 2001
+From: hudeng <hudeng@deepin.org>
+Date: Wed, 9 Apr 2025 02:56:43 +0000
+Subject: [PATCH] feat: add sw support
+
+---
+ src/boost/boostcpp.jam                        |  5 +-
+ .../libs/config/checks/architecture/sw_64.cpp | 11 +++
+ src/boost/libs/context/build/Jamfile.v2       | 14 +++
+ src/boost/libs/context/build/architecture.jam |  4 +
+ .../context/src/asm/jump_sw_64_n64_elf_gas.S  | 78 +++++++++++++++++
+ .../context/src/asm/make_sw_64_n64_elf_gas.S  | 51 +++++++++++
+ .../context/src/asm/ontop_sw_64_n64_elf_gas.S | 61 +++++++++++++
+ .../src/engine/boehm_gc/sw_64_mach_dep.S      | 86 +++++++++++++++++++
+ src/boost/tools/build/src/engine/jam.h        |  4 +
+ src/boost/tools/build/src/tools/builtin.py    |  3 +
+ .../tools/features/architecture-feature.jam   |  3 +
+ .../range_tree/lib/portability/toku_time.h    |  6 ++
+ 12 files changed, 324 insertions(+), 2 deletions(-)
+ create mode 100644 src/boost/libs/config/checks/architecture/sw_64.cpp
+ create mode 100644 src/boost/libs/context/src/asm/jump_sw_64_n64_elf_gas.S
+ create mode 100644 src/boost/libs/context/src/asm/make_sw_64_n64_elf_gas.S
+ create mode 100644 src/boost/libs/context/src/asm/ontop_sw_64_n64_elf_gas.S
+ create mode 100644 src/boost/tools/build/src/engine/boehm_gc/sw_64_mach_dep.S
+
+diff --git a/src/boost/boostcpp.jam b/src/boost/boostcpp.jam
+index 082536e2a..db732d742 100644
+--- a/src/boost/boostcpp.jam
++++ b/src/boost/boostcpp.jam
+@@ -634,7 +634,7 @@ rule address-model ( )
+     return <conditional>@boostcpp.deduce-address-model ;
+ }
+ 
+-local deducable-architectures = arm mips1 power riscv s390x sparc x86 combined ;
++local deducable-architectures = arm mips1 power riscv s390x sparc x86 sw_64 combined ;
+ feature.feature deduced-architecture : $(deducable-architectures) : propagated optional composite hidden ;
+ for a in $(deducable-architectures)
+ {
+@@ -645,7 +645,7 @@ rule deduce-architecture ( properties * )
+ {
+     local result ;
+     local filtered = [ toolset-properties $(properties) ] ;
+-    local names = arm mips1 power riscv s390x sparc x86 combined ;
++    local names = arm mips1 power riscv s390x sparc x86 sw_64 combined ;
+     local idx = [ configure.find-builds "default architecture" : $(filtered)
+         : /boost/architecture//arm
+         : /boost/architecture//mips1
+@@ -654,6 +654,7 @@ rule deduce-architecture ( properties * )
+         : /boost/architecture//s390x
+         : /boost/architecture//sparc
+         : /boost/architecture//x86
++        : /boost/architecture//sw_64
+         : /boost/architecture//combined ] ;
+     result = $(names[$(idx)]) ;
+ 
+diff --git a/src/boost/libs/config/checks/architecture/sw_64.cpp b/src/boost/libs/config/checks/architecture/sw_64.cpp
+new file mode 100644
+index 000000000..5693b65d7
+--- /dev/null
++++ b/src/boost/libs/config/checks/architecture/sw_64.cpp
+@@ -0,0 +1,11 @@
++// sw_64.cpp
++
++// Copyright (c) 2019 sw_64
++
++// Distributed under the Boost Software License Version 1.0. (See
++// accompanying file LICENSE_1_0.txt or copy at
++// http://www.boost.org/LICENSE_1_0.txt)
++
++#if !defined(__sw_64__) 
++#error "Not SW_64"
++#endif
+diff --git a/src/boost/libs/context/build/Jamfile.v2 b/src/boost/libs/context/build/Jamfile.v2
+index 9df8f0a96..dfcc6c05e 100644
+--- a/src/boost/libs/context/build/Jamfile.v2
++++ b/src/boost/libs/context/build/Jamfile.v2
+@@ -81,6 +81,7 @@ local rule default_abi ( )
+     else if [ os.name ] = "CYGWIN" { tmp = ms ; }
+     else if [ os.platform ] = "ARM" { tmp = aapcs ; }
+     else if [ os.platform ] = "MIPS32" { tmp = o32 ; }
++    else if [ os.platform ] = "SW_64" { tmp = n64 ; }
+     else if [ os.platform ] = "MIPS64" { tmp = n64 ; }
+     return $(tmp) ;
+ }
+@@ -326,6 +327,19 @@ alias asm_sources
+      <toolset>darwin
+    ;
+ 
++# SW_64
++# SW_64/N64/ELF
++alias asm_sources
++   : asm/make_sw_64_n64_elf_gas.S
++     asm/jump_sw_64_n64_elf_gas.S
++     asm/ontop_sw_64_n64_elf_gas.S
++   : <abi>n64
++     <address-model>64
++     <architecture>sw_64
++     <binary-format>elf
++     <toolset>gcc
++   ;
++
+ #POWERPC_32/SYSV/XCOFF
+ alias asm_sources
+    : asm/make_ppc32_sysv_xcoff_gas.S
+diff --git a/src/boost/libs/context/build/architecture.jam b/src/boost/libs/context/build/architecture.jam
+index 3eaa1b077..78820cdfb 100644
+--- a/src/boost/libs/context/build/architecture.jam
++++ b/src/boost/libs/context/build/architecture.jam
+@@ -55,6 +55,10 @@ rule deduce-architecture ( properties * )
+         {
+             return <architecture>arm ;
+         }
++        else if [ configure.builds /boost/architecture//sw_64 : $(properties) : sw_64 ]
++        {
++            return <architecture>sw_64 ;
++        }
+         else if [ configure.builds /boost/architecture//loongarch : $(properties) : loongarch ]
+         {
+             return <architecture>loongarch ;
+diff --git a/src/boost/libs/context/src/asm/jump_sw_64_n64_elf_gas.S b/src/boost/libs/context/src/asm/jump_sw_64_n64_elf_gas.S
+new file mode 100644
+index 000000000..a2984790c
+--- /dev/null
++++ b/src/boost/libs/context/src/asm/jump_sw_64_n64_elf_gas.S
+@@ -0,0 +1,78 @@
++/*
++            Copyright Jiaxun Yang 2018.
++   Distributed under the Boost Software License, Version 1.0.
++      (See accompanying file LICENSE_1_0.txt or copy at
++          http://www.boost.org/LICENSE_1_0.txt)
++*/
++
++
++.file "jump_sw_64_n64_elf_gas.S"
++.text
++.globl jump_fcontext
++.align 2
++.type jump_fcontext,@function
++.ent jump_fcontext
++jump_fcontext:
++    # reserve space on stack
++    subl $sp,136,$sp
++    
++    stl $26,0($sp)
++    stl $fp,8($sp)
++    stl $9, 16($sp)
++    stl $10, 24($sp)
++    stl $11, 32($sp)
++    stl $12, 40($sp)
++    stl $13, 48($sp)
++    stl $14, 56($sp)
++
++    fstd $f2, 64($sp)
++    fstd $f3, 72($sp)
++    fstd $f4, 80($sp)
++    fstd $f5, 88($sp)
++    fstd $f6, 96($sp)
++    fstd $f7, 104($sp)
++    fstd $f8, 112($sp)
++    fstd $f9, 120($sp)
++
++    stl $26,128($sp) #store RA as PC
++
++    # store SP (pointing to old context-data) in v0 as return
++    mov  $sp, $0
++
++    # get SP (pointing to new context-data) from a0 param
++    mov  $16, $sp
++
++    ldl $26,0($sp)
++    ldl $fp,8($sp)
++    ldl $9, 16($sp)
++    ldl $10, 24($sp)
++    ldl $11, 32($sp)
++    ldl $12, 40($sp)
++    ldl $13, 48($sp)
++    ldl $14, 56($sp)
++
++    fldd $f2, 64($sp)
++    fldd $f3, 72($sp)
++    fldd $f4, 80($sp)
++    fldd $f5, 88($sp)
++    fldd $f6, 96($sp)
++    fldd $f7, 104($sp)
++    fldd $f8, 112($sp)
++    fldd $f9, 120($sp)
++
++    # load PC
++    ldl  $27, 128($sp)
++
++    # adjust stack
++    addl $sp, 136, $sp
++
++    mov  $0, $16 # move old sp from v0 to a0 as param
++    mov  $17, $0 # move *data from a1 to v1 as return 
++
++    # jump to context
++    jmp  $31, ($27)
++.end jump_fcontext
++.size jump_fcontext, .-jump_fcontext
++
++/* Mark that we don't need executable stack.  */
++.section .note.GNU-stack,"",%progbits
+diff --git a/src/boost/libs/context/src/asm/make_sw_64_n64_elf_gas.S b/src/boost/libs/context/src/asm/make_sw_64_n64_elf_gas.S
+new file mode 100644
+index 000000000..952985336
+--- /dev/null
++++ b/src/boost/libs/context/src/asm/make_sw_64_n64_elf_gas.S
+@@ -0,0 +1,51 @@
++/*
++            Copyright Jiaxun Yang 2018.
++   Distributed under the Boost Software License, Version 1.0.
++      (See accompanying file LICENSE_1_0.txt or copy at
++          http://www.boost.org/LICENSE_1_0.txt)
++*/
++
++.file "make_sw_64_n64_elf_gas.S"
++.text
++.globl make_fcontext
++.align 2
++.type make_fcontext,@function
++.ent make_fcontext
++make_fcontext:
++    # shift address in A0 to lower 16 byte boundary
++    bic $0,0xf,$16
++
++    # reserve space for context-data on context-stack
++    subl $sp,136,$sp
++
++    # third arg of make_fcontext() == address of context-function
++    stl  $18, 128($0)
++    # save global pointer in context-data
++    stl  $29, 120($0)
++
++    # psudo instruction compute abs address of label finish based on GP
++    ldi  $27, finish
++
++    # save address of finish as return-address for context-function
++    # will be entered after context-function returns
++    stl  $27, 112($0)
++
++    jmp  ($26) # return pointer to context-data
++
++finish:
++    # reload our gp register
++    subl $sp, 136,$1
++    ldl $29, 120($1)
++
++    # call _exit(0)
++    #  the previous function should have left the 16 bytes incoming argument
++    #  area on the stack which we reuse for calling _exit
++    ldi  $27, _exit 
++    mov $31,$16
++    jmp ($27)
++.end make_fcontext
++.size make_fcontext, .-make_fcontext
++
++/* Mark that we don't need executable stack.  */
++.section .note.GNU-stack,"",%progbits
++
+diff --git a/src/boost/libs/context/src/asm/ontop_sw_64_n64_elf_gas.S b/src/boost/libs/context/src/asm/ontop_sw_64_n64_elf_gas.S
+new file mode 100644
+index 000000000..0fe05375e
+--- /dev/null
++++ b/src/boost/libs/context/src/asm/ontop_sw_64_n64_elf_gas.S
+@@ -0,0 +1,61 @@
++/*
++            Copyright Oliver Kowalke 2009.
++   Distributed under the Boost Software License, Version 1.0.
++      (See accompanying file LICENSE_1_0.txt or copy at
++          http://www.boost.org/LICENSE_1_0.txt)
++*/
++
++
++.text
++.globl ontop_fcontext
++.align 2
++.type ontop_fcontext,@function
++.ent ontop_fcontext
++ontop_fcontext:
++    # reserve space on stack
++    subl $sp, 64, $sp
++
++    stl  $9, 0($sp)  # save S0
++    stl  $10, 8($sp)  # save S1
++    stl  $11, 16($sp)  # save S2
++    stl  $12, 24($sp)  # save S3
++    stl  $13, 32($sp)  # save S4
++    stl  $14, 40($sp)  # save S5
++    stl  $15, 48($sp)  # save fp
++    stl  $16, 56($sp)  # save a0
++    stl  $26, 64($sp)  # save ra
++
++    # store SP (pointing to context-data) in A0
++    mov  $16, $sp
++
++    # restore SP (pointing to context-data) from A1
++    mov  $sp, $17
++
++    ldl  $9, 0($sp)  # save S0
++    ldl  $10, 8($sp)  # save S1
++    ldl  $11, 16($sp)  # save S2
++    ldl  $12, 24($sp)  # save S3
++    ldl  $13, 32($sp)  # save S4
++    ldl  $14, 40($sp)  # save S5
++    ldl  $15, 48($sp)  # save fp
++    ldl  $16, 56($sp)  # save a0
++    ldl  $26, 64($sp)  # save ra
++
++    # adjust stack
++    addl $sp, 64, $sp
++    
++    # return transfer_t from jump
++    stl  $16, 0($22)  # fctx of transfer_t
++    stl  $18, 8($22) # data of transfer_t
++    # pass transfer_t as first arg in context function
++    # A0 == hidden, A1 == fctx, A2 == data
++    mov  $17, $16 
++    mov  $16, $22 
++
++    # jump to context
++    jmp  ($19),0
++.end ontop_fcontext
++.size ontop_fcontext, .-ontop_fcontext
++
++/* Mark that we don't need executable stack.  */
++.section .note.GNU-stack,"",%progbits
+diff --git a/src/boost/tools/build/src/engine/boehm_gc/sw_64_mach_dep.S b/src/boost/tools/build/src/engine/boehm_gc/sw_64_mach_dep.S
+new file mode 100644
+index 000000000..d0845e170
+--- /dev/null
++++ b/src/boost/tools/build/src/engine/boehm_gc/sw_64_mach_dep.S
+@@ -0,0 +1,86 @@
++	.arch sw6a
++
++        .text
++        .align  4
++        .globl  GC_push_regs
++        .ent    GC_push_regs 2
++GC_push_regs:
++	ldgp    $gp, 0($27)
++	ldi     $sp, -16($sp)
++	stl     $26, 0($sp)
++        .mask   0x04000000, 0
++        .frame  $sp, 16, $26, 0
++
++/* $0		integer result                                                */
++/* $1-$8	temp regs - not preserved cross calls                         */
++/* $9-$15	call saved regs                                               */
++/* $16-$21	argument regs - not preserved cross calls                     */
++/* $22-$28	temp regs - not preserved cross calls                         */
++/* $29		global pointer - not preserved cross calls                    */
++/* $30		stack pointer                                                 */
++
++# define call_push(x)			\
++	mov   x, $16;			\
++	call   $26, GC_push_one;		\
++	ldgp  $gp, 0($26)
++	
++        call_push($9)
++        call_push($10)
++        call_push($11)
++        call_push($12)
++        call_push($13)
++        call_push($14)
++        call_push($15)
++
++/* $f0-$f1	floating point results                                        */
++/* $f2-$f9	call saved regs                                               */
++/* $f10-$f30	temp regs - not preserved cross calls                         */
++
++	/* Use the most efficient transfer method for this hardware. */
++	/* Bit 1 detects the FIX extension, which includes ftoit. */
++	amask	2, $0
++	bne	$0, $use_stack
++
++#undef call_push
++#define call_push(x)			\
++	ftoid	x, $16;			\
++	call	$26, GC_push_one;	\
++	ldgp	$gp, 0($26)
++
++	call_push($f2)
++	call_push($f3)
++	call_push($f4)
++	call_push($f5)
++	call_push($f6)
++	call_push($f7)
++	call_push($f8)
++	call_push($f9)
++
++	ldl     $26, 0($sp)
++	ldi     $sp, 16($sp)
++	ret     $31, ($26), 1
++
++	.align	4
++$use_stack:
++
++#undef call_push
++#define call_push(x)			\
++	fstd	x, 8($sp);		\
++	ldl	$16, 8($sp);		\
++	call	$26, GC_push_one;	\
++	ldgp	$gp, 0($26)
++
++	call_push($f2)
++	call_push($f3)
++	call_push($f4)
++	call_push($f5)
++	call_push($f6)
++	call_push($f7)
++	call_push($f8)
++	call_push($f9)
++
++	ldl     $26, 0($sp)
++	ldi     $sp, 16($sp)
++	ret     $31, ($26), 1
++
++	.end    GC_push_regs
+diff --git a/src/boost/tools/build/src/engine/jam.h b/src/boost/tools/build/src/engine/jam.h
+index 34a6fbeaa..dad3336f2 100644
+--- a/src/boost/tools/build/src/engine/jam.h
++++ b/src/boost/tools/build/src/engine/jam.h
+@@ -420,6 +420,10 @@
+     #define OSPLAT "OSPLAT=SPARC"
+ #endif
+ 
++#ifdef __sw_64__
++    #define OSPLAT "OSPLAT=SW_64"
++#endif
++
+ #ifdef __mips__
+   #if _MIPS_SIM == _MIPS_SIM_ABI64
+     #define OSPLAT "OSPLAT=MIPS64"
+diff --git a/src/boost/tools/build/src/tools/builtin.py b/src/boost/tools/build/src/tools/builtin.py
+index 493354bfb..12cb5ffdd 100644
+--- a/src/boost/tools/build/src/tools/builtin.py
++++ b/src/boost/tools/build/src/tools/builtin.py
+@@ -264,6 +264,9 @@ def register_globals ():
+         # MIPS/SGI
+         'mips', 'mips1', 'mips2', 'mips3', 'mips4', 'mips32', 'mips32r2', 'mips64',
+ 
++        # SW_64
++        'sw_64',
++
+         # HP/PA-RISC
+         'parisc',
+ 
+diff --git a/src/boost/tools/build/src/tools/features/architecture-feature.jam b/src/boost/tools/build/src/tools/features/architecture-feature.jam
+index 3c9d92f32..b43530844 100644
+--- a/src/boost/tools/build/src/tools/features/architecture-feature.jam
++++ b/src/boost/tools/build/src/tools/features/architecture-feature.jam
+@@ -33,6 +33,9 @@ feature.feature architecture
+         # LoongArch
+         loongarch
+ 
++        # SW_64
++        sw_64
++
+         # MIPS/SGI
+         mips mips1 mips2 mips3 mips4 mips32 mips32r2 mips64
+ 
+diff --git a/src/rocksdb/utilities/transactions/lock/range/range_tree/lib/portability/toku_time.h b/src/rocksdb/utilities/transactions/lock/range/range_tree/lib/portability/toku_time.h
+index 55647c5ff..6b7806017 100644
+--- a/src/rocksdb/utilities/transactions/lock/range/range_tree/lib/portability/toku_time.h
++++ b/src/rocksdb/utilities/transactions/lock/range/range_tree/lib/portability/toku_time.h
+@@ -160,6 +160,12 @@ static inline tokutime_t toku_time_now(void) {
+   struct timeval tv;
+   gettimeofday(&tv, nullptr);
+   return (uint64_t)tv.tv_sec * 1000000 + tv.tv_usec;
++#elif defined(__sw_64__)
++  // mips apparently only allows rdtsc for superusers, so we fall
++  // back to gettimeofday.  It's possible clock_gettime would be better.
++  struct timeval tv;
++  gettimeofday(&tv, nullptr);
++  return (uint64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+ #elif defined(__loongarch64)
+   unsigned long result;
+   asm volatile ("rdtime.d\t%0,$r0" : "=r" (result));
+-- 
+2.43.4
+
