@@ -32,3 +32,4 @@
 0029-fix-ftbfs-loongson64.patch
 ceph-18.2.0-fmt10-fixes.patch
 0001-deepin-sw_64-support.diff
+0030-fix-CVE-2025-52555.patch
